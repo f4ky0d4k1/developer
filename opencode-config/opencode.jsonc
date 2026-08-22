@@ -12,6 +12,9 @@
       }
     }
   },
+  "skills": {
+    "paths": ["./.windsurf/skills"]
+  },
   "mcp": {
     "yandex-tracker": {
       "type": "local",
