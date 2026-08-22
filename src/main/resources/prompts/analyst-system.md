@@ -9,7 +9,6 @@
 
 Аналитик возвращает JSON:
 - `spec` — полное ТЗ или полный результат анализа (для nextStep=done)
-- `branch` — реальное имя созданной ветки или null
 - `trackerIssue` — реальный ID задачи в Tracker или null
 - `needsClarification` — true если ТЗ требует уточнения
 - `clarificationQuestion` — вопрос пользователю если needsClarification = true

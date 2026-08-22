@@ -25,7 +25,6 @@ public final class AgentResponses {
      */
     public record AnalystResult(
             String spec,
-            String branch,
             String trackerIssue,
             boolean needsClarification,
             String clarificationQuestion,

@@ -42,6 +42,7 @@ public class DeveloperNode implements Agent {
         String branch = ctx.get(TaskState.GIT_BRANCH);
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
         String targetRepo = ctx.get(TaskState.TARGET_REPO);
+        String trackerIssue = ctx.get(TaskState.TRACKER_ISSUE);
         String repoUrl = toRepoUrl(targetRepo);
 
         if (chatId == null || chatId.isBlank()) {
@@ -67,6 +68,12 @@ public class DeveloperNode implements Agent {
             sessionPool.prepareSlot(slot, repoUrl);
             String workDir = sessionPool.getSlotWorkDir(slot);
 
+            String branchName = branch != null && !branch.isBlank()
+                    ? branch
+                    : trackerIssue != null && !trackerIssue.isBlank()
+                      ? "feature/" + trackerIssue
+                      : "feature/" + java.util.UUID.randomUUID().toString().substring(0, 8);
+
             String prompt = """
                     Реализуй задачу по следующему ТЗ:
                     
@@ -75,7 +82,7 @@ public class DeveloperNode implements Agent {
                     Переключись на ветку: git checkout -b %s
                     Следуй conventions.md проекта.
                     После реализации — закоммить и убедись что проект компилируется.
-                    """.formatted(spec, branch != null && !branch.isBlank() ? branch : "feature/new-task");
+                    """.formatted(spec, branchName);
 
             var result = openCode.runAgent("developer", prompt, workDir);
 
@@ -100,6 +107,7 @@ public class DeveloperNode implements Agent {
                     .stateUpdates(java.util.Map.of(
                             TaskState.IMPLEMENTATION, result.output() != null ? result.output() : "",
                             TaskState.COMMIT_HASH, result.commitHash() != null ? result.commitHash() : "",
+                            TaskState.GIT_BRANCH, branchName,
                             TaskState.AGENT_ROLE, "developer",
                             TaskState.DEVELOPMENT_DONE, true))
                     .completed(true)

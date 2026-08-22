@@ -133,7 +133,6 @@ public class AnalystNode implements Agent {
         }
 
         String spec;
-        String branchName;
         String trackerIssueId;
         String nextStep;
         boolean requiresDev;
@@ -141,7 +140,6 @@ public class AnalystNode implements Agent {
 
         if (result != null) {
             spec = (result.spec() != null && !result.spec().isBlank()) ? result.spec() : openCodeOutput;
-            branchName = result.branch();
             trackerIssueId = "N/A".equalsIgnoreCase(result.trackerIssue()) ? null : result.trackerIssue();
             nextStep = result.nextStep() != null ? result.nextStep() : "done";
             requiresDev = result.requiresDevelopment();
@@ -172,27 +170,18 @@ public class AnalystNode implements Agent {
         } else {
             // Fallback: используем raw output
             spec = openCodeOutput;
-            branchName = null;
             trackerIssueId = null;
             nextStep = "done";
             requiresDev = false;
             requiresTest = false;
         }
 
-        // Fallback если ветка не указана — НЕ создаём автоматически
-        if (branchName == null || branchName.isBlank()) {
-            branchName = null;
-        }
-
-        log.info("Аналитик: ветка={}, tracker={}, nextStep={}, requiresDev={}, requiresTest={}",
-                branchName, trackerIssueId, nextStep, requiresDev, requiresTest);
+        log.info("Аналитик: tracker={}, nextStep={}, requiresDev={}, requiresTest={}",
+                trackerIssueId, nextStep, requiresDev, requiresTest);
 
         String tgMessage = "📋 Анализ завершён.";
-        if (branchName != null) {
-            tgMessage += " Ветка: `" + branchName + "`";
-        }
         if (trackerIssueId != null) {
-            tgMessage += "\n📌 Tracker: " + trackerIssueId;
+            tgMessage += "\n📌 Tracker: [" + trackerIssueId + "](https://tracker.yandex.ru/" + trackerIssueId + ")";
         }
         if (!spec.isBlank()) {
             int maxLen = 4000;
@@ -202,7 +191,6 @@ public class AnalystNode implements Agent {
 
         var stateMap = new java.util.HashMap<io.github.asekka.springai.agents.core.StateKey<?>, Object>();
         stateMap.put(TaskState.SPEC, spec);
-        stateMap.put(TaskState.GIT_BRANCH, branchName != null ? branchName : "");
         stateMap.put(TaskState.TRACKER_ISSUE, trackerIssueId != null ? trackerIssueId : "");
         stateMap.put(TaskState.AGENT_ROLE, "analyst");
         stateMap.put(TaskState.NEXT_STEP, nextStep);
@@ -210,12 +198,10 @@ public class AnalystNode implements Agent {
         stateMap.put(TaskState.REQUIRES_DEVELOPMENT, requiresDev);
         stateMap.put(TaskState.REQUIRES_TESTING, requiresTest);
 
-        final String branchForDb = branchName;
         taskRepo.findById(taskId).ifPresent(task -> {
             task.setAnalysisDone(true);
             task.setRequiresDevelopment(requiresDev);
             task.setRequiresTesting(requiresTest);
-            if (branchForDb != null) task.setGitBranch(branchForDb);
             taskRepo.save(task);
         });
 
