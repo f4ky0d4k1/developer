@@ -1,0 +1,213 @@
+#file: noinspection HttpUrlsUsage
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: developer
+  cache:
+    type: jcache
+    jcache:
+      config: classpath:ehcache.xml
+  datasource:
+    url: ${DATASOURCE_URL:jdbc:postgresql://postgres:5432/agent_state}
+    username: ${POSTGRES_USER:developer}
+    password: ${POSTGRES_PASSWORD:developer}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  ai:
+    model:
+      chat:
+        model: ${DEEP_MODEL:deepseek-v4-pro}
+    openai:
+      api-key: ${DEEPSEEK_API_KEY}
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      chat:
+        options:
+          model: ${DEEP_MODEL:deepseek-v4-pro}
+          temperature: 0.3
+    retry:
+      max-attempts: 3
+      backoff:
+        initial-interval: 2s
+        multiplier: 2
+        max-interval: 10s
+
+# Fallback model для structured output retry (дешёвая, только JSON extraction)
+fallback-model:
+  model: ${FALLBACK_MODEL:deepseek-v4-flash}
+  api-key: ${DEEPSEEK_API_KEY}
+  base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+
+# Fast mode model — быстрый классификатор (дешёвая, стабильная)
+fast-model:
+  model: ${FAST_MODEL:deepseek-v4-flash}
+  api-key: ${DEEPSEEK_API_KEY}
+  base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+
+# OpenCode sidecar
+opencode:
+  base-url: ${OPENCODE_BASE_URL:http://opencode:4096}
+  work-dir: ${OPENCODE_WORK_DIR:/work}
+  timeout-seconds: 300
+  model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
+  slots: 2
+  repo-url: ${OPENCODE_REPO_URL:https://github.com/iamponamarev/allstreets-spring.git}
+
+# Telegram bot
+telegram:
+  bot-token: ${TELEGRAM_BOT_TOKEN}
+  bot-username: ${TELEGRAM_BOT_USERNAME}  # username бота без @, для @mention фильтрации
+  api-url: https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}
+  polling-timeout: 30
+  allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS:}  # через запятую, пусто = все чаты
+  trigger-users: ${TELEGRAM_TRIGGER_USERS:}    # через запятую, пусто = все пользователи могут запускать агентов
+
+# MCP servers (доп. параметры для Spring-кода)
+mcp:
+  github:
+    command: docker
+    args: run,-i,--rm,-e,GITHUB_PERSONAL_ACCESS_TOKEN,ghcr.io/github/github-mcp-server
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+  yandex-tracker:
+    command: uvx
+    args: yandex-tracker-mcp@latest
+    env:
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_CLOUD_ORG_ID: ${TRACKER_CLOUD_ORG_ID}
+      TRANSPORT: stdio
+  grafana:
+    command: uvx
+    args: mcp-grafana
+    env:
+      GRAFANA_URL: ${GRAFANA_URL}
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN}
+
+# Skills — путь внутри репозитория (по умолчанию .windsurf)
+skills:
+  path: ${SKILLS_PATH:.windsurf}
+
+# GitHub REST API (для GitHubService — создание веток и PR)
+github:
+  token: ${GITHUB_TOKEN}
+  repo: ${GITHUB_REPO:iamponamarev/allstreets-spring}
+  base-branch: ${GITHUB_BASE_BRANCH:main}
+  pr-label: ${GITHUB_PR_LABEL:agent-generated}
+  bot-login: ${GITHUB_BOT_LOGIN}
+  protected-branches: ${GITHUB_PROTECTED_BRANCHES:main}  # через запятую, ветки защищённые от записи LLM
+
+# Loki (Grafana Cloud)
+loki:
+  host: ${LOKI_HOST}
+  port: ${LOKI_PORT:443}
+  username: ${LOKI_USERNAME}
+  password: ${LOKI_PASSWORD}
+  useSSL: ${LOKI_USE_SSL:true}
+
+logging:
+  level:
+    root: info
+    ru.allstreets.developer: trace
+    io.github.asekka: trace
+    org.springframework.ai: debug
+    io.modelcontextprotocol: debug
+    org.springframework.web.client: trace
+    org.springframework.web.reactive.function.client: trace
+  charset:
+    file: utf-8
+    console: utf-8
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level --- [%thread] [%X{agentRole}] %logger{15}: %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level --- [%thread] [%X{agentRole}] %logger{15}: %msg%n"
+
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8081}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        agents.execution.duration: true
+      percentiles:
+        agents.execution.duration: 0.5, 0.95, 0.99
+    tags:
+      application: developer
+      instance: agent-system
+
+# Resilience4j
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        slowCallRateThreshold: 50
+        slowCallDurationThreshold: 60s
+        permittedNumberOfCallsInHalfOpenState: 3
+        maxWaitDurationInHalfOpenState: 30s
+        waitDurationInOpenState: 60s
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        recordExceptions:
+          - java.io.IOException
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+          - java.util.concurrent.TimeoutException
+    instances:
+      opencode:
+        baseConfig: default
+        slowCallDurationThreshold: 300s
+      github:
+        baseConfig: default
+      tracker:
+        baseConfig: default
+      grafana:
+        baseConfig: default
+  retry:
+    configs:
+      default:
+        maxAttempts: 3
+        waitDuration: 5s
+        retryExceptions:
+          - java.io.IOException
+          - java.net.SocketTimeoutException
+          - java.net.ConnectException
+      llm:
+        maxAttempts: 3
+        waitDuration: 3s
+    instances:
+      opencode:
+        baseConfig: default
+        maxAttempts: 2
+        waitDuration: 10s
+      github:
+        baseConfig: default
+      telegram:
+        baseConfig: default
+        maxAttempts: 5
+        waitDuration: 2s
+      llm:
+        baseConfig: llm
+  ratelimiter:
+    configs:
+      default:
+        limitForPeriod: 25
+        limitRefreshPeriod: 1s
+        timeoutDuration: 10s
+    instances:
+      telegram:
+        baseConfig: default

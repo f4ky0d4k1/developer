@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="INFO" name="Developer" packages="pl.tkowalcz.tjahzi.log4j2">
+    <Properties>
+        <Property name="lokiHost">${spring:loki.host}</Property>
+        <Property name="lokiPort">${spring:loki.port}</Property>
+        <Property name="lokiUsername">${spring:loki.username}</Property>
+        <Property name="lokiPassword">${spring:loki.password}</Property>
+        <Property name="lokiUseSsl">${spring:loki.useSSL:-true}</Property>
+        <Property name="applicationName">developer</Property>
+        <Property name="levelRoot">${spring:logging.level.root:-INFO}</Property>
+        <Property name="levelProject">${spring:logging.level.ru.allstreets.developer:-DEBUG}</Property>
+        <Property name="levelAgentFlow">${spring:logging.level.io.github.sdeleuze:-DEBUG}</Property>
+        <Property name="levelAi">${spring:logging.level.org.springframework.ai:-INFO}</Property>
+        <Property name="levelMcp">${spring:logging.level.io.modelcontextprotocol:-INFO}</Property>
+        <Property name="patternConsole">${spring:logging.pattern.console}</Property>
+        <Property name="patternLoki">${spring:logging.pattern.file}</Property>
+    </Properties>
+
+    <Appenders>
+        <Loki name="Loki"
+              host="${lokiHost}"
+              port="${lokiPort}"
+              username="${lokiUsername}"
+              password="${lokiPassword}"
+              logEndpoint="/loki/api/v1/push"
+              useSSL="${lokiUseSsl}">
+            <PatternLayout pattern="${patternLoki}"/>
+            <Label name="service_name" value="${applicationName}"/>
+            <Label name="level" pattern="%level"/>
+            <Label name="agent_role" pattern="%X{agentRole}"/>
+            <Label name="task_id" pattern="%X{taskId}"/>
+            <Metadata name="agent_step" pattern="%X{agentStep}"/>
+            <bufferSizeMegabytes>1</bufferSizeMegabytes>
+            <maxLogLineSizeKilobytes>40</maxLogLineSizeKilobytes>
+            <shutdownTimeoutSeconds>5</shutdownTimeoutSeconds>
+            <connectTimeoutMillis>10000</connectTimeoutMillis>
+            <readTimeoutMillis>30000</readTimeoutMillis>
+            <useOffHeapBuffer>false</useOffHeapBuffer>
+        </Loki>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="${patternConsole}"/>
+        </Console>
+    </Appenders>
+
+    <Loggers>
+        <Root level="${levelRoot}" includeLocation="true">
+            <AppenderRef ref="Loki"/>
+            <AppenderRef ref="Console"/>
+        </Root>
+        <Logger name="ru.allstreets.developer" level="${levelProject}" additivity="false" includeLocation="true">
+            <AppenderRef ref="Loki"/>
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="io.github.sdeleuze" level="${levelAgentFlow}" additivity="false" includeLocation="true">
+            <AppenderRef ref="Loki"/>
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="org.springframework.ai" level="${levelAi}" additivity="false" includeLocation="true">
+            <AppenderRef ref="Loki"/>
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="io.modelcontextprotocol" level="${levelMcp}" additivity="false" includeLocation="true">
+            <AppenderRef ref="Loki"/>
+            <AppenderRef ref="Console"/>
+        </Logger>
+        <Logger name="pl.tkowalcz.tjahzi" level="TRACE" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
+    </Loggers>
+</Configuration>

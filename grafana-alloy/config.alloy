@@ -1,0 +1,43 @@
+discovery.relabel "metrics_developer" {
+	targets = [{
+		__address__ = env("DEVELOPER_ADDRESS"),
+	}]
+
+	rule {
+		target_label = "instance"
+		replacement  = "agent-system"
+	}
+
+	rule {
+		target_label = "application"
+		replacement  = "developer"
+	}
+}
+
+prometheus.scrape "metrics_developer" {
+	targets      = discovery.relabel.metrics_developer.output
+	forward_to   = [prometheus.relabel.metrics_developer.receiver]
+	job_name     = "integrations/spring-boot"
+	metrics_path = "/actuator/prometheus"
+}
+
+prometheus.relabel "metrics_developer" {
+	forward_to = [prometheus.remote_write.metrics_service.receiver]
+
+	rule {
+		source_labels = ["__name__"]
+		regex         = "up|agents_execution_count|agents_execution_duration|agents_execution_errors|agents_graph_transitions|hikaricp_connections|hikaricp_connections_acquire_seconds_count|hikaricp_connections_acquire_seconds_sum|hikaricp_connections_active|hikaricp_connections_idle|hikaricp_connections_pending|http_server_requests_seconds_count|http_server_requests_seconds_sum|jvm_buffer_memory_used_bytes|jvm_buffer_total_capacity_bytes|jvm_classes_loaded_classes|jvm_classes_unloaded_classes_total|jvm_gc_memory_allocated_bytes_total|jvm_gc_memory_promoted_bytes_total|jvm_gc_pause_seconds_count|jvm_gc_pause_seconds_sum|jvm_memory_committed_bytes|jvm_memory_max_bytes|jvm_memory_used_bytes|jvm_threads_daemon_threads|jvm_threads_live_threads|jvm_threads_peak_threads|logback_events_total|process_cpu_usage|process_start_time_seconds|process_uptime_seconds|system_cpu_count|system_cpu_usage|system_load_average_1m|tomcat_global_error_total|tomcat_threads_busy|tomcat_threads_config_max_threads|tomcat_threads_current_threads"
+		action        = "keep"
+	}
+}
+
+prometheus.remote_write "metrics_service" {
+    endpoint {
+        url = env("ALLOY_REMOTE_WRITE_URL")
+
+        basic_auth {
+            username = env("ALLOY_REMOTE_WRITE_USER")
+            password = env("ALLOY_REMOTE_WRITE_TOKEN")
+        }
+    }
+}

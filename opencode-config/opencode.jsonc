@@ -1,0 +1,48 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "deepseek": {
+      "name": "DeepSeek",
+      "options": {
+        "baseURL": "https://api.deepseek.com"
+      },
+      "models": {
+        "deepseek-v4-pro": {},
+        "deepseek-v4-flash": {}
+      }
+    }
+  },
+  "mcp": {
+    "yandex-tracker": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "yandex-tracker-mcp@latest"
+      ]
+    },
+    "grafana": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "mcp-grafana"
+      ]
+    },
+    "github": {
+      "type": "local",
+      "command": [
+        "docker",
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "-e",
+        "GITHUB_TOOLSETS",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "environment": {
+        "GITHUB_TOOLSETS": "repos,issues,pull_requests"
+      }
+    }
+  }
+}

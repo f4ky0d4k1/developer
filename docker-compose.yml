@@ -1,0 +1,99 @@
+services:
+
+  # ─── Agent runtime (Spring Boot + spring-agent-flow) ───
+  # MCP servers (yandex-tracker, grafana) запускаются через uvx внутри контейнера
+  # GitHub MCP запускается через docker run (нужен docker-in-docker или внешний socket)
+  developer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: developer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # API
+      - "8081:8081"   # Actuator/management (Prometheus scrape)
+    env_file:
+      - .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # для GitHub MCP (docker run)
+      - repo-data:/work                             # shared volume с OpenCode для worktrees
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opencode:
+        condition: service_started
+    networks:
+      - agent-net
+
+  # ─── OpenCode — sidecar для всех агентов (analyst, tester, developer, validator) ───
+  # MCP серверы (GitHub, Tracker, Grafana) запускаются внутри OpenCode через uvx
+  opencode:
+    build:
+      context: .
+      dockerfile: opencode.Dockerfile
+    image: opencode-with-mcp
+    container_name: opencode
+    working_dir: /work
+    command: [ "serve", "--port", "4096", "--hostname", "0.0.0.0" ]
+    restart: unless-stopped
+    volumes:
+      - repo-data:/work               # Git репозиторий проекта
+      - ./opencode-config/agents:/work/.opencode/agents  # агенты OpenCode
+      - ./opencode-config/opencode.jsonc:/root/.config/opencode/opencode.jsonc  # MCP конфиг
+      - /var/run/docker.sock:/var/run/docker.sock  # для GitHub MCP (docker run)
+    environment:
+      OPENCODE_EXPERIMENTAL: "1"
+      # DeepSeek V4 через кастомный провайдер
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      # MCP env vars
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_TOOLSETS: "repos,issues,pull_requests"
+      TRACKER_TOKEN: ${TRACKER_TOKEN}
+      TRACKER_CLOUD_ORG_ID: ${TRACKER_CLOUD_ORG_ID}
+      TRANSPORT: stdio
+      GRAFANA_URL: ${GRAFANA_URL}
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN}
+      UV_PYTHON: python3
+    networks:
+      - agent-net
+
+  # ─── PostgreSQL — checkpoint store для spring-agent-flow ───
+  postgres:
+    image: postgres:16
+    container_name: developer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agent_state
+      POSTGRES_USER: ${POSTGRES_USER:-developer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-developer}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-developer} -d agent_state" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent-net
+
+  # ─── Grafana Alloy — сбор метрик → Grafana Cloud ───
+  grafana-alloy:
+    build:
+      context: ./grafana-alloy
+      dockerfile: Dockerfile
+    container_name: grafana_alloy
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - developer
+    networks:
+      - agent-net
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  repo-data:

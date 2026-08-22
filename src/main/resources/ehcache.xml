@@ -1,0 +1,35 @@
+<!--suppress HttpUrlsUsage, DeprecatedClassUsage, XmlDeprecatedElement -->
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns="http://www.ehcache.org/v3"
+        xsi:schemaLocation="http://www.ehcache.org/v3 http://www.ehcache.org/schema/ehcache-core-3.10.xsd">
+
+    <!-- Cache для ActiveTaskRegistry — active tasks per chatId -->
+    <cache alias="activeTasks">
+        <expiry>
+            <ttl unit="minutes">5</ttl>
+        </expiry>
+        <resources>
+            <heap>100</heap>
+        </resources>
+    </cache>
+
+    <!-- Cache для task status -->
+    <cache alias="taskStatus">
+        <expiry>
+            <ttl unit="minutes">5</ttl>
+        </expiry>
+        <resources>
+            <heap>200</heap>
+        </resources>
+    </cache>
+
+    <!-- Cache для notify chatId per task -->
+    <cache alias="notifyChatId">
+        <expiry>
+            <ttl unit="minutes">10</ttl>
+        </expiry>
+        <resources>
+            <heap>200</heap>
+        </resources>
+    </cache>
+</config>
