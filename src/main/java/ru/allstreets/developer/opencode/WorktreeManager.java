@@ -22,24 +22,21 @@ public class WorktreeManager {
     private static final Logger log = LoggerFactory.getLogger(WorktreeManager.class);
 
     private final String baseWorkDir;
-    private final String repoUrl;
     private final String githubToken;
     @Getter
     private final int slotCount;
 
     public WorktreeManager(
             @Value("${opencode.work-dir:/work}") String baseWorkDir,
-            @Value("${opencode.repo-url:}") String repoUrl,
             @Value("${github.token:}") String githubToken,
             @Value("${opencode.slots:1}") int slotCount
     ) {
         this.baseWorkDir = baseWorkDir;
-        this.repoUrl = repoUrl;
         this.githubToken = githubToken;
         this.slotCount = slotCount;
     }
 
-    private String authenticatedUrl() {
+    private String authenticatedUrl(String repoUrl) {
         if (repoUrl == null || repoUrl.isBlank() || githubToken == null || githubToken.isBlank()) {
             return repoUrl;
         }
@@ -57,9 +54,9 @@ public class WorktreeManager {
      * Подготовить слот: clone репо на main, если ещё не существует.
      * Spring НЕ переключает ветки — агенты OpenCode сами создают ветки через git.
      */
-    public void prepareSlot(int slotIndex) {
+    public void prepareSlot(int slotIndex, String repoUrl) {
         Path slotDir = getSlotWorkDir(slotIndex);
-        log.info("Подготовка слота {} → {}", slotIndex, slotDir);
+        log.info("Подготовка слота {} → {} (repo: {})", slotIndex, slotDir, repoUrl);
 
         try {
             // Disable SSL verification for git inside Docker (TLS issues with Alpine/musl)
@@ -81,9 +78,9 @@ public class WorktreeManager {
             Files.createDirectories(slotDir);
 
             if (repoUrl != null && !repoUrl.isBlank()) {
-                runCommand(slotDir.getParent(), "git", "clone", authenticatedUrl(), slotDir.toString());
+                runCommand(slotDir.getParent(), "git", "clone", authenticatedUrl(repoUrl), slotDir.toString());
             } else {
-                log.warn("repo-url не задан, слот {} — пустая директория", slotIndex);
+                log.warn("repoUrl не задан, слот {} — пустая директория", slotIndex);
             }
 
             log.info("Слот {} подготовлен", slotIndex);

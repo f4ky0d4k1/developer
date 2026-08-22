@@ -13,6 +13,7 @@ public final class TaskState {
     public static final StateKey<String> TASK_ID = StateKey.of("taskId", String.class);
     public static final StateKey<String> TG_CHAT_ID = StateKey.of("tgChatId", String.class);
     public static final StateKey<String> TRACKER_ISSUE = StateKey.of("trackerIssue", String.class);
+    public static final StateKey<String> TARGET_REPO = StateKey.of("targetRepo", String.class);
 
     // ─── Результаты работы агентов ───
     public static final StateKey<String> SPEC = StateKey.of("spec", String.class);

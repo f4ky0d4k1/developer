@@ -48,6 +48,9 @@ public class PrCommentMonitor {
     // fallback chatId для уведомлений (берётся из whitelist — первый)
     private final long fallbackNotifyChatId;
 
+    // Репозиторий для мониторинга PR (настройка мониторинга, не задачи агента)
+    private final String monitorRepo;
+
     public PrCommentMonitor(
             GitHubService github,
             AgentGraphRunner graphRunner,
@@ -55,7 +58,8 @@ public class PrCommentMonitor {
             ChatMemoryService chatMemory,
             ActiveTaskRegistry taskRegistry,
             TaskRepository taskRepo,
-            @Value("${telegram.allowed-chat-ids:}") String allowedChatIds
+            @Value("${telegram.allowed-chat-ids:}") String allowedChatIds,
+            @Value("${github.monitor-repo:}") String monitorRepo
     ) {
         this.github = github;
         this.graphRunner = graphRunner;
@@ -63,6 +67,7 @@ public class PrCommentMonitor {
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
         this.taskRepo = taskRepo;
+        this.monitorRepo = monitorRepo;
 
         long chatId = 0;
         if (allowedChatIds != null && !allowedChatIds.isBlank()) {
@@ -100,7 +105,7 @@ public class PrCommentMonitor {
     @Scheduled(fixedDelay = 60000, initialDelay = 15000)
     public void monitorPullRequests() {
         try {
-            List<GitHubService.PrInfo> prs = github.listAgentPullRequests();
+            List<GitHubService.PrInfo> prs = github.listAgentPullRequests(monitorRepo);
             if (prs.isEmpty()) {
                 return;
             }
@@ -117,7 +122,7 @@ public class PrCommentMonitor {
 
     private void processPrComments(GitHubService.PrInfo pr) {
         try {
-            List<GitHubService.PrComment> comments = github.listPrComments(pr.number());
+            List<GitHubService.PrComment> comments = github.listPrComments(monitorRepo, pr.number());
             if (comments.isEmpty()) {
                 return;
             }
@@ -173,6 +178,7 @@ public class PrCommentMonitor {
                         .with(TaskState.TASK_ID, taskId)
                         .with(TaskState.TG_CHAT_ID, String.valueOf(resolveNotifyChatId(taskId, pr.headBranch())))
                         .with(TaskState.GIT_BRANCH, pr.headBranch())
+                        .with(TaskState.TARGET_REPO, monitorRepo)
                         .with(TaskState.REWORK_COUNT, 0);
 
                 AgentResult result = graphRunner.run(ctx);

@@ -74,6 +74,8 @@ public class PostValidationNode implements Agent {
         }
 
         long chatIdLong = Long.parseLong(chatId);
+        String targetRepo = ctx.get(TaskState.TARGET_REPO);
+        String repoUrl = toRepoUrl(targetRepo);
 
         if (isAnalysisOnly(agentRole, nextStep)) {
             return handleAnalysisOnly(spec);
@@ -122,7 +124,7 @@ public class PostValidationNode implements Agent {
 
         if (validation == null && needsTest) {
             telegram.sendMessage(chatIdLong, "🔬 Запускаю тесты...");
-            validation = runTests(branch, chatIdLong);
+            validation = runTests(branch, chatIdLong, repoUrl);
             if (validation == null) {
                 log.warn("Post-validation: не удалось распарсить отчёт тестов, считаем pass");
                 validation = new ValidationReport(
@@ -140,7 +142,7 @@ public class PostValidationNode implements Agent {
 
         String openCodeOutput;
         if (validation != null && validation.isPass()) {
-            openCodeOutput = createPullRequest(branch, spec, chatIdLong);
+            openCodeOutput = createPullRequest(branch, spec, chatIdLong, repoUrl);
             if (openCodeOutput == null) {
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("post_validation",
                         new RuntimeException("Ошибка OpenCode при создании PR")));
@@ -183,14 +185,14 @@ public class PostValidationNode implements Agent {
                 .build();
     }
 
-    private String createPullRequest(String branch, String spec, long chatIdLong) {
+    private String createPullRequest(String branch, String spec, long chatIdLong, String repoUrl) {
         int slot = sessionPool.acquire(600);
         if (slot < 0) {
             telegram.sendMessage(chatIdLong, "❌ Таймаут ожидания слота OpenCode");
             return null;
         }
         try {
-            sessionPool.prepareSlot(slot);
+            sessionPool.prepareSlot(slot, repoUrl);
             String workDir = sessionPool.getSlotWorkDir(slot);
             String ocPrompt = getPrPrompt(branch, spec);
 
@@ -383,7 +385,7 @@ public class PostValidationNode implements Agent {
     /**
      * Запуск тестов через OpenCode.
      */
-    private ValidationReport runTests(String branch, long chatIdLong) {
+    private ValidationReport runTests(String branch, long chatIdLong, String repoUrl) {
         int slot = sessionPool.acquire(600);
         if (slot < 0) {
             log.error("Post-validation: таймаут ожидания слота OpenCode для тестов");
@@ -392,7 +394,7 @@ public class PostValidationNode implements Agent {
         }
 
         try {
-            sessionPool.prepareSlot(slot);
+            sessionPool.prepareSlot(slot, repoUrl);
             String workDir = sessionPool.getSlotWorkDir(slot);
 
             String prompt = getTestPrompt(branch);
@@ -478,5 +480,11 @@ public class PostValidationNode implements Agent {
             log.error("Ошибка парсинга отчёта валидатора: {}", e.getMessage());
             return null;
         }
+    }
+
+    private static String toRepoUrl(String repo) {
+        if (repo == null || repo.isBlank()) return null;
+        if (repo.startsWith("https://")) return repo.endsWith(".git") ? repo : repo + ".git";
+        return "https://github.com/" + repo + ".git";
     }
 }

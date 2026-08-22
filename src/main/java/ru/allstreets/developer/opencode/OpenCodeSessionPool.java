@@ -86,8 +86,8 @@ public class OpenCodeSessionPool {
     /**
      * Подготовить слот: clone на main.
      */
-    public void prepareSlot(int slotIndex) {
-        worktreeManager.prepareSlot(slotIndex);
+    public void prepareSlot(int slotIndex, String repoUrl) {
+        worktreeManager.prepareSlot(slotIndex, repoUrl);
     }
 
     /**

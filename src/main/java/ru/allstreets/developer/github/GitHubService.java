@@ -23,9 +23,6 @@ public class GitHubService {
 
     private final RestClient api;
 
-    @Value("${github.repo:iamponamarev/allstreets-spring}")
-    private String repo;
-
     @Getter
     @Value("${skills.repo-url:}")
     private String skillsRepoUrl;
@@ -47,7 +44,7 @@ public class GitHubService {
      *
      * @return список PR (number, title, headBranch, htmlUrl)
      */
-    public List<PrInfo> listAgentPullRequests() {
+    public List<PrInfo> listAgentPullRequests(String repo) {
         log.debug("Получение открытых PR с меткой '{}' в {}", prLabel, repo);
 
         JsonNode prs = api.get()
@@ -103,10 +100,11 @@ public class GitHubService {
     /**
      * Получить комментарии к PR (issue comments + review comments).
      *
+     * @param repo     репозиторий в формате owner/name
      * @param prNumber номер PR
      * @return список комментариев
      */
-    public List<PrComment> listPrComments(int prNumber) {
+    public List<PrComment> listPrComments(String repo, int prNumber) {
         log.debug("Получение комментариев для PR #{} в {}", prNumber, repo);
 
         List<PrComment> result = new java.util.ArrayList<>();

@@ -50,6 +50,10 @@ public class TaskLauncher {
     }
 
     public void launch(String taskDescription, long chatId) {
+        launch(taskDescription, chatId, null);
+    }
+
+    public void launch(String taskDescription, long chatId, String targetRepo) {
         String taskId = UUID.randomUUID().toString();
         String title = generateTitle(taskDescription);
 
@@ -59,7 +63,7 @@ public class TaskLauncher {
         telegram.sendMessage(chatId, startMsg, taskId);
 
         try {
-            Future<?> future = executor.submit(() -> runTask(taskId, taskDescription, chatId, title));
+            Future<?> future = executor.submit(() -> runTask(taskId, taskDescription, chatId, title, targetRepo));
             runningTasks.put(taskId, future);
         } catch (java.util.concurrent.RejectedExecutionException e) {
             log.error("TaskLauncher: задача {} отклонена (backpressure): {}", taskId, e.getMessage());
@@ -138,12 +142,15 @@ public class TaskLauncher {
         }
     }
 
-    private void runTask(String taskId, String taskDescription, long chatId, String title) {
+    private void runTask(String taskId, String taskDescription, long chatId, String title, String targetRepo) {
         try {
             var ctx = AgentContext.of(taskDescription)
                     .with(TaskState.TASK_ID, taskId)
                     .with(TaskState.TG_CHAT_ID, String.valueOf(chatId))
                     .with(TaskState.REWORK_COUNT, 0);
+            if (targetRepo != null && !targetRepo.isBlank()) {
+                ctx = ctx.with(TaskState.TARGET_REPO, targetRepo);
+            }
 
             taskRegistry.register(chatId, taskId, taskDescription, title);
 

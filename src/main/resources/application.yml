@@ -57,7 +57,6 @@ opencode:
   timeout-seconds: 300
   model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
   slots: 2
-  repo-url: ${OPENCODE_REPO_URL:https://github.com/iamponamarev/allstreets-spring.git}
 
 # Telegram bot
 telegram:
@@ -96,10 +95,10 @@ skills:
 # GitHub REST API (для GitHubService — создание веток и PR)
 github:
   token: ${GITHUB_TOKEN}
-  repo: ${GITHUB_REPO:iamponamarev/allstreets-spring}
   base-branch: ${GITHUB_BASE_BRANCH:main}
   pr-label: ${GITHUB_PR_LABEL:agent-generated}
   bot-login: ${GITHUB_BOT_LOGIN}
+  monitor-repo: ${GITHUB_MONITOR_REPO:}  # репозиторий для мониторинга PR комментариев (owner/name)
   protected-branches: ${GITHUB_PROTECTED_BRANCHES:main}  # через запятую, ветки защищённые от записи LLM
 
 # Loki (Grafana Cloud)

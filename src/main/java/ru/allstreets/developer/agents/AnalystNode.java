@@ -68,8 +68,10 @@ public class AnalystNode implements Agent {
         }
 
         long chatIdLong = Long.parseLong(chatId);
+        String targetRepo = ctx.get(TaskState.TARGET_REPO);
+        String repoUrl = toRepoUrl(targetRepo);
 
-        log.info("Аналитик: начало работы над задачей");
+        log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
         telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу над задачей...");
 
         int slot = sessionPool.acquire(600);
@@ -80,7 +82,7 @@ public class AnalystNode implements Agent {
 
         String openCodeOutput;
         try {
-            sessionPool.prepareSlot(slot);
+            sessionPool.prepareSlot(slot, repoUrl);
             String workDir = sessionPool.getSlotWorkDir(slot);
 
             String prompt = buildAnalystPrompt(ctx, taskDescription);
@@ -153,7 +155,7 @@ public class AnalystNode implements Agent {
                     int slot2 = sessionPool.acquire(600);
                     if (slot2 >= 0) {
                         try {
-                            sessionPool.prepareSlot(slot2);
+                            sessionPool.prepareSlot(slot2, repoUrl);
                             String workDir = sessionPool.getSlotWorkDir(slot2);
                             var result2 = openCode.runAgent("analyst",
                                     "Пользователь уточнил: " + answer + "\n\n" + taskDescription, workDir);
@@ -321,5 +323,11 @@ public class AnalystNode implements Agent {
 
     private String truncate(String text, int maxLen) {
         return text.length() > maxLen ? text.substring(0, maxLen) + "..." : text;
+    }
+
+    private static String toRepoUrl(String repo) {
+        if (repo == null || repo.isBlank()) return null;
+        if (repo.startsWith("https://")) return repo.endsWith(".git") ? repo : repo + ".git";
+        return "https://github.com/" + repo + ".git";
     }
 }

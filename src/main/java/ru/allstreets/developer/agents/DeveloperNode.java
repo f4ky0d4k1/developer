@@ -41,6 +41,8 @@ public class DeveloperNode implements Agent {
         String spec = ctx.get(TaskState.SPEC);
         String branch = ctx.get(TaskState.GIT_BRANCH);
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
+        String targetRepo = ctx.get(TaskState.TARGET_REPO);
+        String repoUrl = toRepoUrl(targetRepo);
 
         if (chatId == null || chatId.isBlank()) {
             log.warn("Разработчик: нет chatId в контексте, пропуск (stale checkpoint)");
@@ -52,7 +54,7 @@ public class DeveloperNode implements Agent {
                     .build();
         }
 
-        log.info("Разработчик: начало работы, ветка {}", branch);
+        log.info("Разработчик: начало работы, ветка {}, repo {}", branch, targetRepo);
 
         telegram.sendMessage(Long.parseLong(chatId), "👨‍💻 Разработчик реализует задачу...");
 
@@ -62,7 +64,7 @@ public class DeveloperNode implements Agent {
         }
 
         try {
-            sessionPool.prepareSlot(slot);
+            sessionPool.prepareSlot(slot, repoUrl);
             String workDir = sessionPool.getSlotWorkDir(slot);
 
             String prompt = """
@@ -107,5 +109,11 @@ public class DeveloperNode implements Agent {
             sessionPool.cleanupSlot(slot);
             sessionPool.release(slot);
         }
+    }
+
+    private static String toRepoUrl(String repo) {
+        if (repo == null || repo.isBlank()) return null;
+        if (repo.startsWith("https://")) return repo.endsWith(".git") ? repo : repo + ".git";
+        return "https://github.com/" + repo + ".git";
     }
 }

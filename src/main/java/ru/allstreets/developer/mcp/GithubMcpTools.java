@@ -21,9 +21,6 @@ public class GithubMcpTools {
 
     private final RestClient api;
 
-    @Value("${github.repo:iamponamarev/allstreets-spring}")
-    private String defaultRepo;
-
     public GithubMcpTools(@Value("${github.token:}") String token) {
         this.api = RestClient.builder()
                 .baseUrl("https://api.github.com")
@@ -33,11 +30,12 @@ public class GithubMcpTools {
     }
 
     @Tool(description = "Get repository info: description, language, stars, forks, default branch, last update. " +
-            "repo format: owner/name (e.g. iamponamarev/allstreets-spring). If not sure, use the default project repo.")
+            "repo format: owner/name. If not sure, use the default project repo.")
     public String getRepoInfo(
-            @ToolParam(description = "Repository in format owner/name (e.g. iamponamarev/allstreets-spring)") String repo
+            @ToolParam(description = "Repository in format owner/name") String repo
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         log.info("MCP getRepoInfo: repo={}", target);
         try {
             JsonNode info = api.get()
@@ -84,6 +82,7 @@ public class GithubMcpTools {
             @ToolParam(description = "Directory path (use empty string or . for root)") String path
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         String cleanPath = (path == null || path.isBlank() || path.equals(".")) ? "" : path;
         log.info("MCP getRepoFiles: repo={}, branch={}, path={}", target, branch, cleanPath);
         try {
@@ -122,6 +121,7 @@ public class GithubMcpTools {
             @ToolParam(description = "File path (e.g. src/main/java/Main.java)") String path
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         log.info("MCP getRepoFile: repo={}, branch={}, path={}", target, branch, path);
         try {
             JsonNode file = api.get()
@@ -150,6 +150,7 @@ public class GithubMcpTools {
             @ToolParam(description = "Repository in format owner/name") String repo
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         log.info("MCP listPullRequests: repo={}", target);
         try {
             JsonNode prs = api.get()
@@ -183,6 +184,7 @@ public class GithubMcpTools {
             @ToolParam(description = "Repository in format owner/name") String repo
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         log.info("MCP listBranches: repo={}", target);
         try {
             JsonNode branches = api.get()
@@ -213,6 +215,7 @@ public class GithubMcpTools {
             @ToolParam(description = "Max commits to return (1-30)") int limit
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         int maxLimit = Math.clamp(limit, 1, 30);
         log.info("MCP getRecentCommits: repo={}, branch={}, limit={}", target, branch, maxLimit);
         try {
@@ -246,6 +249,7 @@ public class GithubMcpTools {
             @ToolParam(description = "Repository in format owner/name") String repo
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         log.info("MCP listIssues: repo={}", target);
         try {
             JsonNode issues = api.get()
@@ -289,6 +293,7 @@ public class GithubMcpTools {
             @ToolParam(description = "Branch name (e.g. main)") String branch
     ) {
         String target = normalizeRepo(repo);
+        if (target == null) return "Repository not specified. Provide repo in format owner/name.";
         log.info("MCP getReadme: repo={}, branch={}", target, branch);
         try {
             JsonNode readme = api.get()
@@ -313,9 +318,9 @@ public class GithubMcpTools {
     }
 
     private String normalizeRepo(String repo) {
-        if (repo == null || repo.isBlank()) return defaultRepo;
+        if (repo == null || repo.isBlank()) return null;
         String cleaned = repo.replace("https://github.com/", "").replace(".git", "");
-        if (!cleaned.contains("/")) return defaultRepo;
+        if (!cleaned.contains("/")) return null;
         return cleaned;
     }
 }
