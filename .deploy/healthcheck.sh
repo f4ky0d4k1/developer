@@ -19,9 +19,9 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
     exit 0
   fi
 
-  if ! docker compose -f docker-compose.prod.yml ps developer | grep -q "Up"; then
+  if ! docker compose -f docker-compose.yml -f docker-compose.prod.yml ps developer | grep -q "Up"; then
     echo "❌ Контейнер developer упал!"
-    docker compose -f docker-compose.prod.yml logs developer --tail 100
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml logs developer --tail 100
     exit 1
   fi
 
@@ -30,5 +30,5 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
 done
 
 echo "❌ Приложение не запустилось за $((MAX_ATTEMPTS * ATTEMPT_INTERVAL)) секунд"
-docker compose -f docker-compose.prod.yml logs developer --tail 200
+docker compose -f docker-compose.yml -f docker-compose.prod.yml logs developer --tail 200
 exit 1
