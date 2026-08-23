@@ -2,16 +2,16 @@
 # Запуск: docker compose -f docker-compose.yml -f .deploy/docker-compose.prod.yml up -d
 services:
   developer:
-    image: f4ky0d4k/developer:master
+    image: dockerhub.timeweb.cloud/f4ky0d4k/developer:master
     restart: always
 
   opencode:
-    image: f4ky0d4k/opencode-with-mcp:master
+    image: dockerhub.timeweb.cloud/f4ky0d4k/opencode-with-mcp:master
     restart: always
 
   postgres:
     restart: always
 
   grafana-alloy:
-    image: f4ky0d4k/grafana-alloy:master
+    image: dockerhub.timeweb.cloud/f4ky0d4k/grafana-alloy:master
     restart: always

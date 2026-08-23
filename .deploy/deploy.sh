@@ -16,18 +16,6 @@ fi
 
 cd "$WORK_DIR"
 
-echo "=== Настройка Docker Hub mirror (Timeweb) ==="
-if ! grep -q "dockerhub.timeweb.cloud" /etc/docker/daemon.json 2>/dev/null; then
-  if [ -f /etc/docker/daemon.json ]; then
-    cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
-  fi
-  echo '{"registry-mirrors": ["https://dockerhub.timeweb.cloud"]}' > /etc/docker/daemon.json
-  systemctl reload docker || systemctl restart docker
-  echo "✅ Docker Hub mirror настроен"
-else
-  echo "✅ Docker Hub mirror уже настроен"
-fi
-
 echo "=== Логин в Docker Hub ==="
 for i in 1 2 3; do
   if echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin; then
