@@ -108,11 +108,18 @@ public class TaskMcpTools {
         boolean running = taskLauncher.isRunning(fullTaskId);
         sb.append("is_running: ").append(running).append("\n");
 
+        // Zombie detection: DB says RUNNING but no live thread
+        if (!running && "RUNNING".equalsIgnoreCase(task.getStatus())) {
+            sb.append("⚠️ ZOMBIE: задача помечена RUNNING в БД, но процесс не активен. Вероятно зависла или упала.\n");
+        }
+
         // Live OpenCode progress
         TaskProgress progress = progressRegistry.get(fullTaskId);
         if (progress != null) {
             sb.append("\n--- Live OpenCode Progress ---\n");
             sb.append(progress.formatSummary());
+        } else if (running) {
+            sb.append("\n(no live progress data yet)\n");
         }
 
         // Checkpoint info — last node and history

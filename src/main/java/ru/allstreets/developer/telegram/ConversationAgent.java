@@ -12,6 +12,7 @@ import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.agents.StructuredOutputHelper;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
+import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +38,7 @@ public class ConversationAgent {
     private final ObjectMapper objectMapper;
     private final String systemPrompt;
     private final TaskRepository taskRepo;
+    private final TaskMcpTools taskMcpTools;
 
     public ConversationAgent(@Qualifier("fastChatClient") ChatClient fastChatClient,
                              @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
@@ -46,7 +48,8 @@ public class ConversationAgent {
                              StructuredOutputHelper structuredOutput,
                              ObjectMapper objectMapper,
                              ResourceLoader resourceLoader,
-                             TaskRepository taskRepo) {
+                             TaskRepository taskRepo,
+                             TaskMcpTools taskMcpTools) {
         this.fastChatClient = fastChatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.chatMemory = chatMemory;
@@ -56,6 +59,7 @@ public class ConversationAgent {
         this.objectMapper = objectMapper;
         this.systemPrompt = loadSystemPrompt(resourceLoader);
         this.taskRepo = taskRepo;
+        this.taskMcpTools = taskMcpTools;
     }
 
     private String loadSystemPrompt(ResourceLoader resourceLoader) {
@@ -94,6 +98,9 @@ public class ConversationAgent {
                 .reduce((a, b) -> a + "\n" + b)
                 .orElse("нет pending-вопросов");
 
+        // Pre-fetch: если пользователь упоминает taskId и спрашивает про детали — подтягиваем getTaskDetails
+        String taskDetailsPrefetch = prefetchTaskDetails(messageText);
+
         String contextPrompt = """
                 Chat ID: %d (используй для вызова tools)
                 
@@ -105,10 +112,12 @@ public class ConversationAgent {
                 
                 Pending-вопросы от агентов (ожидают ответа):
                 %s
-                
+                %s
                 Новое сообщение от пользователя %s:
                 %s
-                """.formatted(chatId, history, activeTasksStr, pendingStr, username, messageText);
+                """.formatted(chatId, history, activeTasksStr, pendingStr,
+                taskDetailsPrefetch != null ? taskDetailsPrefetch + "\n" : "",
+                username, messageText);
 
         log.info("ConversationAgent [fast]: chatId={}, history={} сообщений, pending={} вопросов",
                 chatId, chatMemory.getHistory(chatId).size(), pendingQuestions.size());
@@ -200,6 +209,36 @@ public class ConversationAgent {
                 result.taskId() != null ? result.taskId() : "",
                 result.text() != null ? result.text() : "",
                 result.description() != null ? result.description() : "");
+    }
+
+    private static final java.util.regex.Pattern TASK_ID_PATTERN =
+            java.util.regex.Pattern.compile("\\b([0-9a-fA-F]{8})\\b");
+    private static final java.util.regex.Pattern DETAILS_KEYWORDS =
+            java.util.regex.Pattern.compile("подробн|детал|статус|что по|как дела|что там|результат|прогресс", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Если пользователь упоминает taskId (8 hex chars) и спрашивает про детали/статус —
+     * pre-fetch getTaskDetails и вставляем в контекст, чтобы LLM не нужно было вызывать tool.
+     */
+    private String prefetchTaskDetails(String messageText) {
+        if (messageText == null || messageText.isBlank()) return null;
+
+        var idMatcher = TASK_ID_PATTERN.matcher(messageText);
+        if (!idMatcher.find()) return null;
+
+        if (!DETAILS_KEYWORDS.matcher(messageText).find()) return null;
+
+        String partialId = idMatcher.group(1);
+        log.info("ConversationAgent: pre-fetch getTaskDetails для taskId={}", partialId);
+        try {
+            String details = taskMcpTools.getTaskDetails(partialId);
+            if (details != null && !details.startsWith("Task not found")) {
+                return "Детали задачи " + partialId + " (pre-fetched):\n" + details;
+            }
+        } catch (Exception e) {
+            log.warn("ConversationAgent: pre-fetch getTaskDetails failed: {}", e.getMessage());
+        }
+        return null;
     }
 
     public enum Action {LAUNCH_TASK, HITL_ANSWER, ANSWER, STATUS, ERROR}
