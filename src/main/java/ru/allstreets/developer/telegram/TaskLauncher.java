@@ -284,17 +284,8 @@ public class TaskLauncher {
                 resultMsg = "❌ Не удалось перезапустить задачу " + taskId.substring(0, 8) + " — checkpoint повреждён.";
                 taskRegistry.markFailed(taskId);
             } else if (!result.hasError()) {
-                boolean analysisDone = taskRepo.findById(taskId)
-                        .map(ru.allstreets.developer.checkpoint.TaskEntity::isAnalysisDone)
-                        .orElse(false);
-                if (!analysisDone) {
-                    log.warn("TaskLauncher: задача {} помечена COMPLETED графом, но analysisDone=false — реальная неудача", taskId);
-                    resultMsg = "❌ Задача " + taskId.substring(0, 8) + " не завершена: аналитик не выполнил работу.";
-                    taskRegistry.markFailed(taskId);
-                } else {
-                    resultMsg = "✅ Задача " + taskId.substring(0, 8) + " перезапущена и завершена.";
-                    taskRegistry.markCompleted(taskId);
-                }
+                resultMsg = "✅ Задача " + taskId.substring(0, 8) + " перезапущена и завершена.";
+                taskRegistry.markCompleted(taskId);
             } else {
                 resultMsg = "❌ Задача " + taskId.substring(0, 8) + " снова упала: " + result.error();
                 taskRegistry.markFailed(taskId);

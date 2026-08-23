@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import ru.allstreets.developer.state.StateKeyRegistry;
 
 import java.util.List;
 import java.util.UUID;
@@ -42,18 +43,14 @@ public class CheckpointService {
      */
     public void saveCheckpoint(String runId, String nodeName, AgentContext ctx, String status) {
         try {
-            // Сериализуем state с type metadata для корректной десериализации
-            // StateBag не имеет entrySet(), конвертируем через Jackson в Map
-            java.util.Map<String, Object> stateMap = objectMapper.convertValue(ctx.state(),
-                    new com.fasterxml.jackson.core.type.TypeReference<>() {
-                    });
-
+            // Итерируем реальные StateKey из StateBag — имя ключа известно точно,
+            // тип при восстановлении берётся из StateKeyRegistry (см. restoreCheckpoint),
+            // поэтому рантайм-класс значения здесь не нужен.
             var entries = new java.util.ArrayList<java.util.Map<String, Object>>();
-            for (var entry : stateMap.entrySet()) {
+            for (StateKey<?> key : ctx.state().keys()) {
                 var wrapped = new java.util.LinkedHashMap<String, Object>();
-                wrapped.put("key", entry.getKey());
-                wrapped.put("value", entry.getValue());
-                wrapped.put("type", entry.getValue() != null ? entry.getValue().getClass().getName() : "java.lang.Object");
+                wrapped.put("key", key.name());
+                wrapped.put("value", ctx.state().get(key));
                 entries.add(wrapped);
             }
             String stateJson = objectMapper.writeValueAsString(entries);
@@ -107,16 +104,24 @@ public class CheckpointService {
                     });
 
             StateBag stateBag = StateBag.empty();
+            int skipped = 0;
             for (var entry : entries) {
-                String key = (String) entry.get("key");
-                String typeName = (String) entry.get("type");
+                String name = (String) entry.get("key");
                 Object rawValue = entry.get("value");
+                if (rawValue == null) continue;
 
-                Object typedValue = convertValue(rawValue, typeName);
-                Class<?> keyClass = resolveTypeClass(typeName, typedValue);
-                stateBag = putTyped(stateBag, key, keyClass, typedValue);
+                StateKey<?> key = StateKeyRegistry.byName(name);
+                if (key == null) {
+                    log.warn("Checkpoint restore: неизвестный ключ '{}' (устарел/переименован) для runId={} — пропуск", name, runId);
+                    skipped++;
+                    continue;
+                }
+
+                var javaType = objectMapper.getTypeFactory().constructType(StateKeyRegistry.genericType(name));
+                Object typedValue = objectMapper.convertValue(rawValue, javaType);
+                stateBag = putTyped(stateBag, key, typedValue);
             }
-            log.debug("Checkpoint восстановлен: runId={}, {} ключей в state", runId, entries.size());
+            log.debug("Checkpoint восстановлен: runId={}, {} ключей в state ({} пропущено)", runId, entries.size(), skipped);
             return AgentContext.empty().withState(stateBag);
 
         } catch (Exception e) {
@@ -126,54 +131,12 @@ public class CheckpointService {
     }
 
     /**
-     * Конвертация значения в правильный тип на основе type metadata.
-     * Jackson десериализует числа как Integer/Long/Double — нужно привести к исходному типу.
-     */
-    private Object convertValue(Object rawValue, String typeName) {
-        if (rawValue == null || typeName == null) return rawValue;
-
-        try {
-            Class<?> targetClass = Class.forName(typeName);
-            return switch (rawValue) {
-                case Number n when targetClass == Integer.class -> n.intValue();
-                case Number n when targetClass == Long.class -> n.longValue();
-                case Number n when targetClass == Double.class -> n.doubleValue();
-                case Number n when targetClass == Float.class -> n.floatValue();
-                case Boolean b when targetClass == Boolean.class -> b;
-                case String s when targetClass == String.class -> s;
-                default ->
-                    // Для сложных объектов — конвертируем через ObjectMapper
-                        objectMapper.convertValue(rawValue, targetClass);
-            };
-        } catch (ClassNotFoundException e) {
-            log.warn("Checkpoint restore: тип {} не найден, значение как есть", typeName);
-            return rawValue;
-        }
-    }
-
-    /**
-     * Резолв Class из typeName для создания StateKey с правильным типом.
-     * Если класс не найден — fallback на runtime-класс значения.
-     */
-    private Class<?> resolveTypeClass(String typeName, Object typedValue) {
-        if (typeName != null) {
-            try {
-                return Class.forName(typeName);
-            } catch (ClassNotFoundException e) {
-                log.warn("Checkpoint restore: тип {} не найден, fallback на runtime-класс", typeName);
-            }
-        }
-        return typedValue != null ? typedValue.getClass() : Object.class;
-    }
-
-    /**
-     * Создание StateKey с правильным типом и put в StateBag.
-     * Инкапсулирует raw-type операцию — компилятор не может вывести T из Class<?>.
+     * Put в StateBag с правильным типом из {@link StateKeyRegistry}.
+     * Инкапсулирует raw-type операцию — компилятор не может вывести T из StateKey<?>.
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private StateBag putTyped(StateBag stateBag, String key, Class<?> typeClass, Object value) {
-        StateKey stateKey = StateKey.of(key, (Class) typeClass);
-        return stateBag.put(stateKey, value);
+    private StateBag putTyped(StateBag stateBag, StateKey key, Object value) {
+        return stateBag.put(key, value);
     }
 
     /**

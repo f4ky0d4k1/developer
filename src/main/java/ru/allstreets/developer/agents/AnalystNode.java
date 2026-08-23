@@ -61,14 +61,9 @@ public class AnalystNode implements Agent {
         String taskId = ctx.get(TaskState.TASK_ID);
 
         if (chatId == null || chatId.isBlank()) {
-            log.warn("Аналитик: нет chatId в контексте, пропуск (возможно stale checkpoint)");
-            return AgentResult.builder()
-                    .text("Skipped: no chat context")
-                    .stateUpdates(java.util.Map.of(
-                            TaskState.AGENT_ROLE, "analyst",
-                            TaskState.NEXT_STEP, "done"))
-                    .completed(true)
-                    .build();
+            log.error("Аналитик: нет chatId в контексте (taskId={}) — обязательное поле отсутствует, отказ", taskId);
+            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
+                    new IllegalStateException("Missing required TG_CHAT_ID in AgentContext")));
         }
 
         long chatIdLong = Long.parseLong(chatId);
@@ -165,7 +160,6 @@ public class AnalystNode implements Agent {
                 break;
             }
 
-            //noinspection NonStrictComparisonCanBeEquality
             if (i >= maxClarifications) {
                 log.warn("Аналитик: достигнут лимит HITL-уточнений ({}), выходим", maxClarifications);
                 break;

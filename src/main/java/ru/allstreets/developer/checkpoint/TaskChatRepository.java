@@ -8,7 +8,7 @@ import java.util.List;
 @Repository
 public interface TaskChatRepository extends JpaRepository<TaskChatEntity, TaskChatId> {
 
-    List<TaskChatEntity> findByTaskId(String taskId);
+    List<TaskChatEntity> findByChatId(Long chatId);
 
     void deleteByTaskId(String taskId);
 }
