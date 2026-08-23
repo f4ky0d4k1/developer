@@ -3,10 +3,13 @@ package ru.allstreets.developer.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
+import ru.allstreets.developer.mcp.GithubMcpTools;
+import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -110,15 +113,12 @@ public class McpToolConfig {
      * Системный промпт: prompts/conversation-fast.md.
      */
     @Bean("fastChatClient")
-    public ChatClient fastChatClient(
-            @org.springframework.beans.factory.annotation.Value("${fast-model.model:deepseek-v4-flash}") String fastModel,
-            @org.springframework.beans.factory.annotation.Value("${fast-model.api-key:}") String apiKey,
-            @org.springframework.beans.factory.annotation.Value("${fast-model.base-url:https://api.deepseek.com}") String baseUrl,
-            ru.allstreets.developer.mcp.TelegramMcpTools telegramTools,
-            ru.allstreets.developer.mcp.GithubMcpTools githubTools,
-            ru.allstreets.developer.mcp.TaskMcpTools taskTools
-    ) {
-        log.info("Fast ChatClient: model={}, baseUrl={}, tools=telegram+github+task", fastModel, baseUrl);
+    public ChatClient fastChatClient(@Value("${fast-model.model:deepseek-v4-flash}") String fastModel,
+                                     @Value("${fast-model.api-key:}") String apiKey,
+                                     @Value("${fast-model.base-url:https://api.deepseek.com}") String baseUrl,
+                                     GithubMcpTools githubTools,
+                                     TaskMcpTools taskTools) {
+        log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task (no sendMessage)", fastModel, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -136,7 +136,7 @@ public class McpToolConfig {
         );
         return ChatClient.builder(chatModel)
                 .defaultSystem(loadPrompt("prompts/conversation-fast.md"))
-                .defaultTools(telegramTools, githubTools, taskTools)
+                .defaultTools(githubTools, taskTools)
                 .build();
     }
 

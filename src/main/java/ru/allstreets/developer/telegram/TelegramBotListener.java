@@ -266,8 +266,11 @@ public class TelegramBotListener {
                 switch (decision.action()) {
                     case LAUNCH_TASK -> {
                         if (isTriggerUser(username)) {
-                            String desc = decision.description() != null && !decision.description().isBlank()
-                                    ? decision.description() : text;
+                            String desc = hasText(decision.description()) ? decision.description() : text;
+
+                            if (hasText(decision.text())) {
+                                telegram.sendMessage(chat.id(), decision.text());
+                            }
 
                             // Если есть running задача в чате — interrupt + reroute
                             var activeTasks = taskRegistry.getActiveTasks(chat.id());
@@ -296,8 +299,8 @@ public class TelegramBotListener {
                     case STATUS -> telegram.sendMessage(chat.id(), formatActiveTasks(chat.id()));
                     case ANSWER -> {
                         log.trace("ANSWER: decision.text()='{}' isBlank={}",
-                                decision.text(), decision.text() == null || decision.text().isBlank());
-                        if (decision.text() != null && !decision.text().isBlank()) {
+                                decision.text(), !hasText(decision.text()));
+                        if (hasText(decision.text())) {
                             log.debug("ANSWER: отправка ответа в ТГ chatId={}", chat.id());
                             telegram.sendMessage(chat.id(), decision.text());
                             log.debug("ANSWER: ответ записан в память chatId={}", chat.id());
@@ -314,5 +317,9 @@ public class TelegramBotListener {
                 log.error("TG poll: ошибка обработки сообщения: {}", e.getMessage(), e);
             }
         }
+    }
+
+    private static boolean hasText(String s) {
+        return s != null && !s.isBlank();
     }
 }

@@ -14,8 +14,6 @@ import ru.allstreets.developer.telegram.TelegramGateway;
 
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * MCP tools для Telegram — доступны OpenCode агентам через MCP server.
@@ -36,10 +34,6 @@ public class TelegramMcpTools {
             .ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
 
-    private record LastMessage(String text, long timestamp) {}
-    private final Map<Long, LastMessage> lastSentPerChat = new ConcurrentHashMap<>();
-    private static final long DEDUP_WINDOW_MS = 5000;
-
     public TelegramMcpTools(ChatMemoryService chatMemory,
                             ChatMessageRepository messageRepo,
                             TelegramGateway telegram,
@@ -53,10 +47,8 @@ public class TelegramMcpTools {
     }
 
     @Tool(description = "Get recent chat history for a Telegram chat. Returns last N messages with role (user/bot), text, timestamp, and optional taskId. Use this to understand conversation context, find previous questions and answers.")
-    public String getChatHistory(
-            @ToolParam(description = "Telegram chat ID (negative for groups, e.g. -1001506621216)") long chatId,
-            @ToolParam(description = "Number of recent messages to return (default 30, max 100)") Integer limit
-    ) {
+    public String getChatHistory(@ToolParam(description = "Telegram chat ID (negative for groups, e.g. -1001506621216)") long chatId,
+                                 @ToolParam(description = "Number of recent messages to return (default 30, max 100)") Integer limit) {
         int n = limit != null ? Math.min(limit, 100) : 30;
         log.info("MCP getChatHistory: chatId={}, limit={}", chatId, n);
 
@@ -78,31 +70,24 @@ public class TelegramMcpTools {
         return sb.toString();
     }
 
-    @Tool(description = "Send a message to a Telegram chat. The message will be visible to the user and recorded in chat history. Use this to send your final answer to the user. Do NOT send JSON action responses like {\"action\":\"ANSWER\"} — those are system-internal.")
-    public String sendMessage(
-            @ToolParam(description = "Telegram chat ID (negative for groups)") long chatId,
-            @ToolParam(description = "Message text to send (Markdown supported)") String text
-    ) {
+    @Tool(description = "Send a message to a Telegram chat. The message will be visible to the user and recorded in chat history. Use this to send progress updates or final results to the user.")
+    public String sendMessage(@ToolParam(description = "Telegram chat ID (negative for groups)") long chatId,
+                              @ToolParam(description = "Message text to send (Markdown supported)") String text) {
         log.info("MCP sendMessage: chatId={}, textLen={}", chatId, text.length());
 
-        // Guard 1: reject JSON action responses (system-internal, not for user)
+        if (text.isBlank()) {
+            log.warn("MCP sendMessage: rejected empty text for chatId={}", chatId);
+            return "Rejected: empty message text.";
+        }
+
         String trimmed = text.trim();
         if (trimmed.startsWith("{\"action\"") || trimmed.startsWith("{ \"action\"")) {
             log.warn("MCP sendMessage: rejected JSON action response for chatId={}", chatId);
             return "Rejected: JSON action responses are not allowed as message text.";
         }
 
-        // Guard 2: dedup — reject identical message within 5 seconds
-        long now = System.currentTimeMillis();
-        LastMessage last = lastSentPerChat.get(chatId);
-        if (last != null && text.equals(last.text()) && (now - last.timestamp()) < DEDUP_WINDOW_MS) {
-            log.warn("MCP sendMessage: rejected duplicate for chatId={} ({}ms ago)", chatId, now - last.timestamp());
-            return "Rejected: duplicate message within 5 seconds.";
-        }
-
         try {
             telegram.sendMessage(chatId, text);
-            lastSentPerChat.put(chatId, new LastMessage(text, now));
             return "Message sent successfully to chat " + chatId;
         } catch (Exception e) {
             return "Failed to send message: " + e.getMessage();
@@ -179,10 +164,8 @@ public class TelegramMcpTools {
     }
 
     @Tool(description = "Get the last N bot messages in a chat. Useful to see what the bot/agents have already answered, to avoid repeating or to continue a conversation.")
-    public String getLastBotMessages(
-            @ToolParam(description = "Telegram chat ID") long chatId,
-            @ToolParam(description = "Number of bot messages to return (default 5, max 20)") Integer limit
-    ) {
+    public String getLastBotMessages(@ToolParam(description = "Telegram chat ID") long chatId,
+                                     @ToolParam(description = "Number of bot messages to return (default 5, max 20)") Integer limit) {
         int n = limit != null ? Math.min(limit, 20) : 5;
         log.info("MCP getLastBotMessages: chatId={}, limit={}", chatId, n);
 
@@ -214,10 +197,8 @@ public class TelegramMcpTools {
     }
 
     @Tool(description = "Get the last N user messages in a chat. Useful to see what users have been asking about recently.")
-    public String getLastUserMessages(
-            @ToolParam(description = "Telegram chat ID") long chatId,
-            @ToolParam(description = "Number of user messages to return (default 5, max 20)") Integer limit
-    ) {
+    public String getLastUserMessages(@ToolParam(description = "Telegram chat ID") long chatId,
+                                      @ToolParam(description = "Number of user messages to return (default 5, max 20)") Integer limit) {
         int n = limit != null ? Math.min(limit, 20) : 5;
         log.info("MCP getLastUserMessages: chatId={}, limit={}", chatId, n);
 
@@ -249,9 +230,7 @@ public class TelegramMcpTools {
     }
 
     @Tool(description = "Get full context of a chat: recent history, active tasks, and pending questions. This is a convenience tool that combines multiple queries. Use this when you need full context about a chat.")
-    public String getChatContext(
-            @ToolParam(description = "Telegram chat ID") long chatId
-    ) {
+    public String getChatContext(@ToolParam(description = "Telegram chat ID") long chatId) {
         log.info("MCP getChatContext: chatId={}", chatId);
         StringBuilder sb = new StringBuilder();
 
