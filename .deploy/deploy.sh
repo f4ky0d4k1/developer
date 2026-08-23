@@ -16,22 +16,22 @@ fi
 
 cd "$WORK_DIR"
 
-echo "=== Логин в Docker Hub ==="
+echo "=== Логин в Docker Hub (через прокси Timeweb) ==="
 for i in 1 2 3; do
-  if echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin; then
+  if echo "${DOCKER_PASSWORD}" | docker login dockerhub.timeweb.cloud -u "${DOCKER_USERNAME}" --password-stdin; then
     break
   fi
   echo "⚠️ Попытка логина $i не удалась, retry через 10s..."
   sleep 10
   if [ $i -eq 3 ]; then
-    echo "❌ Не удалось залогиниться в Docker Hub после 3 попыток"
+    echo "❌ Не удалось залогиниться после 3 попыток"
     exit 1
   fi
 done
 
 echo "=== Pull и запуск контейнеров ==="
 for i in 1 2 3; do
-  if docker compose -f docker-compose.yml -f docker-compose.prod.yml pull; then
+  if docker compose --verbose -f docker-compose.yml -f docker-compose.prod.yml pull; then
     break
   fi
   echo "⚠️ Попытка pull $i не удалась, retry через 15s..."
@@ -41,7 +41,7 @@ for i in 1 2 3; do
     exit 1
   fi
 done
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose --verbose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 echo "=== Проверка запуска ==="
 chmod +x healthcheck.sh
