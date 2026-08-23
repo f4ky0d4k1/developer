@@ -3,6 +3,7 @@ package ru.allstreets.developer.opencode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 
@@ -27,18 +28,37 @@ public class TaskProgressRegistry {
         this.taskRepo = taskRepo;
     }
 
+    @Transactional
     public void start(String taskId, String agentName) {
         TaskEntity task = taskRepo.findById(taskId).orElse(null);
         if (task == null) {
             log.warn("TaskProgressRegistry: task not found taskId={}, прогресс не сохранён", taskId);
             return;
         }
-        repo.save(new TaskProgressEntity(task, agentName));
+        TaskProgressEntity existing = repo.findByIdForUpdate(taskId).orElse(null);
+        if (existing != null) {
+            existing.setAgentName(agentName);
+            existing.setCurrentTool(null);
+            existing.setToolCalls("");
+            existing.setRecentEvents("");
+            existing.setTotalTokens(0);
+            existing.setCost(0);
+            existing.setStepCount(0);
+            existing.setLastText(null);
+            existing.setError(null);
+            existing.setStartTimeMs(System.currentTimeMillis());
+            existing.setLastUpdateMs(System.currentTimeMillis());
+            existing.setFinished(false);
+            repo.save(existing);
+        } else {
+            repo.save(new TaskProgressEntity(task, agentName));
+        }
         log.debug("TaskProgressRegistry: start taskId={}, agent={}", taskId, agentName);
     }
 
+    @Transactional
     public void recordToolCall(String taskId, String toolName) {
-        repo.findById(taskId).ifPresent(e -> {
+        repo.findByIdForUpdate(taskId).ifPresent(e -> {
             e.setCurrentTool(toolName);
             e.setToolCalls(appendCsv(e.getToolCalls(), toolName));
             e.setLastUpdateMs(System.currentTimeMillis());
@@ -47,8 +67,9 @@ public class TaskProgressRegistry {
         });
     }
 
+    @Transactional
     public void recordStepFinish(String taskId, long tokens, double cost, String reason) {
-        repo.findById(taskId).ifPresent(e -> {
+        repo.findByIdForUpdate(taskId).ifPresent(e -> {
             e.setTotalTokens(e.getTotalTokens() + tokens);
             e.setCost(e.getCost() + cost);
             e.setStepCount(e.getStepCount() + 1);
@@ -59,8 +80,9 @@ public class TaskProgressRegistry {
         });
     }
 
+    @Transactional
     public void recordText(String taskId, String text) {
-        repo.findById(taskId).ifPresent(e -> {
+        repo.findByIdForUpdate(taskId).ifPresent(e -> {
             e.setLastText(text);
             e.setLastUpdateMs(System.currentTimeMillis());
             e.setRecentEvents(appendEvent(e.getRecentEvents(),
@@ -69,8 +91,9 @@ public class TaskProgressRegistry {
         });
     }
 
+    @Transactional
     public void recordError(String taskId, String error) {
-        repo.findById(taskId).ifPresent(e -> {
+        repo.findByIdForUpdate(taskId).ifPresent(e -> {
             e.setError(error);
             e.setLastUpdateMs(System.currentTimeMillis());
             e.setRecentEvents(appendEvent(e.getRecentEvents(), "error: " + error));
@@ -78,8 +101,9 @@ public class TaskProgressRegistry {
         });
     }
 
+    @Transactional
     public void markFinished(String taskId) {
-        repo.findById(taskId).ifPresent(e -> {
+        repo.findByIdForUpdate(taskId).ifPresent(e -> {
             e.setFinished(true);
             e.setLastUpdateMs(System.currentTimeMillis());
             repo.save(e);
