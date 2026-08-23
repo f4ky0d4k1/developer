@@ -7,6 +7,8 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.*;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
+import ru.allstreets.developer.opencode.TaskProgress;
+import ru.allstreets.developer.opencode.TaskProgressRegistry;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
 import ru.allstreets.developer.telegram.TaskLauncher;
 
@@ -29,6 +31,7 @@ public class TaskMcpTools {
     private final TaskLockService taskLockService;
     private final TaskLauncher taskLauncher;
     private final HumanInputRegistry humanInputRegistry;
+    private final TaskProgressRegistry progressRegistry;
 
     public TaskMcpTools(
             ActiveTaskRegistry taskRegistry,
@@ -37,7 +40,8 @@ public class TaskMcpTools {
             CheckpointService checkpointService,
             TaskLockService taskLockService,
             TaskLauncher taskLauncher,
-            HumanInputRegistry humanInputRegistry
+            HumanInputRegistry humanInputRegistry,
+            TaskProgressRegistry progressRegistry
     ) {
         this.taskRegistry = taskRegistry;
         this.taskRepo = taskRepo;
@@ -46,11 +50,13 @@ public class TaskMcpTools {
         this.taskLockService = taskLockService;
         this.taskLauncher = taskLauncher;
         this.humanInputRegistry = humanInputRegistry;
+        this.progressRegistry = progressRegistry;
     }
 
     @Tool(description = "Get detailed status of a task: description, current agent node, git branch, PR number, " +
-            "checkpoint history, running status. Use this when user asks 'что по задаче' or wants details on a specific task. " +
-            "taskId can be partial (first 8 chars are enough).")
+            "checkpoint history, running status, and LIVE OpenCode progress (steps completed, tokens used, cost, " +
+            "tool calls, current tool, recent events, last text output). Use this when user asks 'что по задаче' " +
+            "or wants details on a specific task. taskId can be partial (first 8 chars are enough).")
     public String getTaskDetails(
             @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
     ) {
@@ -102,6 +108,13 @@ public class TaskMcpTools {
         boolean running = taskLauncher.isRunning(fullTaskId);
         sb.append("is_running: ").append(running).append("\n");
 
+        // Live OpenCode progress
+        TaskProgress progress = progressRegistry.get(fullTaskId);
+        if (progress != null) {
+            sb.append("\n--- Live OpenCode Progress ---\n");
+            sb.append(progress.formatSummary());
+        }
+
         // Checkpoint info — last node and history
         List<CheckpointEntity> checkpoints = checkpointRepo.findByRunIdOrderByCreatedAtAsc(fullTaskId);
         if (!checkpoints.isEmpty()) {
@@ -137,7 +150,7 @@ public class TaskMcpTools {
     }
 
     @Tool(description = "Cancel and delete a task. Stops running agents, cleans up checkpoints, " +
-            "removes task from registry and DB. Use when user says 'отмени задачу' or 'удали задачу'. " +
+            "marks task as deleted in DB. Use when user says 'отмени задачу' or 'удали задачу'. " +
             "taskId can be partial (first 8 chars are enough). Returns confirmation message.")
     public String cancelTask(
             @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
@@ -188,15 +201,18 @@ public class TaskMcpTools {
     private String resolveTaskId(String partial) {
         if (partial == null || partial.isBlank()) return null;
 
-        // Try exact match
-        if (taskRepo.existsById(partial)) {
+        // Try exact match (skip deleted)
+        TaskEntity exact = taskRepo.findById(partial).orElse(null);
+        if (exact != null && !exact.isDeleted()) {
             return partial;
         }
 
-        // Try partial match — find task starting with the partial ID
+        // Try partial match — find non-deleted task starting with the partial ID
         List<TaskEntity> matches = taskRepo.findByTaskIdStartingWith(partial);
-        if (!matches.isEmpty()) {
-            return matches.getFirst().getTaskId();
+        for (TaskEntity t : matches) {
+            if (!t.isDeleted()) {
+                return t.getTaskId();
+            }
         }
 
         return null;
@@ -252,7 +268,9 @@ public class TaskMcpTools {
     ) {
         log.info("MCP getLastTaskForChat: chatId={}", chatId);
 
-        var tasks = taskRepo.findByNotifyChatId(chatId);
+        var tasks = taskRepo.findByNotifyChatId(chatId).stream()
+                .filter(t -> !t.isDeleted())
+                .toList();
         if (tasks.isEmpty()) {
             return "No tasks found for chat " + chatId;
         }

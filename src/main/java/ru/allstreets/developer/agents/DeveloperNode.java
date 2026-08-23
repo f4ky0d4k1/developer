@@ -41,6 +41,7 @@ public class DeveloperNode implements Agent {
         String spec = ctx.get(TaskState.SPEC);
         String branch = ctx.get(TaskState.GIT_BRANCH);
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
+        String taskId = ctx.get(TaskState.TASK_ID);
         String targetRepo = ctx.get(TaskState.TARGET_REPO);
         String trackerIssue = ctx.get(TaskState.TRACKER_ISSUE);
         String repoUrl = toRepoUrl(targetRepo);
@@ -84,7 +85,7 @@ public class DeveloperNode implements Agent {
                     После реализации — закоммить и убедись что проект компилируется.
                     """.formatted(spec, branchName);
 
-            var result = openCode.runAgent("developer", prompt, workDir);
+            var result = openCode.runAgent("developer", prompt, workDir, taskId);
 
             if (result.error() != null && !result.error().isEmpty()) {
                 log.error("Разработчик: ошибка OpenCode: {}", result.error());
@@ -96,7 +97,6 @@ public class DeveloperNode implements Agent {
             telegram.sendMessage(Long.parseLong(chatId),
                     "✅ Реализация завершена. Коммит: " + result.commitHash());
 
-            String taskId = ctx.get(TaskState.TASK_ID);
             taskRepo.findById(taskId).ifPresent(task -> {
                 task.setDevelopmentDone(true);
                 taskRepo.save(task);

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -21,17 +22,25 @@ public class OpenCodeClient {
 
     private final String model;
     private final int timeoutSeconds;
+    private final TaskProgressRegistry progressRegistry;
 
+    @Autowired
     public OpenCodeClient(
             @Value("${opencode.model:deepseek/deepseek-v4-pro}") String model,
-            @Value("${opencode.timeout-seconds:300}") int timeoutSeconds
+            @Value("${opencode.timeout-seconds:300}") int timeoutSeconds,
+            TaskProgressRegistry progressRegistry
     ) {
         this.model = model;
         this.timeoutSeconds = timeoutSeconds;
+        this.progressRegistry = progressRegistry;
     }
 
-    public OpenCodeResult runAgent(String agentName, String prompt, String cwd) {
-        log.info("Запуск OpenCode агента: {} в {} (промпт: {} символов)", agentName, cwd, prompt.length());
+    public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId) {
+        log.info("Запуск OpenCode агента: {} в {} (промпт: {} символов, taskId={})", agentName, cwd, prompt.length(), taskId);
+
+        if (taskId != null) {
+            progressRegistry.start(taskId, agentName);
+        }
 
         // Проверка окружения
         try {
@@ -66,10 +75,10 @@ public class OpenCodeClient {
         } catch (Exception e) {
             throw new RuntimeException("Ошибка запуска OpenCode агента " + agentName + ": " + e.getMessage(), e);
         }
-        return runAgentProcess(agentName, process);
+        return runAgentProcess(agentName, process, taskId);
     }
 
-    private OpenCodeResult runAgentProcess(String agentName, Process process) {
+    private OpenCodeResult runAgentProcess(String agentName, Process process, String taskId) {
         StringBuilder agentText = new StringBuilder();
         List<String> toolCalls = new ArrayList<>();
         String[] sessionIdRef = {null};
@@ -105,6 +114,9 @@ public class OpenCodeClient {
                                 agentText.append(text);
                                 log.info("[OpenCode:{}] text: {}", agentName,
                                         text.length() > 200 ? text.substring(0, 200) + "..." : text);
+                                if (taskId != null) {
+                                    progressRegistry.recordText(taskId, text);
+                                }
                             }
                             case "tool_use" -> {
                                 String toolName = part.path("tool").asText("unknown");
@@ -112,11 +124,17 @@ public class OpenCodeClient {
                                 log.info("[OpenCode:{}] tool_use: {} input: {}", agentName, toolName,
                                         input.length() > 300 ? input.substring(0, 300) + "..." : input);
                                 toolCalls.add(toolName);
+                                if (taskId != null) {
+                                    progressRegistry.recordToolCall(taskId, toolName);
+                                }
                             }
                             case "tool_start" -> {
                                 String toolName = part.path("tool").asText("unknown");
                                 log.info("[OpenCode:{}] tool_start: {}", agentName, toolName);
                                 toolCalls.add(toolName);
+                                if (taskId != null) {
+                                    progressRegistry.recordToolCall(taskId, toolName);
+                                }
                             }
                             case "tool_finish" -> {
                                 String toolName = part.path("tool").asText("unknown");
@@ -126,17 +144,26 @@ public class OpenCodeClient {
                             }
                             case "step_finish" -> {
                                 JsonNode tokens = part.path("tokens");
+                                long stepTokens = 0;
                                 if (!tokens.isMissingNode()) {
-                                    totalTokensRef[0] += tokens.path("total").asLong(0);
+                                    stepTokens = tokens.path("total").asLong(0);
+                                    totalTokensRef[0] += stepTokens;
                                 }
-                                costRef[0] += part.path("cost").asDouble(0);
+                                double stepCost = part.path("cost").asDouble(0);
+                                costRef[0] += stepCost;
                                 String reason = part.path("reason").asText("");
                                 log.info("[OpenCode:{}] step_finish: reason={}, tokens={}, cost={}",
                                         agentName, reason, totalTokensRef[0], String.format("%.4f", costRef[0]));
+                                if (taskId != null) {
+                                    progressRegistry.recordStepFinish(taskId, stepTokens, stepCost, reason);
+                                }
                             }
                             case "error" -> {
                                 errorRef[0] = part.path("message").asText("Unknown error");
                                 log.error("[OpenCode:{}] error: {}", agentName, errorRef[0]);
+                                if (taskId != null) {
+                                    progressRegistry.recordError(taskId, errorRef[0]);
+                                }
                             }
                             default -> log.debug("[OpenCode:{}] event: {}", agentName, type);
                         }
@@ -178,6 +205,10 @@ public class OpenCodeClient {
         String error = errorRef[0];
         long totalTokens = totalTokensRef[0];
         double cost = costRef[0];
+
+        if (taskId != null) {
+            progressRegistry.markFinished(taskId);
+        }
 
         int exitCode = process.exitValue();
         log.info("Агент {} завершил работу. exit={}, session={}, tokens={}, cost={}, toolCalls={}, текст={} символов",

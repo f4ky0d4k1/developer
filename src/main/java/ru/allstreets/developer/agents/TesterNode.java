@@ -41,6 +41,7 @@ public class TesterNode implements Agent {
         String spec = ctx.get(TaskState.SPEC);
         String branch = ctx.get(TaskState.GIT_BRANCH);
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
+        String taskId = ctx.get(TaskState.TASK_ID);
         String targetRepo = ctx.get(TaskState.TARGET_REPO);
         String repoUrl = toRepoUrl(targetRepo);
 
@@ -78,7 +79,7 @@ public class TesterNode implements Agent {
                     После написания — закоммить в текущую ветку.
                     """.formatted(spec, branch != null && !branch.isBlank() ? branch : "feature/new-task");
 
-            var result = openCode.runAgent("tester", prompt, workDir);
+            var result = openCode.runAgent("tester", prompt, workDir, taskId);
 
             if (result.error() != null && !result.error().isEmpty()) {
                 log.error("Тестировщик: ошибка OpenCode: {}", result.error());
@@ -90,7 +91,6 @@ public class TesterNode implements Agent {
             telegram.sendMessage(Long.parseLong(chatId),
                     "✅ Тесты написаны. Файлов: " + (result.files() != null ? result.files().size() : 0));
 
-            String taskId = ctx.get(TaskState.TASK_ID);
             taskRepo.findById(taskId).ifPresent(task -> {
                 task.setTestsWritten(true);
                 taskRepo.save(task);

@@ -39,7 +39,9 @@ public class ActiveTaskRegistry {
 
     @jakarta.annotation.PostConstruct
     void restoreFromDb() {
-        var runningTasks = taskRepo.findByStatus("RUNNING");
+        var runningTasks = taskRepo.findByStatus("RUNNING").stream()
+                .filter(t -> !t.isDeleted())
+                .toList();
         for (var task : runningTasks) {
             String taskId = task.getTaskId();
             Long chatId = task.getNotifyChatId();
@@ -134,6 +136,10 @@ public class ActiveTaskRegistry {
         }
         taskStatuses.remove(taskId);
         taskChatRepo.deleteByTaskId(taskId);
-        taskRepo.deleteById(taskId);
+        taskRepo.findById(taskId).ifPresent(t -> {
+            t.setDeleted(true);
+            t.setUpdatedAt(java.time.Instant.now());
+            taskRepo.save(t);
+        });
     }
 }

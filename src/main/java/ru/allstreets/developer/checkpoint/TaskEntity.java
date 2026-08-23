@@ -65,6 +65,9 @@ public class TaskEntity {
     @Column(name = "testing_done", nullable = false, columnDefinition = "boolean default false")
     private boolean testingDone;
 
+    @Column(name = "deleted", nullable = false, columnDefinition = "boolean default false")
+    private boolean deleted;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

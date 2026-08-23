@@ -87,7 +87,7 @@ public class AnalystNode implements Agent {
 
             String prompt = buildAnalystPrompt(ctx, taskDescription);
 
-            var ocResult = openCode.runAgent("analyst", prompt, workDir);
+            var ocResult = openCode.runAgent("analyst", prompt, workDir, taskId);
             openCodeOutput = ocResult.output() != null ? ocResult.output() : "";
 
             if (ocResult.error() != null && !ocResult.error().isEmpty()) {
@@ -156,7 +156,7 @@ public class AnalystNode implements Agent {
                             sessionPool.prepareSlot(slot2, repoUrl);
                             String workDir = sessionPool.getSlotWorkDir(slot2);
                             var result2 = openCode.runAgent("analyst",
-                                    "Пользователь уточнил: " + answer + "\n\n" + taskDescription, workDir);
+                                    "Пользователь уточнил: " + answer + "\n\n" + taskDescription, workDir, taskId);
                             if (result2.output() != null) {
                                 spec = result2.output();
                             }
