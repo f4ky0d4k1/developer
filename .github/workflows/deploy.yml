@@ -119,7 +119,6 @@ jobs:
           command_timeout: 2m
           script: |
             rm -rf /opt/developer/opencode-config
-            mkdir -p /opt/developer/opencode-config/agents
 
       - name: Copy opencode config to server
         uses: appleboy/scp-action@v0.1.7
