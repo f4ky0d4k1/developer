@@ -95,9 +95,19 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: ".deploy/docker-compose.prod.yml,.deploy/deploy.sh,.deploy/healthcheck.sh,docker-compose.yml"
+          source: ".deploy/docker-compose.prod.yml,.deploy/deploy.sh,.deploy/healthcheck.sh"
           target: "/opt/developer"
           strip_components: 1
+          overwrite: true
+
+      - name: Copy docker-compose.yml to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "docker-compose.yml"
+          target: "/opt/developer"
           overwrite: true
 
       - name: Copy opencode config to server
