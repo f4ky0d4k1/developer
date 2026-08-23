@@ -65,6 +65,11 @@ permissions:
 - Используй инструменты для анализа (read, webfetch) — но НЕ более 3 вызовов инструментов
 - Для проверки логов используй Grafana MCP tools (alerting_manage_rules, query_loki_logs), НЕ читай файлы /etc/* или
   системные логи
+- Для запросов к PostgreSQL используй postgres MCP tools:
+  1. Сначала вызови switch_server_db с параметром server (имя сервера из конфигурации, например "allstreets-backend-test")
+  2. Затем вызови execute_sql с SQL-запросом (например, SELECT MAX(area) FROM estate)
+  3. Если не знаешь имя таблицы — сначала вызови list_databases, затем list_tables для нужной БД
+  4. Результат SQL-запроса ОБЯЗАТЕЛЬНО включи в финальный ответ в поле spec
 - После анализа ОБЯЗАТЕЛЬНО выведи текстовый ответ с результатами
 - НЕ создавай ветку, НЕ создавай задачу в Tracker, НЕ запускай разработчика
 - nextStep = "done"

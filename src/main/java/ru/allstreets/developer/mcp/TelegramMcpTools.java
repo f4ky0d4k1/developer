@@ -14,6 +14,8 @@ import ru.allstreets.developer.telegram.TelegramGateway;
 
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * MCP tools для Telegram — доступны OpenCode агентам через MCP server.
@@ -33,6 +35,10 @@ public class TelegramMcpTools {
     private static final DateTimeFormatter FMT = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
+
+    private record LastMessage(String text, long timestamp) {}
+    private final Map<Long, LastMessage> lastSentPerChat = new ConcurrentHashMap<>();
+    private static final long DEDUP_WINDOW_MS = 5000;
 
     public TelegramMcpTools(ChatMemoryService chatMemory,
                             ChatMessageRepository messageRepo,
@@ -72,14 +78,31 @@ public class TelegramMcpTools {
         return sb.toString();
     }
 
-    @Tool(description = "Send a message to a Telegram chat. The message will be visible to the user and recorded in chat history. Use this to send your final answer to the user.")
+    @Tool(description = "Send a message to a Telegram chat. The message will be visible to the user and recorded in chat history. Use this to send your final answer to the user. Do NOT send JSON action responses like {\"action\":\"ANSWER\"} — those are system-internal.")
     public String sendMessage(
             @ToolParam(description = "Telegram chat ID (negative for groups)") long chatId,
             @ToolParam(description = "Message text to send (Markdown supported)") String text
     ) {
         log.info("MCP sendMessage: chatId={}, textLen={}", chatId, text.length());
+
+        // Guard 1: reject JSON action responses (system-internal, not for user)
+        String trimmed = text.trim();
+        if (trimmed.startsWith("{\"action\"") || trimmed.startsWith("{ \"action\"")) {
+            log.warn("MCP sendMessage: rejected JSON action response for chatId={}", chatId);
+            return "Rejected: JSON action responses are not allowed as message text.";
+        }
+
+        // Guard 2: dedup — reject identical message within 5 seconds
+        long now = System.currentTimeMillis();
+        LastMessage last = lastSentPerChat.get(chatId);
+        if (last != null && text.equals(last.text()) && (now - last.timestamp()) < DEDUP_WINDOW_MS) {
+            log.warn("MCP sendMessage: rejected duplicate for chatId={} ({}ms ago)", chatId, now - last.timestamp());
+            return "Rejected: duplicate message within 5 seconds.";
+        }
+
         try {
             telegram.sendMessage(chatId, text);
+            lastSentPerChat.put(chatId, new LastMessage(text, now));
             return "Message sent successfully to chat " + chatId;
         } catch (Exception e) {
             return "Failed to send message: " + e.getMessage();
