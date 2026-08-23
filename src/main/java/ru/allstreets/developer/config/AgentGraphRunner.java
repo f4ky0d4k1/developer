@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskLockService;
+import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.state.TaskState;
 
 @Component
@@ -18,12 +19,14 @@ public class AgentGraphRunner {
     private final AgentGraph graph;
     private final CheckpointService checkpointService;
     private final TaskLockService taskLockService;
+    private final TaskRepository taskRepo;
 
     public AgentGraphRunner(AgentGraph graph, CheckpointService checkpointService,
-                            TaskLockService taskLockService) {
+                            TaskLockService taskLockService, TaskRepository taskRepo) {
         this.graph = graph;
         this.checkpointService = checkpointService;
         this.taskLockService = taskLockService;
+        this.taskRepo = taskRepo;
     }
 
     /**
@@ -80,9 +83,14 @@ public class AgentGraphRunner {
      * @return результат выполнения или null если checkpoint не найден
      */
     public AgentResult resume(String runId) {
+        if (runId == null) {
+            log.warn("AgentGraphRunner.resume: runId is null, отмена");
+            return null;
+        }
+
         log.info("Возобновление AgentGraph из checkpoint: {}", runId);
 
-        if (runId != null && !taskLockService.tryLock(runId)) {
+        if (!taskLockService.tryLock(runId)) {
             log.warn("AgentGraph: задача {} уже выполняется — resume отменён", runId);
             return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of(
                     "graph", new IllegalStateException("Task already locked: " + runId)));
@@ -95,6 +103,14 @@ public class AgentGraphRunner {
             taskLockService.cleanup(runId);
             return null;
         }
+
+        String taskDesc = taskRepo.findById(runId)
+                .map(t -> t.getDescription() != null ? t.getDescription() : "")
+                .orElse("");
+        if (taskDesc.isBlank()) {
+            log.warn("AgentGraphRunner.resume: пустое описание задачи для runId={}, используем empty context", runId);
+        }
+        restoredCtx = AgentContext.of(taskDesc).withState(restoredCtx.state());
 
         String lastNode = checkpointService.getLastNodeName(runId);
         log.info("Возобновление с узла: {}", lastNode);
@@ -116,10 +132,8 @@ public class AgentGraphRunner {
             checkpointService.saveCheckpoint(runId, "crashed", restoredCtx, "RUNNING");
             throw e;
         } finally {
-            if (runId != null) {
-                taskLockService.unlock(runId);
-                taskLockService.cleanup(runId);
-            }
+            taskLockService.unlock(runId);
+            taskLockService.cleanup(runId);
         }
     }
 }

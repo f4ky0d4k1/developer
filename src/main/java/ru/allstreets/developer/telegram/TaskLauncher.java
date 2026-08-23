@@ -8,6 +8,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.CheckpointService;
+import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.state.TaskState;
@@ -28,6 +29,7 @@ public class TaskLauncher {
     private final ActiveTaskRegistry taskRegistry;
     private final HumanInputRegistry humanInputRegistry;
     private final CheckpointService checkpointService;
+    private final TaskRepository taskRepo;
     private final ThreadPoolExecutor executor;
     private final ChatClient fallbackChatClient;
 
@@ -38,6 +40,7 @@ public class TaskLauncher {
                         ActiveTaskRegistry taskRegistry,
                         HumanInputRegistry humanInputRegistry,
                         CheckpointService checkpointService,
+                        TaskRepository taskRepo,
                         @Qualifier("taskExecutor") ThreadPoolExecutor executor,
                         @Qualifier("fallbackChatClient") ChatClient fallbackChatClient) {
         this.graphRunner = graphRunner;
@@ -45,6 +48,7 @@ public class TaskLauncher {
         this.taskRegistry = taskRegistry;
         this.humanInputRegistry = humanInputRegistry;
         this.checkpointService = checkpointService;
+        this.taskRepo = taskRepo;
         this.executor = executor;
         this.fallbackChatClient = fallbackChatClient;
     }
@@ -251,32 +255,41 @@ public class TaskLauncher {
 
     private void resumeTask(String taskId, long chatId, String additionalContext) {
         try {
-            // graphRunner.resume сам восстанавливает контекст из checkpoint
-            // Но если есть additionalContext — нужно восстановить, добавить, и запустить graph
-            AgentResult result;
-            if (additionalContext != null && !additionalContext.isBlank()) {
-                var ctx = checkpointService.restoreCheckpoint(taskId);
-                if (ctx == null) {
-                    log.error("TaskLauncher: не удалось восстановить контекст для задачи {}", taskId);
-                    telegram.sendMessage(chatId, "❌ Не удалось восстановить контекст задачи " + taskId.substring(0, 8), taskId);
-                    taskRegistry.markFailed(taskId);
-                    return;
-                }
-                String existingDesc = ctx.messages().isEmpty() ? "" : ctx.messages().getFirst().getText();
-                String augmentedDesc = existingDesc + "\n\nДополнение от пользователя при перезапуске:\n" + additionalContext;
-                ctx = AgentContext.of(augmentedDesc).withState(ctx.state());
-                result = graphRunner.run(ctx);
-            } else {
-                result = graphRunner.resume(taskId);
+            var ctx = checkpointService.restoreCheckpoint(taskId);
+            if (ctx == null) {
+                log.error("TaskLauncher: не удалось восстановить контекст для задачи {}", taskId);
+                telegram.sendMessage(chatId, "❌ Не удалось восстановить контекст задачи " + taskId.substring(0, 8), taskId);
+                taskRegistry.markFailed(taskId);
+                return;
             }
+
+            String taskDesc = taskRepo.findById(taskId)
+                    .map(t -> t.getDescription() != null ? t.getDescription() : "")
+                    .orElse("");
+
+            String fullDesc = (additionalContext != null && !additionalContext.isBlank())
+                    ? taskDesc + "\n\nДополнение от пользователя при перезапуске:\n" + additionalContext
+                    : taskDesc;
+
+            ctx = AgentContext.of(fullDesc).withState(ctx.state());
+            AgentResult result = graphRunner.run(ctx);
 
             String resultMsg;
             if (result == null) {
                 resultMsg = "❌ Не удалось перезапустить задачу " + taskId.substring(0, 8) + " — checkpoint повреждён.";
                 taskRegistry.markFailed(taskId);
             } else if (!result.hasError()) {
-                resultMsg = "✅ Задача " + taskId.substring(0, 8) + " перезапущена и завершена.";
-                taskRegistry.markCompleted(taskId);
+                boolean analysisDone = taskRepo.findById(taskId)
+                        .map(ru.allstreets.developer.checkpoint.TaskEntity::isAnalysisDone)
+                        .orElse(false);
+                if (!analysisDone) {
+                    log.warn("TaskLauncher: задача {} помечена COMPLETED графом, но analysisDone=false — реальная неудача", taskId);
+                    resultMsg = "❌ Задача " + taskId.substring(0, 8) + " не завершена: аналитик не выполнил работу.";
+                    taskRegistry.markFailed(taskId);
+                } else {
+                    resultMsg = "✅ Задача " + taskId.substring(0, 8) + " перезапущена и завершена.";
+                    taskRegistry.markCompleted(taskId);
+                }
             } else {
                 resultMsg = "❌ Задача " + taskId.substring(0, 8) + " снова упала: " + result.error();
                 taskRegistry.markFailed(taskId);

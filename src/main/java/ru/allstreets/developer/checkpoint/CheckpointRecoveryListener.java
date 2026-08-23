@@ -67,7 +67,14 @@ public class CheckpointRecoveryListener {
 
             // Возобновляем выполнение графа
             try {
-                graphRunner.resume(runId);
+                var result = graphRunner.resume(runId);
+                if (result == null) {
+                    log.warn("Возобновление задачи {} не удалось — checkpoint повреждён", runId);
+                } else if (result.hasError()) {
+                    log.error("Возобновление задачи {} завершилось с ошибкой: {}", runId, result.error());
+                } else {
+                    log.info("Возобновление задачи {} завершено успешно", runId);
+                }
             } catch (Exception e) {
                 log.error("Ошибка возобновления задачи {}: {}", runId, e.getMessage(), e);
             }
