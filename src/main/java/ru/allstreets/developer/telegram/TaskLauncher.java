@@ -111,6 +111,9 @@ public class TaskLauncher {
             // Отмена pending HITL вопросов
             humanInputRegistry.cancel(taskId);
 
+            // Помечаем старую задачу как FAILED
+            taskRegistry.markFailed(taskId);
+
             // Очистка checkpoints старой задачи
             checkpointService.cleanup(taskId);
 
@@ -271,7 +274,9 @@ public class TaskLauncher {
                     ? taskDesc + "\n\nДополнение от пользователя при перезапуске:\n" + additionalContext
                     : taskDesc;
 
-            ctx = AgentContext.of(fullDesc).withState(ctx.state());
+            ctx = AgentContext.of(fullDesc).withState(ctx.state())
+                    .with(TaskState.TASK_ID, taskId)
+                    .with(TaskState.TG_CHAT_ID, String.valueOf(chatId));
             AgentResult result = graphRunner.run(ctx);
 
             String resultMsg;

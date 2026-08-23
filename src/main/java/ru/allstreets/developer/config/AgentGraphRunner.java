@@ -110,7 +110,8 @@ public class AgentGraphRunner {
         if (taskDesc.isBlank()) {
             log.warn("AgentGraphRunner.resume: пустое описание задачи для runId={}, используем empty context", runId);
         }
-        restoredCtx = AgentContext.of(taskDesc).withState(restoredCtx.state());
+        restoredCtx = AgentContext.of(taskDesc).withState(restoredCtx.state())
+                .with(TaskState.TASK_ID, runId);
 
         String lastNode = checkpointService.getLastNodeName(runId);
         log.info("Возобновление с узла: {}", lastNode);

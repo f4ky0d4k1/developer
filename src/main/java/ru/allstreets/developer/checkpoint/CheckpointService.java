@@ -113,8 +113,8 @@ public class CheckpointService {
                 Object rawValue = entry.get("value");
 
                 Object typedValue = convertValue(rawValue, typeName);
-                StateKey<Object> stateKey = StateKey.of(key, Object.class);
-                stateBag = stateBag.put(stateKey, typedValue);
+                Class<?> keyClass = resolveTypeClass(typeName, typedValue);
+                stateBag = putTyped(stateBag, key, keyClass, typedValue);
             }
             log.debug("Checkpoint восстановлен: runId={}, {} ключей в state", runId, entries.size());
             return AgentContext.empty().withState(stateBag);
@@ -149,6 +149,31 @@ public class CheckpointService {
             log.warn("Checkpoint restore: тип {} не найден, значение как есть", typeName);
             return rawValue;
         }
+    }
+
+    /**
+     * Резолв Class из typeName для создания StateKey с правильным типом.
+     * Если класс не найден — fallback на runtime-класс значения.
+     */
+    private Class<?> resolveTypeClass(String typeName, Object typedValue) {
+        if (typeName != null) {
+            try {
+                return Class.forName(typeName);
+            } catch (ClassNotFoundException e) {
+                log.warn("Checkpoint restore: тип {} не найден, fallback на runtime-класс", typeName);
+            }
+        }
+        return typedValue != null ? typedValue.getClass() : Object.class;
+    }
+
+    /**
+     * Создание StateKey с правильным типом и put в StateBag.
+     * Инкапсулирует raw-type операцию — компилятор не может вывести T из Class<?>.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private StateBag putTyped(StateBag stateBag, String key, Class<?> typeClass, Object value) {
+        StateKey stateKey = StateKey.of(key, (Class) typeClass);
+        return stateBag.put(stateKey, value);
     }
 
     /**
