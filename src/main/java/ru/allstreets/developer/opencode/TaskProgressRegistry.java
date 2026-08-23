@@ -7,18 +7,22 @@ import org.springframework.transaction.annotation.Transactional;
 import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.List;
 
 /**
  * Реестр прогресса OpenCode агентов по taskId, persists в БД.
+ * <p>
+ * Все мутации выполняются атомарными UPDATE на стороне БД
+ * ({@link TaskProgressRepository}), поэтому конкурентные вызовы из
+ * reader-потока OpenCode и основного потока агента безопасны без
+ * блокировок и retry: БД сериализует UPDATE на уровне строки.
  */
 @Component
 public class TaskProgressRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(TaskProgressRegistry.class);
     private static final int MAX_EVENTS = 20;
+    private static final int MAX_TEXT_PREVIEW = 100;
 
     private final TaskProgressRepository repo;
     private final TaskRepository taskRepo;
@@ -28,86 +32,56 @@ public class TaskProgressRegistry {
         this.taskRepo = taskRepo;
     }
 
+    /**
+     * Старт агента: сбрасывает прогресс, если запись уже есть, иначе создаёт.
+     * Единственное место, где нужна транзакция с чтением — вызывается один раз
+     * перед запуском агента, конкуренции нет.
+     */
     @Transactional
     public void start(String taskId, String agentName) {
+        long now = System.currentTimeMillis();
+        if (repo.resetForAgent(taskId, agentName, now) > 0) {
+            log.debug("TaskProgressRegistry: reset taskId={}, agent={}", taskId, agentName);
+            return;
+        }
         TaskEntity task = taskRepo.findById(taskId).orElse(null);
         if (task == null) {
             log.warn("TaskProgressRegistry: task not found taskId={}, прогресс не сохранён", taskId);
             return;
         }
-        TaskProgressEntity existing = repo.findByIdForUpdate(taskId).orElse(null);
-        if (existing != null) {
-            existing.setAgentName(agentName);
-            existing.setCurrentTool(null);
-            existing.setToolCalls("");
-            existing.setRecentEvents("");
-            existing.setTotalTokens(0);
-            existing.setCost(0);
-            existing.setStepCount(0);
-            existing.setLastText(null);
-            existing.setError(null);
-            existing.setStartTimeMs(System.currentTimeMillis());
-            existing.setLastUpdateMs(System.currentTimeMillis());
-            existing.setFinished(false);
-            repo.save(existing);
-        } else {
-            repo.save(new TaskProgressEntity(task, agentName));
-        }
+        repo.save(new TaskProgressEntity(task, agentName));
         log.debug("TaskProgressRegistry: start taskId={}, agent={}", taskId, agentName);
     }
 
     @Transactional
     public void recordToolCall(String taskId, String toolName) {
-        repo.findByIdForUpdate(taskId).ifPresent(e -> {
-            e.setCurrentTool(toolName);
-            e.setToolCalls(appendCsv(e.getToolCalls(), toolName));
-            e.setLastUpdateMs(System.currentTimeMillis());
-            e.setRecentEvents(appendEvent(e.getRecentEvents(), "tool: " + toolName));
-            repo.save(e);
-        });
+        repo.appendToolCall(taskId, toolName, "tool: " + toolName, System.currentTimeMillis());
     }
 
     @Transactional
     public void recordStepFinish(String taskId, long tokens, double cost, String reason) {
-        repo.findByIdForUpdate(taskId).ifPresent(e -> {
-            e.setTotalTokens(e.getTotalTokens() + tokens);
-            e.setCost(e.getCost() + cost);
-            e.setStepCount(e.getStepCount() + 1);
-            e.setLastUpdateMs(System.currentTimeMillis());
-            e.setRecentEvents(appendEvent(e.getRecentEvents(),
-                    "step #" + e.getStepCount() + " done (reason=" + reason + ", tokens=" + e.getTotalTokens() + ")"));
-            repo.save(e);
-        });
+        repo.appendStepFinish(taskId, tokens, cost,
+                "step done (reason=" + reason + ", tokens=" + tokens + ")", System.currentTimeMillis());
     }
 
     @Transactional
     public void recordText(String taskId, String text) {
-        repo.findByIdForUpdate(taskId).ifPresent(e -> {
-            e.setLastText(text);
-            e.setLastUpdateMs(System.currentTimeMillis());
-            e.setRecentEvents(appendEvent(e.getRecentEvents(),
-                    "text: " + (text.length() > 100 ? text.substring(0, 100) + "..." : text)));
-            repo.save(e);
-        });
+        repo.appendText(taskId, text, "text: " + preview(text), System.currentTimeMillis());
     }
 
     @Transactional
     public void recordError(String taskId, String error) {
-        repo.findByIdForUpdate(taskId).ifPresent(e -> {
-            e.setError(error);
-            e.setLastUpdateMs(System.currentTimeMillis());
-            e.setRecentEvents(appendEvent(e.getRecentEvents(), "error: " + error));
-            repo.save(e);
-        });
+        repo.appendError(taskId, error, "error: " + error, System.currentTimeMillis());
     }
 
     @Transactional
     public void markFinished(String taskId) {
-        repo.findByIdForUpdate(taskId).ifPresent(e -> {
-            e.setFinished(true);
-            e.setLastUpdateMs(System.currentTimeMillis());
-            repo.save(e);
-        });
+        repo.markFinished(taskId, System.currentTimeMillis());
+    }
+
+    private String preview(String text) {
+        if (text == null) return "";
+        return text.length() > MAX_TEXT_PREVIEW ? text.substring(0, MAX_TEXT_PREVIEW) + "..." : text;
     }
 
     public TaskProgress get(String taskId) {
@@ -124,21 +98,16 @@ public class TaskProgressRegistry {
         p.setError(e.getError());
         p.setFinished(e.isFinished());
         parseCsv(e.getToolCalls()).forEach(p.getToolCalls()::add);
-        parseLines(e.getRecentEvents()).forEach(p.getRecentEvents()::add);
+        lastN(parseLines(e.getRecentEvents()), MAX_EVENTS).forEach(p.getRecentEvents()::add);
         return p;
     }
 
-    private String appendCsv(String existing, String value) {
-        return existing == null || existing.isEmpty() ? value : existing + "," + value;
-    }
-
-    private String appendEvent(String existing, String event) {
-        Deque<String> events = new ArrayDeque<>(parseLines(existing));
-        events.addLast(event);
-        while (events.size() > MAX_EVENTS) {
-            events.removeFirst();
-        }
-        return String.join("\n", events);
+    /**
+     * Обрезка истории событий на чтении: UPDATE в БД только дописывает,
+     * ограничение применяется здесь.
+     */
+    private List<String> lastN(List<String> items, int n) {
+        return items.size() <= n ? items : items.subList(items.size() - n, items.size());
     }
 
     private List<String> parseCsv(String csv) {
