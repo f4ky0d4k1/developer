@@ -141,7 +141,8 @@ public class ConversationAgent {
                 return new Decision(Action.ERROR, null, null, "Пустой ответ LLM");
             }
 
-            log.debug("ConversationAgent [fast]: raw content length={}", content.length());
+            log.info("ConversationAgent [fast]: raw content (len={}): {}", content.length(),
+                    content.length() > 500 ? content.substring(0, 500) + "..." : content);
 
             // Парсим JSON из ответа
             String json = structuredOutput.extractJson(content);

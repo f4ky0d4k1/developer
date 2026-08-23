@@ -13,6 +13,7 @@ import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 /**
  * Конфигурация ChatClient бинов для Spring AI.
@@ -126,10 +127,13 @@ public class McpToolConfig {
                 .build();
         var chatModel = new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
-                org.springframework.ai.openai.OpenAiChatOptions.builder()
-                        .model(fastModel)
-                        .temperature(0.1)
-                        .build(),
+                new DeepSeekChatOptions(
+                        org.springframework.ai.openai.OpenAiChatOptions.builder()
+                                .model(fastModel)
+                                .temperature(0.1)
+                                .maxTokens(2048)
+                                .build(),
+                        Map.of("type", "disabled")),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
                 new org.springframework.retry.support.RetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP
@@ -158,10 +162,13 @@ public class McpToolConfig {
                 .build();
         var chatModel = new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
-                org.springframework.ai.openai.OpenAiChatOptions.builder()
-                        .model(fallbackModel)
-                        .temperature(0.1)
-                        .build(),
+                new DeepSeekChatOptions(
+                        org.springframework.ai.openai.OpenAiChatOptions.builder()
+                                .model(fallbackModel)
+                                .temperature(0.1)
+                                .maxTokens(2048)
+                                .build(),
+                        Map.of("type", "disabled")),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
                 new org.springframework.retry.support.RetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP
