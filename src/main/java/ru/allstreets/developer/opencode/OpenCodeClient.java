@@ -72,92 +72,112 @@ public class OpenCodeClient {
     private OpenCodeResult runAgentProcess(String agentName, Process process) {
         StringBuilder agentText = new StringBuilder();
         List<String> toolCalls = new ArrayList<>();
-        String sessionId = null;
-        String error = null;
-        long totalTokens = 0;
-        double cost = 0;
+        String[] sessionIdRef = {null};
+        String[] errorRef = {null};
+        long[] totalTokensRef = {0};
+        double[] costRef = {0};
 
-        int lineCount = 0;
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                lineCount++;
-                if (lineCount <= 5) {
-                    log.info("[OpenCode:{}] вывод #{}: {}", agentName, lineCount,
-                            line.length() > 300 ? line.substring(0, 300) + "..." : line);
-                }
-                try {
-                    JsonNode event = mapper.readTree(line);
-                    String type = event.path("type").asText("");
-
-                    if (sessionId == null) {
-                        sessionId = event.path("sessionID").asText(null);
+        // Чтение вывода в отдельном потоке — иначе readLine() блокирует forever
+        // и waitFor(timeout) никогда не сработает
+        Thread readerThread = new Thread(() -> {
+            int lineCount = 0;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lineCount++;
+                    if (lineCount <= 5) {
+                        log.info("[OpenCode:{}] вывод #{}: {}", agentName, lineCount,
+                                line.length() > 300 ? line.substring(0, 300) + "..." : line);
                     }
+                    try {
+                        JsonNode event = mapper.readTree(line);
+                        String type = event.path("type").asText("");
 
-                    JsonNode part = event.path("part");
+                        if (sessionIdRef[0] == null) {
+                            sessionIdRef[0] = event.path("sessionID").asText(null);
+                        }
 
-                    switch (type) {
-                        case "text" -> {
-                            String text = part.path("text").asText("");
-                            agentText.append(text);
-                            log.info("[OpenCode:{}] text: {}", agentName,
-                                    text.length() > 200 ? text.substring(0, 200) + "..." : text);
-                        }
-                        case "tool_use" -> {
-                            String toolName = part.path("tool").asText("unknown");
-                            String input = part.path("input").toString();
-                            log.info("[OpenCode:{}] tool_use: {} input: {}", agentName, toolName,
-                                    input.length() > 300 ? input.substring(0, 300) + "..." : input);
-                            toolCalls.add(toolName);
-                        }
-                        case "tool_start" -> {
-                            String toolName = part.path("tool").asText("unknown");
-                            log.info("[OpenCode:{}] tool_start: {}", agentName, toolName);
-                            toolCalls.add(toolName);
-                        }
-                        case "tool_finish" -> {
-                            String toolName = part.path("tool").asText("unknown");
-                            String output = part.path("output").asText("");
-                            log.info("[OpenCode:{}] tool_finish: {} output: {}", agentName, toolName,
-                                    output.length() > 300 ? output.substring(0, 300) + "..." : output);
-                        }
-                        case "step_finish" -> {
-                            JsonNode tokens = part.path("tokens");
-                            if (!tokens.isMissingNode()) {
-                                totalTokens += tokens.path("total").asLong(0);
+                        JsonNode part = event.path("part");
+
+                        switch (type) {
+                            case "text" -> {
+                                String text = part.path("text").asText("");
+                                agentText.append(text);
+                                log.info("[OpenCode:{}] text: {}", agentName,
+                                        text.length() > 200 ? text.substring(0, 200) + "..." : text);
                             }
-                            cost += part.path("cost").asDouble(0);
-                            String reason = part.path("reason").asText("");
-                            log.info("[OpenCode:{}] step_finish: reason={}, tokens={}, cost={}",
-                                    agentName, reason, totalTokens, String.format("%.4f", cost));
+                            case "tool_use" -> {
+                                String toolName = part.path("tool").asText("unknown");
+                                String input = part.path("input").toString();
+                                log.info("[OpenCode:{}] tool_use: {} input: {}", agentName, toolName,
+                                        input.length() > 300 ? input.substring(0, 300) + "..." : input);
+                                toolCalls.add(toolName);
+                            }
+                            case "tool_start" -> {
+                                String toolName = part.path("tool").asText("unknown");
+                                log.info("[OpenCode:{}] tool_start: {}", agentName, toolName);
+                                toolCalls.add(toolName);
+                            }
+                            case "tool_finish" -> {
+                                String toolName = part.path("tool").asText("unknown");
+                                String output = part.path("output").asText("");
+                                log.info("[OpenCode:{}] tool_finish: {} output: {}", agentName, toolName,
+                                        output.length() > 300 ? output.substring(0, 300) + "..." : output);
+                            }
+                            case "step_finish" -> {
+                                JsonNode tokens = part.path("tokens");
+                                if (!tokens.isMissingNode()) {
+                                    totalTokensRef[0] += tokens.path("total").asLong(0);
+                                }
+                                costRef[0] += part.path("cost").asDouble(0);
+                                String reason = part.path("reason").asText("");
+                                log.info("[OpenCode:{}] step_finish: reason={}, tokens={}, cost={}",
+                                        agentName, reason, totalTokensRef[0], String.format("%.4f", costRef[0]));
+                            }
+                            case "error" -> {
+                                errorRef[0] = part.path("message").asText("Unknown error");
+                                log.error("[OpenCode:{}] error: {}", agentName, errorRef[0]);
+                            }
+                            default -> log.debug("[OpenCode:{}] event: {}", agentName, type);
                         }
-                        case "error" -> {
-                            error = part.path("message").asText("Unknown error");
-                            log.error("[OpenCode:{}] error: {}", agentName, error);
-                        }
-                        default -> log.debug("[OpenCode:{}] event: {}", agentName, type);
+                    } catch (Exception parseEx) {
+                        log.debug("[OpenCode:{}] non-JSON line: {}", agentName,
+                                line.length() > 200 ? line.substring(0, 200) + "..." : line);
                     }
-                } catch (Exception parseEx) {
-                    log.debug("[OpenCode:{}] non-JSON line: {}", agentName,
-                            line.length() > 200 ? line.substring(0, 200) + "..." : line);
                 }
+            } catch (Exception e) {
+                log.error("[OpenCode:{}] ошибка чтения вывода: {}", agentName, e.getMessage(), e);
             }
-        } catch (Exception e) {
-            log.error("[OpenCode:{}] ошибка чтения вывода: {}", agentName, e.getMessage(), e);
-        }
+        }, "opencode-reader-" + agentName);
+        readerThread.setDaemon(true);
+        readerThread.start();
 
         boolean finished;
         try {
             finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            process.destroyForcibly();
             throw new RuntimeException("Прерван запуск OpenCode агента: " + agentName, e);
         }
 
         if (!finished) {
             process.destroyForcibly();
+            log.error("[OpenCode:{}] таймаут {}с — процесс убит", agentName, timeoutSeconds);
             throw new RuntimeException("Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName);
         }
+
+        // Ждём завершения потока чтения (процесс уже завершился — поток быстро дочитает)
+        try {
+            readerThread.join(5000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        String sessionId = sessionIdRef[0];
+        String error = errorRef[0];
+        long totalTokens = totalTokensRef[0];
+        double cost = costRef[0];
 
         int exitCode = process.exitValue();
         log.info("Агент {} завершил работу. exit={}, session={}, tokens={}, cost={}, toolCalls={}, текст={} символов",
