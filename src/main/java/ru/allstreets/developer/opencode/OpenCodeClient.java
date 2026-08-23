@@ -36,7 +36,12 @@ public class OpenCodeClient {
     }
 
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId) {
-        log.info("Запуск OpenCode агента: {} в {} (промпт: {} символов, taskId={})", agentName, cwd, prompt.length(), taskId);
+        return runAgent(agentName, prompt, cwd, taskId, null);
+    }
+
+    public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId, String sessionId) {
+        log.info("Запуск OpenCode агента: {} в {} (промпт: {} символов, taskId={}, session={})",
+                agentName, cwd, prompt.length(), taskId, sessionId);
 
         if (taskId != null) {
             progressRegistry.start(taskId, agentName);
@@ -55,17 +60,22 @@ public class OpenCodeClient {
             log.warn("[OpenCode:{}] не удалось проверить окружение: {}", agentName, e.getMessage());
         }
 
-        List<String> command = List.of(
+        List<String> command = new ArrayList<>(List.of(
                 "docker", "exec", "-w", cwd,
                 "opencode",
                 "opencode", "run",
                 "--agent", agentName,
                 "--model", model,
-                "--format", "json",
-                "--",
-                prompt
-        );
-        log.info("[OpenCode:{}] команда: {}", agentName, String.join(" ", command.stream().limit(12).toList()) + " ...");
+                "--format", "json"
+        ));
+        if (sessionId != null && !sessionId.isBlank()) {
+            command.add("--session");
+            command.add(sessionId);
+        }
+        command.add("--");
+        command.add(prompt);
+
+        log.info("[OpenCode:{}] команда: {}", agentName, String.join(" ", command.stream().limit(14).toList()) + " ...");
 
         Process process;
         try {
@@ -225,7 +235,8 @@ public class OpenCodeClient {
                 null,
                 null,
                 toolCalls,
-                error
+                error,
+                sessionId
         );
     }
 
@@ -235,7 +246,8 @@ public class OpenCodeClient {
             String diff,
             String commitHash,
             List<String> files,
-            String error
+            String error,
+            String sessionId
     ) {
     }
 }

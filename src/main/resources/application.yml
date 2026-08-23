@@ -56,7 +56,8 @@ opencode:
   work-dir: ${OPENCODE_WORK_DIR:/work}
   timeout-seconds: 300
   model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
-  slots: 2
+  slots: 5
+  max-clarifications: 10
 
 # Telegram bot
 telegram:
@@ -64,8 +65,8 @@ telegram:
   bot-username: ${TELEGRAM_BOT_USERNAME}  # username бота без @, для @mention фильтрации
   api-url: https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}
   polling-timeout: 30
-  allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS:}  # через запятую, пусто = все чаты
-  trigger-users: ${TELEGRAM_TRIGGER_USERS:}    # через запятую, пусто = все пользователи могут запускать агентов
+  allowed-chat-ids: 1270746894,-1001506621216,-4578261262,-1001549425035
+  trigger-users: f4ky0d4k
 
 # MCP servers (доп. параметры для Spring-кода)
 mcp:
