@@ -95,7 +95,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: ".deploy/docker-compose.prod.yml,.deploy/deploy.sh,.deploy/healthcheck.sh"
+          source: ".deploy/docker-compose.prod.yml,.deploy/deploy.sh,.deploy/healthcheck.sh,docker-compose.yml"
           target: "/opt/developer"
           strip_components: 1
           overwrite: true

@@ -20,8 +20,8 @@ echo "=== Логин в Docker Hub ==="
 echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
 
 echo "=== Pull и запуск контейнеров ==="
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 echo "=== Проверка запуска ==="
 chmod +x healthcheck.sh
