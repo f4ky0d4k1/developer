@@ -17,10 +17,30 @@ fi
 cd "$WORK_DIR"
 
 echo "=== Логин в Docker Hub ==="
-echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+for i in 1 2 3; do
+  if echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin; then
+    break
+  fi
+  echo "⚠️ Попытка логина $i не удалась, retry через 10s..."
+  sleep 10
+  if [ $i -eq 3 ]; then
+    echo "❌ Не удалось залогиниться в Docker Hub после 3 попыток"
+    exit 1
+  fi
+done
 
 echo "=== Pull и запуск контейнеров ==="
-docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+for i in 1 2 3; do
+  if docker compose -f docker-compose.yml -f docker-compose.prod.yml pull; then
+    break
+  fi
+  echo "⚠️ Попытка pull $i не удалась, retry через 15s..."
+  sleep 15
+  if [ $i -eq 3 ]; then
+    echo "❌ Не удалось pull образы после 3 попыток"
+    exit 1
+  fi
+done
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 echo "=== Проверка запуска ==="
