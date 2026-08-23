@@ -10,6 +10,7 @@ services:
     restart: always
 
   postgres:
+    image: dockerhub.timeweb.cloud/library/postgres:18
     restart: always
 
   grafana-alloy:

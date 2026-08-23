@@ -31,7 +31,7 @@ done
 
 echo "=== Pull и запуск контейнеров ==="
 for i in 1 2 3; do
-  if docker compose --verbose -f docker-compose.yml -f docker-compose.prod.yml pull; then
+  if docker compose -f docker-compose.yml -f docker-compose.prod.yml pull; then
     break
   fi
   echo "⚠️ Попытка pull $i не удалась, retry через 15s..."
@@ -41,7 +41,7 @@ for i in 1 2 3; do
     exit 1
   fi
 done
-docker compose --verbose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 echo "=== Проверка запуска ==="
 chmod +x healthcheck.sh
