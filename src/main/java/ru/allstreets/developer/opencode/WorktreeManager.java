@@ -59,13 +59,11 @@ public class WorktreeManager {
         log.info("Подготовка слота {} → {} (repo: {})", slotIndex, slotDir, repoUrl);
 
         try {
-            // Disable SSL verification for git inside Docker (TLS issues with Alpine/musl)
-            runCommand(slotDir, "git", "config", "http.sslVerify", "false");
-
             if (Files.exists(slotDir) && Files.isDirectory(slotDir)) {
                 Path gitDir = slotDir.resolve(".git");
                 if (Files.exists(gitDir)) {
                     // Уже клонировано — обновляем main (с retry на случай TLS ошибок)
+                    runCommand(slotDir, "git", "config", "http.sslVerify", "false");
                     runCommandWithRetry(slotDir, 3, "git", "fetch", "origin");
                     runCommand(slotDir, "git", "checkout", "main");
                     runCommandWithRetry(slotDir, 3, "git", "pull", "origin", "main");
@@ -78,7 +76,10 @@ public class WorktreeManager {
             Files.createDirectories(slotDir);
 
             if (repoUrl != null && !repoUrl.isBlank()) {
-                runCommand(slotDir.getParent(), "git", "clone", authenticatedUrl(repoUrl), slotDir.toString());
+                runCommand(slotDir.getParent(), "git", "clone",
+                        "-c", "http.sslVerify=false",
+                        authenticatedUrl(repoUrl), slotDir.toString());
+                runCommand(slotDir, "git", "config", "http.sslVerify", "false");
             } else {
                 log.warn("repoUrl не задан, слот {} — пустая директория", slotIndex);
             }

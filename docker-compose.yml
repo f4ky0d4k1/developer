@@ -54,12 +54,33 @@ services:
       GRAFANA_URL: ${GRAFANA_URL}
       GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN}
       UV_PYTHON: python3
+      # PostgreSQL MCP (@tejasanik/postgres-mcp-server)
+      PG_NAME_1: ${PG_NAME_1:-local}
+      PG_HOST_1: ${PG_HOST_1:-postgres}
+      PG_PORT_1: ${PG_PORT_1:-5432}
+      PG_USERNAME_1: ${PG_USERNAME_1:-developer}
+      PG_PASSWORD_1: ${PG_PASSWORD_1:-developer}
+      PG_DATABASE_1: ${PG_DATABASE_1:-agent_state}
+      PG_SSL_1: ${PG_SSL_1:-false}
+      PG_DEFAULT_1: ${PG_DEFAULT_1:-true}
+      PG_ACCESS_MODE_1: ${PG_ACCESS_MODE_1:-readonly}
+      PG_DB_ACCESS_MODES_1: ${PG_DB_ACCESS_MODES_1:-agent_state:readonly}
+      PG_NAME_2: ${PG_NAME_2:-external}
+      PG_HOST_2: ${PG_HOST_2}
+      PG_PORT_2: ${PG_PORT_2:-5432}
+      PG_USERNAME_2: ${PG_USERNAME_2}
+      PG_PASSWORD_2: ${PG_PASSWORD_2}
+      PG_DATABASE_2: ${PG_DATABASE_2}
+      PG_SSL_2: ${PG_SSL_2:-false}
+      PG_DEFAULT_2: ${PG_DEFAULT_2:-false}
+      PG_ACCESS_MODE_2: ${PG_ACCESS_MODE_2:-readonly}
+      PG_DB_ACCESS_MODES_2: ${PG_DB_ACCESS_MODES_2}
     networks:
       - agent-net
 
   # ─── PostgreSQL — checkpoint store для spring-agent-flow ───
   postgres:
-    image: postgres:16
+    image: postgres:18
     container_name: developer-postgres
     restart: unless-stopped
     environment:
@@ -67,7 +88,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-developer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-developer}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-developer} -d agent_state" ]
       interval: 5s

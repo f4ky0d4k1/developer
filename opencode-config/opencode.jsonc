@@ -13,7 +13,9 @@
     }
   },
   "skills": {
-    "paths": ["./.windsurf/skills"]
+    "paths": [
+      "./.windsurf/skills"
+    ]
   },
   "mcp": {
     "yandex-tracker": {
@@ -46,6 +48,14 @@
       "environment": {
         "GITHUB_TOOLSETS": "repos,issues,pull_requests"
       }
+    },
+    "postgres": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@tejasanik/postgres-mcp-server"
+      ]
     }
   }
 }
