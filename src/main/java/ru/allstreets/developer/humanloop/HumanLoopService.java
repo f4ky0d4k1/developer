@@ -6,8 +6,15 @@ import ru.allstreets.developer.telegram.TelegramGateway;
 
 /**
  * Сервис для human-in-the-loop взаимодействия.
- * Агент вызывает askHuman() — вопрос уходит в ТГ,
- * метод блокируется до ответа пользователя.
+ * <p>
+ * Non-blocking: агент вызывает {@code askHuman()} — вопрос уходит в ТГ,
+ * регистрируется pending-запрос, после чего агент возвращает
+ * {@code AgentResult.interrupted(...)} и граф сохраняет checkpoint.
+ * Поток освобождается немедленно.
+ * <p>
+ * Ответ пользователя запускает {@code TaskLauncher.resumeWithAnswer(taskId, answer)},
+ * который вызывает {@code graph.resume(runId, UserMessage(answer))} —
+ * граф входит в тот же узел, агент читает ответ из messages и продолжает.
  */
 @Component
 public class HumanLoopService {
@@ -21,24 +28,15 @@ public class HumanLoopService {
     }
 
     /**
-     * Задать вопрос человеку и дождаться ответа.
-     * Блокирует текущий поток.
+     * Отправить вопрос в ТГ и зарегистрировать pending-запрос.
+     * Не блокирует — вызывающий агент должен вернуть {@code AgentResult.interrupted(...)}.
      *
-     * @param chatId         ID чата ТГ
-     * @param question       текст вопроса
-     * @param timeoutSeconds тайм-аут (по умолчанию 5 минут)
-     * @return ответ человека или null при тайм-ауте
+     * @param taskId   ID задачи
+     * @param chatId   ID чата ТГ
+     * @param question текст вопроса
      */
-    public String askHuman(String taskId, long chatId, String question, long timeoutSeconds) {
+    public void askHuman(String taskId, long chatId, String question) {
         telegram.sendMessage(chatId, "❓ [" + taskId.substring(0, 8) + "] " + question);
-        String answer = registry.requestInput(taskId, chatId, question, timeoutSeconds);
-        if (answer == null) {
-            telegram.sendMessage(chatId, "⏱️ Время ожидания ответа истекло. Продолжаю без уточнения.");
-        }
-        return answer;
-    }
-
-    public String askHuman(String taskId, long chatId, String question) {
-        return askHuman(taskId, chatId, question, 300);
+        registry.registerPending(taskId, chatId, question);
     }
 }

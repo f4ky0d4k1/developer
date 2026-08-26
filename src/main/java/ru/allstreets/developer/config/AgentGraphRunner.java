@@ -1,140 +1,89 @@
 package ru.allstreets.developer.config;
 
 import io.github.asekka.springai.agents.core.AgentContext;
+import io.github.asekka.springai.agents.core.AgentError;
 import io.github.asekka.springai.agents.core.AgentResult;
 import io.github.asekka.springai.agents.graph.AgentGraph;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.stereotype.Component;
-import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskLockService;
-import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.state.TaskState;
 
+import java.util.UUID;
+
+/**
+ * Тонкая обёртка над {@link AgentGraph} — только per-task блокировка вокруг
+ * нативного {@code invoke}/{@code resume} библиотеки. Само сохранение/восстановление
+ * checkpoint и продолжение с прерванного узла (а не с начала) делает граф через
+ * {@link ru.allstreets.developer.checkpoint.JpaCheckpointStore}.
+ */
 @Component
 public class AgentGraphRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AgentGraphRunner.class);
 
     private final AgentGraph graph;
-    private final CheckpointService checkpointService;
     private final TaskLockService taskLockService;
-    private final TaskRepository taskRepo;
 
-    public AgentGraphRunner(AgentGraph graph, CheckpointService checkpointService,
-                            TaskLockService taskLockService, TaskRepository taskRepo) {
+    public AgentGraphRunner(AgentGraph graph, TaskLockService taskLockService) {
         this.graph = graph;
-        this.checkpointService = checkpointService;
         this.taskLockService = taskLockService;
-        this.taskRepo = taskRepo;
     }
 
     /**
-     * Запуск агентного графа с checkpoint сохранением.
-     * Сохраняет состояние после каждого узла.
-     * При успешном завершении — очищает checkpoint.
+     * Запуск нового агентного графа. Checkpoint сохраняется/удаляется графом
+     * автоматически (через JpaCheckpointStore) после каждого узла.
      */
     public AgentResult run(AgentContext ctx) {
         String taskId = ctx.get(TaskState.TASK_ID);
-        String runId = taskId != null ? taskId : java.util.UUID.randomUUID().toString();
+        String runId = taskId != null ? taskId : UUID.randomUUID().toString();
 
-        // Per-task lock — только один агент над задачей
-        if (taskId != null && !taskLockService.tryLock(taskId)) {
-            log.warn("AgentGraph: задача {} уже выполняется другим агентом — отмена", taskId);
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of(
-                    "graph", new IllegalStateException("Task already locked: " + taskId)));
+        if (!taskLockService.tryLock(runId)) {
+            log.warn("AgentGraph: задача {} уже выполняется другим агентом — отмена", runId);
+            return AgentResult.failed(AgentError.of("graph", new IllegalStateException("Task already locked: " + runId)));
         }
 
         log.info("Запуск AgentGraph для задачи: {}", runId);
-
-        // Сохраняем начальный checkpoint
-        checkpointService.saveCheckpoint(runId, "start", ctx, "RUNNING");
-
         try {
-            var result = graph.invoke(ctx);
-
-            if (!result.hasError()) {
-                checkpointService.saveCheckpoint(runId, "completed", ctx, "COMPLETED");
-                log.info("AgentGraph завершён успешно. Очистка checkpoint.");
-                checkpointService.cleanup(runId);
-            } else {
-                checkpointService.saveCheckpoint(runId, "failed", ctx, "FAILED");
-                log.warn("AgentGraph завершён с ошибкой. Checkpoint сохранён для возобновления.");
-            }
-
-            return result;
-
-        } catch (Exception e) {
-            log.error("AgentGraph упал с ошибкой. Checkpoint сохранён для возобновления: {}", e.getMessage(), e);
-            checkpointService.saveCheckpoint(runId, "crashed", ctx, "RUNNING");
-            throw e;
+            return graph.invoke(ctx, runId);
         } finally {
-            if (taskId != null) {
-                taskLockService.unlock(taskId);
-                taskLockService.cleanup(taskId);
-            }
+            taskLockService.cleanup(runId);
         }
     }
 
     /**
-     * Возобновление агентного графа из checkpoint после краха.
+     * Возобновление графа из checkpoint — продолжает ровно с того узла,
+     * на котором остановились ({@code nextNode} из checkpoint), а не с начала.
      *
-     * @param runId ID запуска для восстановления
+     * @param runId      ID запуска для восстановления
+     * @param additional дополнительные сообщения (например ответ пользователя на HITL-вопрос)
      * @return результат выполнения или null если checkpoint не найден
      */
-    public AgentResult resume(String runId) {
+    public AgentResult resume(String runId, Message... additional) {
         if (runId == null) {
             log.warn("AgentGraphRunner.resume: runId is null, отмена");
             return null;
         }
 
-        log.info("Возобновление AgentGraph из checkpoint: {}", runId);
-
         if (!taskLockService.tryLock(runId)) {
             log.warn("AgentGraph: задача {} уже выполняется — resume отменён", runId);
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of(
-                    "graph", new IllegalStateException("Task already locked: " + runId)));
+            return AgentResult.failed(AgentError.of("graph", new IllegalStateException("Task already locked: " + runId)));
         }
 
-        AgentContext restoredCtx = checkpointService.restoreCheckpoint(runId);
-        if (restoredCtx == null) {
-            log.warn("Невозможно возобновить — checkpoint не найден для runId={}", runId);
-            taskLockService.unlock(runId);
-            taskLockService.cleanup(runId);
-            return null;
-        }
-
-        String taskDesc = taskRepo.findById(runId)
-                .map(t -> t.getDescription() != null ? t.getDescription() : "")
-                .orElse("");
-        if (taskDesc.isBlank()) {
-            log.warn("AgentGraphRunner.resume: пустое описание задачи для runId={}, используем empty context", runId);
-        }
-        restoredCtx = AgentContext.of(taskDesc).withState(restoredCtx.state())
-                .with(TaskState.TASK_ID, runId);
-
-        String lastNode = checkpointService.getLastNodeName(runId);
-        log.info("Возобновление с узла: {}", lastNode);
-
+        log.info("Возобновление AgentGraph из checkpoint: {}", runId);
         try {
-            var result = graph.invoke(restoredCtx);
-
-            if (!result.hasError()) {
-                checkpointService.cleanup(runId);
-                log.info("Возобновлённый AgentGraph завершён успешно.");
-            } else {
-                checkpointService.saveCheckpoint(runId, "failed", restoredCtx, "FAILED");
-            }
-
-            return result;
-
-        } catch (Exception e) {
-            log.error("Возобновлённый AgentGraph упал: {}", e.getMessage(), e);
-            checkpointService.saveCheckpoint(runId, "crashed", restoredCtx, "RUNNING");
-            throw e;
+            return graph.resume(runId, additional);
+        } catch (IllegalStateException e) {
+            log.warn("Возобновление невозможно для runId={}: {}", runId, e.getMessage());
+            return null;
         } finally {
-            taskLockService.unlock(runId);
             taskLockService.cleanup(runId);
         }
+    }
+
+    public AgentResult resume(String runId) {
+        return resume(runId, new Message[0]);
     }
 }

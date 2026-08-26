@@ -2,16 +2,18 @@ package ru.allstreets.developer.checkpoint;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.asekka.springai.agents.core.AgentContext;
+import io.github.asekka.springai.agents.core.InterruptRequest;
 import io.github.asekka.springai.agents.core.StateBag;
 import io.github.asekka.springai.agents.core.StateKey;
+import io.github.asekka.springai.agents.graph.Checkpoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.*;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import ru.allstreets.developer.state.StateKeyRegistry;
 
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Сервис checkpoint store — сохранение и восстановление состояния агентного графа.
@@ -34,55 +36,85 @@ public class CheckpointService {
     }
 
     /**
-     * Сохранение checkpoint после выполнения узла графа.
+     * Сохранение checkpoint графа — используется {@link JpaCheckpointStore}.
+     * Сохраняет весь {@link AgentContext} (state + messages), номер итерации графа
+     * и причину interrupt (HITL-пауза), если есть.
      *
-     * @param runId    ID запуска графа
-     * @param nodeName имя выполненного узла
-     * @param ctx      контекст агента (state)
-     * @param status   статус: RUNNING, COMPLETED, FAILED
+     * @param runId           ID запуска графа
+     * @param nextNode        узел, с которого граф должен продолжить при resume
+     * @param ctx             контекст агента (state + messages)
+     * @param iterations      счётчик итераций графа (для лимита maxIterations)
+     * @param interruptReason причина паузы (HITL-вопрос) или null
      */
-    public void saveCheckpoint(String runId, String nodeName, AgentContext ctx, String status) {
+    public void saveCheckpoint(String runId, String nextNode, AgentContext ctx, int iterations, String interruptReason) {
         try {
-            // Итерируем реальные StateKey из StateBag — имя ключа известно точно,
-            // тип при восстановлении берётся из StateKeyRegistry (см. restoreCheckpoint),
-            // поэтому рантайм-класс значения здесь не нужен.
-            var entries = new java.util.ArrayList<java.util.Map<String, Object>>();
+            var entries = new ArrayList<Map<String, Object>>();
             for (StateKey<?> key : ctx.state().keys()) {
-                var wrapped = new java.util.LinkedHashMap<String, Object>();
+                var wrapped = new LinkedHashMap<String, Object>();
                 wrapped.put("key", key.name());
                 wrapped.put("value", ctx.state().get(key));
                 entries.add(wrapped);
             }
-            String stateJson = objectMapper.writeValueAsString(entries);
-            String checkpointId = runId + "-" + nodeName + "-" + UUID.randomUUID().toString().substring(0, 8);
 
-            CheckpointEntity entity = new CheckpointEntity(checkpointId, runId, nodeName, stateJson, status);
+            var messages = new ArrayList<Map<String, String>>();
+            for (Message m : ctx.messages()) {
+                var wrapped = new LinkedHashMap<String, String>();
+                wrapped.put("role", m.getMessageType().getValue());
+                wrapped.put("text", m.getText());
+                messages.add(wrapped);
+            }
+
+            var root = new LinkedHashMap<String, Object>();
+            root.put("state", entries);
+            root.put("messages", messages);
+            String stateJson = objectMapper.writeValueAsString(root);
+            String checkpointId = runId + "-" + nextNode + "-" + UUID.randomUUID().toString().substring(0, 8);
+
+            CheckpointEntity entity = new CheckpointEntity(checkpointId, runId, nextNode, stateJson, "RUNNING",
+                    iterations, interruptReason);
             repository.save(entity);
 
-            log.debug("Checkpoint сохранён: runId={}, node={}, status={}", runId, nodeName, status);
+            log.debug("Checkpoint сохранён: runId={}, nextNode={}, iterations={}, interrupt={}",
+                    runId, nextNode, iterations, interruptReason != null);
 
         } catch (Exception e) {
-            log.error("Ошибка сериализации state для checkpoint: {}", e.getMessage());
+            log.error("Ошибка сериализации checkpoint для runId={}: {}", runId, e.getMessage());
         }
     }
 
     /**
+     * Загрузка последнего checkpoint для runId в формате библиотеки agent-flow-graph.
+     * Используется {@link JpaCheckpointStore#load(String)} для нативного resume.
+     */
+    public Optional<Checkpoint> loadCheckpoint(String runId) {
+        var checkpoint = repository.findTopByRunIdOrderByCreatedAtDesc(runId);
+        if (checkpoint.isEmpty()) {
+            return Optional.empty();
+        }
+        var entity = checkpoint.get();
+        AgentContext ctx = deserializeContext(entity, runId);
+        if (ctx == null) {
+            return Optional.empty();
+        }
+        InterruptRequest interrupt = entity.getInterruptReason() != null
+                ? InterruptRequest.of(entity.getInterruptReason())
+                : null;
+        return Optional.of(new Checkpoint(runId, entity.getNodeName(), ctx, entity.getIterations(), interrupt));
+    }
+
+    /**
      * Восстановление контекста из последнего checkpoint для указанного runId.
+     * Используется только для read-only просмотра (например, чтобы достать chatId
+     * перед resume) — сам resume идёт через {@link JpaCheckpointStore}/{@code AgentGraph.resume}.
      *
      * @param runId ID запуска графа
      * @return восстановленный AgentContext или null если checkpoint не найден
      */
     public AgentContext restoreCheckpoint(String runId) {
-        var checkpoint = repository.findTopByRunIdOrderByCreatedAtDesc(runId);
-        if (checkpoint.isEmpty()) {
-            log.warn("Checkpoint не найден для runId={}", runId);
-            return null;
-        }
+        return loadCheckpoint(runId).map(Checkpoint::context).orElse(null);
+    }
 
-        var entity = checkpoint.get();
-        log.info("Восстановление из checkpoint: runId={}, node={}, status={}",
-                runId, entity.getNodeName(), entity.getStatus());
-
+    private AgentContext deserializeContext(CheckpointEntity entity, String runId) {
         try {
             String json = entity.getStateJson();
             if (json == null || json.isBlank()) {
@@ -90,44 +122,72 @@ public class CheckpointService {
                 return null;
             }
 
-            // Проверяем формат: ожидаем массив [{key, value, type}, ...]
             String trimmed = json.trim();
-            if (!trimmed.startsWith("[")) {
-                log.warn("Checkpoint stateJson не в формате массива для runId={} (начинается с '{}'), пропуск. " +
-                                "Возможно старый формат — очистите таблицу agent_checkpoints.",
-                        runId, trimmed.length() > 20 ? trimmed.substring(0, 20) : trimmed);
+            if (trimmed.startsWith("[")) {
+                // Старый формат (только state, без messages) — оставлено для совместимости
+                // с checkpoint-строками, сохранёнными до перехода на JpaCheckpointStore.
+                return AgentContext.empty().withState(deserializeState(json, runId));
+            }
+            if (!trimmed.startsWith("{")) {
+                log.warn("Checkpoint stateJson неизвестного формата для runId={}, пропуск", runId);
                 return null;
             }
 
-            var entries = objectMapper.readValue(json,
-                    new com.fasterxml.jackson.core.type.TypeReference<java.util.List<java.util.Map<String, Object>>>() {
+            var root = objectMapper.readValue(json,
+                    new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
                     });
+            String stateJson = objectMapper.writeValueAsString(root.getOrDefault("state", List.of()));
+            StateBag stateBag = deserializeState(stateJson, runId);
 
-            StateBag stateBag = StateBag.empty();
-            int skipped = 0;
-            for (var entry : entries) {
-                String name = (String) entry.get("key");
-                Object rawValue = entry.get("value");
-                if (rawValue == null) continue;
-
-                StateKey<?> key = StateKeyRegistry.byName(name);
-                if (key == null) {
-                    log.warn("Checkpoint restore: неизвестный ключ '{}' (устарел/переименован) для runId={} — пропуск", name, runId);
-                    skipped++;
-                    continue;
-                }
-
-                var javaType = objectMapper.getTypeFactory().constructType(StateKeyRegistry.genericType(name));
-                Object typedValue = objectMapper.convertValue(rawValue, javaType);
-                stateBag = putTyped(stateBag, key, typedValue);
+            @SuppressWarnings("unchecked")
+            var rawMessages = (List<Map<String, String>>) root.getOrDefault("messages", List.of());
+            List<Message> messages = new ArrayList<>();
+            for (var m : rawMessages) {
+                messages.add(toMessage(m.get("role"), m.get("text")));
             }
-            log.debug("Checkpoint восстановлен: runId={}, {} ключей в state ({} пропущено)", runId, entries.size(), skipped);
-            return AgentContext.empty().withState(stateBag);
+
+            return AgentContext.of(messages.toArray(new Message[0])).withState(stateBag);
 
         } catch (Exception e) {
-            log.error("Ошибка десериализации state из checkpoint runId={}: {}", runId, e.getMessage());
+            log.error("Ошибка десериализации checkpoint runId={}: {}", runId, e.getMessage());
             return null;
         }
+    }
+
+    private Message toMessage(String role, String text) {
+        MessageType type = role != null ? MessageType.fromValue(role) : MessageType.USER;
+        return switch (type) {
+            case ASSISTANT -> new AssistantMessage(text);
+            case SYSTEM -> new SystemMessage(text);
+            default -> new UserMessage(text);
+        };
+    }
+
+    private StateBag deserializeState(String stateJson, String runId) throws Exception {
+        var entries = objectMapper.readValue(stateJson,
+                new com.fasterxml.jackson.core.type.TypeReference<List<Map<String, Object>>>() {
+                });
+
+        StateBag stateBag = StateBag.empty();
+        int skipped = 0;
+        for (var entry : entries) {
+            String name = (String) entry.get("key");
+            Object rawValue = entry.get("value");
+            if (rawValue == null) continue;
+
+            StateKey<?> key = StateKeyRegistry.byName(name);
+            if (key == null) {
+                log.warn("Checkpoint restore: неизвестный ключ '{}' (устарел/переименован) для runId={} — пропуск", name, runId);
+                skipped++;
+                continue;
+            }
+
+            var javaType = objectMapper.getTypeFactory().constructType(StateKeyRegistry.genericType(name));
+            Object typedValue = objectMapper.convertValue(rawValue, javaType);
+            stateBag = putTyped(stateBag, key, typedValue);
+        }
+        log.debug("Checkpoint state восстановлен: runId={}, {} ключей ({} пропущено)", runId, entries.size(), skipped);
+        return stateBag;
     }
 
     /**

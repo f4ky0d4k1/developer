@@ -290,8 +290,8 @@ public class TelegramBotListener {
                     }
                     case HITL_ANSWER -> {
                         if (decision.taskId() != null && decision.text() != null) {
-                            humanInputRegistry.provideAnswer(decision.taskId(), decision.text());
-                            log.info("TG poll: HITL ответ направлен задаче {}", decision.taskId());
+                            log.info("TG poll: HITL ответ для задачи {} — resume", decision.taskId());
+                            taskLauncher.resumeWithAnswer(decision.taskId(), decision.text());
                         } else {
                             log.warn("TG poll: HITL_ANSWER без taskId/answer — игнор");
                         }

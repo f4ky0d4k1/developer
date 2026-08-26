@@ -8,14 +8,17 @@ import ru.allstreets.developer.checkpoint.PendingInputEntity;
 import ru.allstreets.developer.checkpoint.PendingInputRepository;
 
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
- * Реестр ожидаемых ответов от человека — per-task, DB-backed.
- * Агент создаёт CompletableFuture и блокируется на нём.
+ * Реестр pending HITL-вопросов — per-task, DB-backed.
+ * <p>
+ * Не блокирует потоки: вопрос приостанавливает граф через
+ * {@code AgentResult.interrupted(...)} и сохраняет checkpoint — поток из пула
+ * возвращается сразу. Ответ пользователя запускает {@code TaskLauncher.resumeWithAnswer(...)},
+ * который вызывает {@code graph.resume(runId, answerMessage)} — продолжение той же
+ * OpenCode-сессии в том же зарезервированном слоте (см. AnalystNode), без перезапуска.
+ * <p>
  * Pending questions persist в БД — при рестарте можно ре-нотифицировать пользователя.
  * ConversationAgent решает, какое сообщение является ответом для какой задачи.
  */
@@ -31,26 +34,22 @@ public class HumanInputRegistry {
         this.pendingRepo = pendingRepo;
     }
 
-    public String requestInput(String taskId, long chatId, String question, long timeoutSeconds) {
-        var future = new CompletableFuture<String>();
-        pendingInputs.put(taskId, new PendingInput(question, chatId, future, System.currentTimeMillis()));
+    /**
+     * Зарегистрировать вопрос, ожидающий ответа. Не блокирует — граф уже
+     * приостановлен через interrupt, вызывающий агент вернул управление немедленно.
+     */
+    public void registerPending(String taskId, long chatId, String question) {
+        pendingInputs.put(taskId, new PendingInput(question, chatId, System.currentTimeMillis()));
         pendingRepo.save(new PendingInputEntity(taskId, chatId, question));
+        log.info("HumanInput: зарегистрирован pending-вопрос для taskId={} chatId={}", taskId, chatId);
+    }
 
-        log.info("HumanInput: запрос для taskId={} chatId={}, ожидание до {}с", taskId, chatId, timeoutSeconds);
-
-        try {
-            return future.get(timeoutSeconds, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            log.warn("HumanInput: таймаут для taskId={}", taskId);
-            pendingInputs.remove(taskId);
-            pendingRepo.deleteById(taskId);
-            return null;
-        } catch (Exception e) {
-            log.error("HumanInput: ошибка ожидания для taskId={}: {}", taskId, e.getMessage());
-            pendingInputs.remove(taskId);
-            pendingRepo.deleteById(taskId);
-            return null;
-        }
+    /**
+     * chatId, для которого зарегистрирован pending-вопрос данной задачи, или null.
+     */
+    public Long getChatIdForPending(String taskId) {
+        var pending = pendingInputs.get(taskId);
+        return pending != null ? pending.chatId() : null;
     }
 
     public boolean hasPendingInputs(long chatId) {
@@ -67,11 +66,14 @@ public class HumanInputRegistry {
         return result;
     }
 
-    public void provideAnswer(String taskId, String answer) {
+    /**
+     * Снять pending-вопрос после того, как ответ получен и запущен resume задачи.
+     * Ничего не блокирует и не завершает — это делает {@code TaskLauncher.resumeWithAnswer}.
+     */
+    public void provideAnswer(String taskId) {
         var pending = pendingInputs.remove(taskId);
         if (pending != null) {
             log.info("HumanInput: ответ получен для taskId={}", taskId);
-            pending.future().complete(answer);
             pendingRepo.deleteById(taskId);
         } else {
             log.warn("HumanInput: нет pending запроса для taskId={}", taskId);
@@ -79,13 +81,11 @@ public class HumanInputRegistry {
     }
 
     public void cancel(String taskId) {
-        var pending = pendingInputs.remove(taskId);
-        if (pending != null) {
-            pending.future().cancel(true);
+        if (pendingInputs.remove(taskId) != null) {
             pendingRepo.deleteById(taskId);
         }
     }
 
-    public record PendingInput(String question, long chatId, CompletableFuture<String> future, long createdAt) {
+    public record PendingInput(String question, long chatId, long createdAt) {
     }
 }

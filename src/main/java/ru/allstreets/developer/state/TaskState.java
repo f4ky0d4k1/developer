@@ -33,6 +33,12 @@ public final class TaskState {
     // ─── Роль агента для логирования ───
     public static final StateKey<String> AGENT_ROLE = StateKey.of("agentRole", String.class);
 
+    // ─── HITL-пауза: слот/сессия OpenCode, которые нужно продолжить при resume ───
+    public static final StateKey<Integer> OPENCODE_SLOT = StateKey.of("opencodeSlot", Integer.class);
+    public static final StateKey<String> OPENCODE_SESSION_ID = StateKey.of("opencodeSessionId", String.class);
+    public static final StateKey<Integer> CLARIFICATION_COUNT = StateKey.of("clarificationCount", Integer.class);
+    public static final StateKey<String> OPENCODE_OUTPUT = StateKey.of("opencodeOutput", String.class);
+
     // ─── Tracking требований задачи ───
     public static final StateKey<Boolean> ANALYSIS_DONE = StateKey.of("analysisDone", Boolean.class);
     public static final StateKey<Boolean> REQUIRES_DEVELOPMENT = StateKey.of("requiresDevelopment", Boolean.class);

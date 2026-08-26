@@ -5,12 +5,14 @@ import io.github.asekka.springai.agents.core.AgentResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.CheckpointService;
-import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
+import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
 
 import java.util.Map;
@@ -29,7 +31,7 @@ public class TaskLauncher {
     private final ActiveTaskRegistry taskRegistry;
     private final HumanInputRegistry humanInputRegistry;
     private final CheckpointService checkpointService;
-    private final TaskRepository taskRepo;
+    private final OpenCodeSessionPool sessionPool;
     private final ThreadPoolExecutor executor;
     private final ChatClient fallbackChatClient;
 
@@ -40,7 +42,7 @@ public class TaskLauncher {
                         ActiveTaskRegistry taskRegistry,
                         HumanInputRegistry humanInputRegistry,
                         CheckpointService checkpointService,
-                        TaskRepository taskRepo,
+                        OpenCodeSessionPool sessionPool,
                         @Qualifier("taskExecutor") ThreadPoolExecutor executor,
                         @Qualifier("fallbackChatClient") ChatClient fallbackChatClient) {
         this.graphRunner = graphRunner;
@@ -48,7 +50,7 @@ public class TaskLauncher {
         this.taskRegistry = taskRegistry;
         this.humanInputRegistry = humanInputRegistry;
         this.checkpointService = checkpointService;
-        this.taskRepo = taskRepo;
+        this.sessionPool = sessionPool;
         this.executor = executor;
         this.fallbackChatClient = fallbackChatClient;
     }
@@ -146,6 +148,8 @@ public class TaskLauncher {
             launch(augmentedDesc, chatId);
         } else {
             log.debug("TaskLauncher: задача {} не running, interrupt не нужен", taskId);
+            // Если задача HITL-paused — освобождаем ресурсы
+            cancel(taskId);
         }
     }
 
@@ -163,6 +167,14 @@ public class TaskLauncher {
 
             AgentResult result = graphRunner.run(ctx);
 
+            if (result.isInterrupted() && result.interrupt() != null) {
+                // HITL-пауза: граф сохранён, поток освобождён, задача ждёт ответа пользователя.
+                // Не помечаем как completed/failed — задача остаётся RUNNING.
+                log.info("TaskLauncher: задача {} приостановлена (HITL interrupt: {})",
+                        taskId.substring(0, 8), result.interrupt().reason());
+                return;
+            }
+
             String resultMsg;
             if (!result.hasError()) {
                 String resultText = result.text() != null ? result.text() : "";
@@ -171,8 +183,6 @@ public class TaskLauncher {
                 } else if (resultText.isBlank() || "Готово".equals(resultText)) {
                     resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
                 } else {
-                    // Analysis-only tasks: AnalystNode already sent the full analysis to user.
-                    // Don't duplicate the full text — just send a short confirmation.
                     resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
                 }
                 taskRegistry.markCompleted(taskId);
@@ -197,6 +207,32 @@ public class TaskLauncher {
         }
     }
 
+    /**
+     * Возобновить задачу после HITL-паузы с ответом пользователя.
+     * Граф продолжит с того же узла (AnalystNode), агент прочитает ответ из messages.
+     *
+     * @param taskId ID задачи
+     * @param answer ответ пользователя
+     */
+    public void resumeWithAnswer(String taskId, String answer) {
+        log.info("TaskLauncher: resumeWithAnswer для задачи {}", taskId.substring(0, 8));
+        Long chatId = humanInputRegistry.getChatIdForPending(taskId);
+        humanInputRegistry.provideAnswer(taskId);
+
+        if (chatId == null) {
+            log.warn("TaskLauncher: нет chatId для pending задачи {} — resume невозможен", taskId);
+            return;
+        }
+
+        try {
+            Future<?> future = executor.submit(() -> resumeHitlTask(taskId, chatId, answer));
+            runningTasks.put(taskId, future);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            log.error("TaskLauncher: resume задачи {} отклонён (backpressure): {}", taskId, e.getMessage());
+            telegram.sendMessage(chatId, "⏳ Система перегружена — попробуйте позже.", taskId);
+        }
+    }
+
     public boolean isRunning(String taskId) {
         Future<?> f = runningTasks.get(taskId);
         return f != null && !f.isDone();
@@ -205,6 +241,7 @@ public class TaskLauncher {
     /**
      * Отменить задачу без перезапуска.
      * Прерывает running future, отменяет HITL, освобождает ресурсы.
+     * Для HITL-paused задач — читает checkpoint, освобождает OpenCode слот, удаляет checkpoint.
      */
     public void cancel(String taskId) {
         Future<?> future = runningTasks.get(taskId);
@@ -214,6 +251,18 @@ public class TaskLauncher {
         }
         runningTasks.remove(taskId);
         humanInputRegistry.cancel(taskId);
+
+        // Если задача была HITL-paused — в checkpoint есть OPENCODE_SLOT, нужно освободить
+        var checkpoint = checkpointService.loadCheckpoint(taskId).orElse(null);
+        if (checkpoint != null && checkpoint.context() != null) {
+            Integer slot = checkpoint.context().get(TaskState.OPENCODE_SLOT);
+            if (slot != null) {
+                log.info("TaskLauncher: освобождение OpenCode слота {} для отменённой HITL задачи {}", slot, taskId);
+                sessionPool.cleanupSlot(slot);
+                sessionPool.release(slot);
+            }
+        }
+        checkpointService.cleanup(taskId);
     }
 
     /**
@@ -258,40 +307,13 @@ public class TaskLauncher {
 
     private void resumeTask(String taskId, long chatId, String additionalContext) {
         try {
-            var ctx = checkpointService.restoreCheckpoint(taskId);
-            if (ctx == null) {
-                log.error("TaskLauncher: не удалось восстановить контекст для задачи {}", taskId);
-                telegram.sendMessage(chatId, "❌ Не удалось восстановить контекст задачи " + taskId.substring(0, 8), taskId);
-                taskRegistry.markFailed(taskId);
-                return;
-            }
+            Message[] additional = (additionalContext != null && !additionalContext.isBlank())
+                    ? new Message[]{new UserMessage(
+                    "Дополнение от пользователя при перезапуске:\n" + additionalContext)}
+                    : new Message[0];
 
-            String taskDesc = taskRepo.findById(taskId)
-                    .map(t -> t.getDescription() != null ? t.getDescription() : "")
-                    .orElse("");
-
-            String fullDesc = (additionalContext != null && !additionalContext.isBlank())
-                    ? taskDesc + "\n\nДополнение от пользователя при перезапуске:\n" + additionalContext
-                    : taskDesc;
-
-            ctx = AgentContext.of(fullDesc).withState(ctx.state())
-                    .with(TaskState.TASK_ID, taskId)
-                    .with(TaskState.TG_CHAT_ID, String.valueOf(chatId));
-            AgentResult result = graphRunner.run(ctx);
-
-            String resultMsg;
-            if (result == null) {
-                resultMsg = "❌ Не удалось перезапустить задачу " + taskId.substring(0, 8) + " — checkpoint повреждён.";
-                taskRegistry.markFailed(taskId);
-            } else if (!result.hasError()) {
-                resultMsg = "✅ Задача " + taskId.substring(0, 8) + " перезапущена и завершена.";
-                taskRegistry.markCompleted(taskId);
-            } else {
-                resultMsg = "❌ Задача " + taskId.substring(0, 8) + " снова упала: " + result.error();
-                taskRegistry.markFailed(taskId);
-            }
-
-            telegram.sendMessage(chatId, resultMsg, taskId);
+            AgentResult result = graphRunner.resume(taskId, additional);
+            handleResumeResult(taskId, chatId, result);
 
         } catch (Exception e) {
             if (Thread.currentThread().isInterrupted()) {
@@ -304,6 +326,52 @@ public class TaskLauncher {
         } finally {
             runningTasks.remove(taskId);
         }
+    }
+
+    private void resumeHitlTask(String taskId, long chatId, String answer) {
+        try {
+            Message[] additional = new Message[]{new UserMessage(answer)};
+            AgentResult result = graphRunner.resume(taskId, additional);
+            handleResumeResult(taskId, chatId, result);
+
+        } catch (Exception e) {
+            if (Thread.currentThread().isInterrupted()) {
+                log.info("TaskLauncher: HITL resume задачи {} прерван (interrupt)", taskId);
+                return;
+            }
+            log.error("Ошибка HITL resume задачи {}: {}", taskId, e.getMessage(), e);
+            telegram.sendMessage(chatId, "❌ Ошибка возобновления: " + e.getMessage(), taskId);
+            taskRegistry.markFailed(taskId);
+        } finally {
+            runningTasks.remove(taskId);
+        }
+    }
+
+    private void handleResumeResult(String taskId, long chatId, AgentResult result) {
+        if (result == null) {
+            telegram.sendMessage(chatId,
+                    "❌ Не удалось возобновить задачу " + taskId.substring(0, 8) + " — checkpoint повреждён.",
+                    taskId);
+            taskRegistry.markFailed(taskId);
+            return;
+        }
+
+        if (result.isInterrupted() && result.interrupt() != null) {
+            // Повторная HITL-пауза — задача снова ждёт ответа
+            log.info("TaskLauncher: задача {} снова приостановлена (HITL: {})",
+                    taskId.substring(0, 8), result.interrupt().reason());
+            return;
+        }
+
+        String resultMsg;
+        if (!result.hasError()) {
+            resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
+            taskRegistry.markCompleted(taskId);
+        } else {
+            resultMsg = "❌ Задача " + taskId.substring(0, 8) + " упала: " + result.error();
+            taskRegistry.markFailed(taskId);
+        }
+        telegram.sendMessage(chatId, resultMsg, taskId);
     }
 
     @jakarta.annotation.PreDestroy

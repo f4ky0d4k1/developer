@@ -6,6 +6,7 @@ import io.github.asekka.springai.agents.core.AgentResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -56,7 +57,6 @@ public class AnalystNode implements Agent {
 
     @Override
     public AgentResult execute(AgentContext ctx) {
-        String taskDescription = ctx.messages().isEmpty() ? "" : ctx.messages().getFirst().getText();
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
         String taskId = ctx.get(TaskState.TASK_ID);
 
@@ -67,130 +67,152 @@ public class AnalystNode implements Agent {
         }
 
         long chatIdLong = Long.parseLong(chatId);
-        String targetRepo = ctx.get(TaskState.TARGET_REPO);
-        String repoUrl = toRepoUrl(targetRepo);
 
-        log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
-        telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу над задачей...");
+        // === Detect resume from HITL interrupt ===
+        String existingSessionId = ctx.get(TaskState.OPENCODE_SESSION_ID);
+        Integer existingSlot = ctx.get(TaskState.OPENCODE_SLOT);
+        Integer savedClarificationCount = ctx.get(TaskState.CLARIFICATION_COUNT);
+        int clarificationCount = savedClarificationCount != null ? savedClarificationCount : 0;
 
-        int slot = sessionPool.acquire(600);
-        if (slot < 0) {
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
-                    new RuntimeException("Таймаут ожидания слота OpenCode")));
+        String currentOutput;
+        String currentSessionId;
+        int slot;
+
+        if (existingSessionId != null && existingSlot != null) {
+            // === Resume from HITL interrupt ===
+            slot = existingSlot;
+            currentSessionId = existingSessionId;
+
+            String userAnswer = extractLastUserMessage(ctx);
+            if (userAnswer == null || userAnswer.isBlank()) {
+                log.warn("Аналитик: resume без ответа пользователя — продолжаю с сохранённым выводом");
+                currentOutput = ctx.get(TaskState.OPENCODE_OUTPUT);
+            } else {
+                log.info("Аналитик: resume с ответом пользователя, возобновление сессии {}", currentSessionId);
+                String resumePrompt = "Ответ пользователя на уточняющий вопрос: " + userAnswer;
+                try {
+                    var resumeResult = openCode.runAgent("analyst", resumePrompt,
+                            sessionPool.getSlotWorkDir(slot), taskId, currentSessionId);
+                    if (resumeResult.error() != null && !resumeResult.error().isEmpty()) {
+                        log.error("Аналитик: ошибка возобновления сессии: {}", resumeResult.error());
+                        currentOutput = ctx.get(TaskState.OPENCODE_OUTPUT);
+                    } else {
+                        currentOutput = resumeResult.output() != null ? resumeResult.output()
+                                : ctx.get(TaskState.OPENCODE_OUTPUT);
+                        if (resumeResult.sessionId() != null) {
+                            currentSessionId = resumeResult.sessionId();
+                        }
+                    }
+                } catch (Exception e) {
+                    log.error("Аналитик: ошибка возобновления OpenCode: {}", e.getMessage(), e);
+                    currentOutput = ctx.get(TaskState.OPENCODE_OUTPUT);
+                }
+            }
+        } else {
+            // === First run ===
+            String taskDescription = ctx.messages().isEmpty() ? "" : ctx.messages().getFirst().getText();
+            String targetRepo = ctx.get(TaskState.TARGET_REPO);
+            String repoUrl = toRepoUrl(targetRepo);
+
+            log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
+            telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу над задачей...");
+
+            slot = sessionPool.acquire(600);
+            if (slot < 0) {
+                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
+                        new RuntimeException("Таймаут ожидания слота OpenCode")));
+            }
+
+            try {
+                sessionPool.prepareSlot(slot, repoUrl);
+                String workDir = sessionPool.getSlotWorkDir(slot);
+                String prompt = buildAnalystPrompt(ctx, taskDescription);
+
+                var ocResult = openCode.runAgent("analyst", prompt, workDir, taskId);
+                currentOutput = ocResult.output() != null ? ocResult.output() : "";
+                currentSessionId = ocResult.sessionId();
+
+                if (ocResult.error() != null && !ocResult.error().isEmpty()) {
+                    log.error("Аналитик: ошибка OpenCode: {}", ocResult.error());
+                    telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + ocResult.error());
+                    sessionPool.cleanupSlot(slot);
+                    sessionPool.release(slot);
+                    return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
+                            new RuntimeException("OpenCode error: " + ocResult.error())));
+                }
+
+                if (currentOutput.isBlank()) {
+                    log.error("Аналитик: OpenCode вернул пустой вывод");
+                    telegram.sendMessage(chatIdLong, "❌ OpenCode вернул пустой результат");
+                    sessionPool.cleanupSlot(slot);
+                    sessionPool.release(slot);
+                    return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
+                            new RuntimeException("OpenCode returned empty output")));
+                }
+
+                log.info("Аналитик: OpenCode завершён. output: {} символов, session={}",
+                        currentOutput.length(), currentSessionId);
+
+            } catch (Exception e) {
+                log.error("Аналитик: ошибка OpenCode: {}", e.getMessage(), e);
+                sessionPool.cleanupSlot(slot);
+                sessionPool.release(slot);
+                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst", e));
+            }
         }
 
-        String openCodeOutput;
-        String sessionId;
+        // === Parse output via structured output ===
+        AgentResponses.AnalystResult result;
         try {
-            sessionPool.prepareSlot(slot, repoUrl);
-            String workDir = sessionPool.getSlotWorkDir(slot);
+            String parsePrompt = """
+                    Извлеки JSON из ответа аналитика и верни как structured output.
+                    Если поле отсутствует — верни null. nextStep по умолчанию "done".
+                    
+                    Ответ аналитика:
+                    %s
+                    """.formatted(currentOutput);
 
-            String prompt = buildAnalystPrompt(ctx, taskDescription);
-
-            var ocResult = openCode.runAgent("analyst", prompt, workDir, taskId);
-            openCodeOutput = ocResult.output() != null ? ocResult.output() : "";
-            sessionId = ocResult.sessionId();
-
-            if (ocResult.error() != null && !ocResult.error().isEmpty()) {
-                log.error("Аналитик: ошибка OpenCode: {}", ocResult.error());
-                telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + ocResult.error());
-                sessionPool.cleanupSlot(slot);
-                sessionPool.release(slot);
-                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
-                        new RuntimeException("OpenCode error: " + ocResult.error())));
-            }
-
-            if (openCodeOutput.isBlank()) {
-                log.error("Аналитик: OpenCode вернул пустой вывод");
-                telegram.sendMessage(chatIdLong, "❌ OpenCode вернул пустой результат");
-                sessionPool.cleanupSlot(slot);
-                sessionPool.release(slot);
-                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
-                        new RuntimeException("OpenCode returned empty output")));
-            }
-
-            log.info("Аналитик: OpenCode завершён. output: {} символов, session={}", openCodeOutput.length(), sessionId);
-
+            result = structuredOutput.callWithFallback(
+                    chatClient, fallbackChatClient, parsePrompt, AgentResponses.AnalystResult.class);
         } catch (Exception e) {
-            log.error("Аналитик: ошибка OpenCode: {}", e.getMessage(), e);
-            sessionPool.cleanupSlot(slot);
-            sessionPool.release(slot);
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst", e));
+            log.error("Аналитик: ошибка парсинга structured output: {}", e.getMessage());
+            result = null;
         }
-        // ВНИМАНИЕ: слот НЕ освобождается здесь — он нужен для HITL-цикла ниже.
-        // Освобождение в finally после HITL.
+
+        // === Check if it needs clarification → interrupt (non-blocking) ===
+        if (result != null && result.needsClarification() && result.clarificationQuestion() != null
+                && clarificationCount < maxClarifications) {
+
+            log.info("Аналитик: требуется уточнение #{} (session={})", clarificationCount + 1, currentSessionId);
+            humanLoop.askHuman(taskId, chatIdLong, result.clarificationQuestion());
+
+            // Save state for resume — slot is NOT released
+            var stateMap = new java.util.HashMap<io.github.asekka.springai.agents.core.StateKey<?>, Object>();
+            stateMap.put(TaskState.OPENCODE_SLOT, slot);
+            stateMap.put(TaskState.OPENCODE_SESSION_ID, currentSessionId);
+            stateMap.put(TaskState.CLARIFICATION_COUNT, clarificationCount + 1);
+            stateMap.put(TaskState.OPENCODE_OUTPUT, currentOutput);
+
+            return AgentResult.builder()
+                    .stateUpdates(stateMap)
+                    .interrupt("HITL_CLARIFICATION")
+                    .completed(false)
+                    .build();
+        }
+
+        if (result != null && result.needsClarification() && clarificationCount >= maxClarifications) {
+            log.warn("Аналитик: достигнут лимит HITL-уточнений ({}), выходим", maxClarifications);
+        }
+
+        // === Analysis complete — release slot and return ===
+        sessionPool.cleanupSlot(slot);
+        sessionPool.release(slot);
 
         String spec;
         String trackerIssueId;
         String nextStep;
         boolean requiresDev;
         boolean requiresTest;
-
-        // Цикл HITL-уточнений: парсим ответ → если needsClarification → спрашиваем →
-        // возобновляем сессию с ответом → парсим заново. Максимум 3 итерации.
-        AgentResponses.AnalystResult result = null;
-        String currentOutput = openCodeOutput;
-        String currentSessionId = sessionId;
-
-        for (int i = 0; i <= maxClarifications; i++) {
-            // Парсим ответ OpenCode через Spring AI structured output
-            try {
-                String parsePrompt = """
-                        Извлеки JSON из ответа аналитика и верни как structured output.
-                        Если поле отсутствует — верни null. nextStep по умолчанию "done".
-                        
-                        Ответ аналитика:
-                        %s
-                        """.formatted(currentOutput);
-
-                result = structuredOutput.callWithFallback(
-                        chatClient, fallbackChatClient, parsePrompt, AgentResponses.AnalystResult.class);
-            } catch (Exception e) {
-                log.error("Аналитик: ошибка парсинга structured output: {}", e.getMessage());
-                result = null;
-                break;
-            }
-
-            if (result == null) {
-                break;
-            }
-
-            // Проверяем needsClarification
-            if (!result.needsClarification() || result.clarificationQuestion() == null) {
-                break;
-            }
-
-            if (i >= maxClarifications) {
-                log.warn("Аналитик: достигнут лимит HITL-уточнений ({}), выходим", maxClarifications);
-                break;
-            }
-
-            // Спрашиваем пользователя
-            String answer = humanLoop.askHuman(taskId, chatIdLong, result.clarificationQuestion());
-            if (answer == null) {
-                log.warn("Аналитик: ответ пользователя не получен (таймаут), выходим из HITL-цикла");
-                break;
-            }
-
-            log.info("Аналитик: получен ответ пользователя, возобновление сессии {} с уточнением", currentSessionId);
-
-            // Возобновляем сессию — LLM помнит контекст, отправляем только ответ
-            String resumePrompt = "Ответ пользователя на уточняющий вопрос: " + answer;
-            try {
-                var resumeResult = openCode.runAgent("analyst", resumePrompt, sessionPool.getSlotWorkDir(slot), taskId, currentSessionId);
-                if (resumeResult.error() != null && !resumeResult.error().isEmpty()) {
-                    log.error("Аналитик: ошибка возобновления сессии: {}", resumeResult.error());
-                    break;
-                }
-                currentOutput = resumeResult.output() != null ? resumeResult.output() : currentOutput;
-                if (resumeResult.sessionId() != null) {
-                    currentSessionId = resumeResult.sessionId();
-                }
-            } catch (Exception e) {
-                log.error("Аналитик: ошибка возобновления OpenCode: {}", e.getMessage(), e);
-                break;
-            }
-        }
 
         if (result != null) {
             spec = (result.spec() != null && !result.spec().isBlank()) ? result.spec() : currentOutput;
@@ -199,7 +221,6 @@ public class AnalystNode implements Agent {
             requiresDev = result.requiresDevelopment();
             requiresTest = result.requiresTesting();
         } else {
-            // Fallback: используем raw output
             spec = currentOutput;
             trackerIssueId = null;
             nextStep = "done";
@@ -219,10 +240,6 @@ public class AnalystNode implements Agent {
             tgMessage += "\n\n" + (spec.length() > maxLen ? spec.substring(0, maxLen) + "..." : spec);
         }
         telegram.sendMessage(chatIdLong, tgMessage);
-
-        // Освобождаем слот только после завершения HITL-цикла
-        sessionPool.cleanupSlot(slot);
-        sessionPool.release(slot);
 
         var stateMap = new java.util.HashMap<io.github.asekka.springai.agents.core.StateKey<?>, Object>();
         stateMap.put(TaskState.SPEC, spec);
@@ -245,6 +262,16 @@ public class AnalystNode implements Agent {
                 .stateUpdates(stateMap)
                 .completed(true)
                 .build();
+    }
+
+    private String extractLastUserMessage(AgentContext ctx) {
+        var messages = ctx.messages();
+        if (messages.isEmpty()) return null;
+        var last = messages.getLast();
+        if (last.getMessageType() == MessageType.USER) {
+            return last.getText();
+        }
+        return null;
     }
 
     private String buildAnalystPrompt(AgentContext ctx, String taskDescription) {

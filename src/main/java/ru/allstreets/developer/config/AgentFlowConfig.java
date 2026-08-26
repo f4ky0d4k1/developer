@@ -11,7 +11,7 @@ import ru.allstreets.developer.agents.AnalystNode;
 import ru.allstreets.developer.agents.DeveloperNode;
 import ru.allstreets.developer.agents.PostValidationNode;
 import ru.allstreets.developer.agents.TesterNode;
-import ru.allstreets.developer.checkpoint.CheckpointService;
+import ru.allstreets.developer.checkpoint.JpaCheckpointStore;
 import ru.allstreets.developer.state.TaskState;
 
 @Configuration
@@ -23,13 +23,14 @@ public class AgentFlowConfig {
             TesterNode tester,
             DeveloperNode developer,
             PostValidationNode postValidation,
-            CheckpointService checkpointService
+            JpaCheckpointStore checkpointStore
     ) {
         return AgentGraph.builder()
-                .addNode("analyst", new CheckpointingAgent(analyst, "analyst", checkpointService))
-                .addNode("tester", new CheckpointingAgent(tester, "tester", checkpointService))
-                .addNode("developer", new CheckpointingAgent(developer, "developer", checkpointService))
-                .addNode("post_validation", new CheckpointingAgent(postValidation, "post_validation", checkpointService))
+                .checkpointStore(checkpointStore)
+                .addNode("analyst", analyst)
+                .addNode("tester", tester)
+                .addNode("developer", developer)
+                .addNode("post_validation", postValidation)
                 // analyst → роутинг через NEXT_STEP (LLM-driven)
                 // "developer" — задача требует кодинга
                 .addEdge(Edge.onResult(
