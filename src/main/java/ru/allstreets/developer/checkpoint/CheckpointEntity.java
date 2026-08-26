@@ -40,8 +40,8 @@ public class CheckpointEntity {
     @Column(name = "status", nullable = false)
     private String status;
 
-    @Column(name = "iterations", nullable = false)
-    private int iterations;
+    @Column(name = "iterations", columnDefinition = "integer default 0")
+    private int iterations = 0;
 
     @Column(name = "interrupt_reason")
     private String interruptReason;
