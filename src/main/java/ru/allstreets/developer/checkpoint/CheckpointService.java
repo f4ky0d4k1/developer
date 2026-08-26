@@ -99,7 +99,8 @@ public class CheckpointService {
         InterruptRequest interrupt = entity.getInterruptReason() != null
                 ? InterruptRequest.of(entity.getInterruptReason())
                 : null;
-        return Optional.of(new Checkpoint(runId, entity.getNodeName(), ctx, entity.getIterations(), interrupt));
+        return Optional.of(new Checkpoint(runId, entity.getNodeName(), ctx,
+                entity.getIterations(), interrupt));
     }
 
     /**
