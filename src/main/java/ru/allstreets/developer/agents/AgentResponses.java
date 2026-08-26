@@ -1,5 +1,7 @@
 package ru.allstreets.developer.agents;
 
+import java.util.List;
+
 /**
  * Structured output records для LLM-агентов.
  * Используются с Spring AI .entity() для типобезопасного парсинга ответов.
@@ -21,7 +23,7 @@ public final class AgentResponses {
     }
 
     /**
-     * Ответ AnalystNode — результат работы аналитика.
+     * Ответ AnalystNode — результат работы аналитика (SDD-структурированный).
      */
     public record AnalystResult(
             String spec,
@@ -30,7 +32,25 @@ public final class AgentResponses {
             String clarificationQuestion,
             String nextStep,
             boolean requiresDevelopment,
-            boolean requiresTesting
+            boolean requiresTesting,
+            String userStory,
+            List<String> acceptanceCriteria,
+            List<String> outOfScope,
+            List<String> constraints,
+            List<String> contextLinks,
+            List<TaskBreakdownItem> taskBreakdown
+    ) {
+    }
+
+    /**
+     * Элемент декомпозиции задачи в SDD-спеке.
+     */
+    public record TaskBreakdownItem(
+            String id,
+            String description,
+            java.util.List<String> files,
+            int estimatedMinutes,
+            java.util.List<String> dependsOn
     ) {
     }
 

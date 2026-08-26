@@ -23,6 +23,20 @@ public final class TaskState {
     public static final StateKey<String> COMMIT_HASH = StateKey.of("commitHash", String.class);
     public static final StateKey<ValidationReport> VALIDATION = StateKey.of("validation", ValidationReport.class);
 
+    // ─── SDD-поля спеки (передаются от аналитика к разработчику) ───
+    public static final StateKey<String> USER_STORY = StateKey.of("userStory", String.class);
+    @SuppressWarnings("unchecked")
+    public static final StateKey<List<String>> ACCEPTANCE_CRITERIA = (StateKey<List<String>>) (StateKey<?>) StateKey.of("acceptanceCriteria", List.class);
+    @SuppressWarnings("unchecked")
+    public static final StateKey<List<String>> OUT_OF_SCOPE = (StateKey<List<String>>) (StateKey<?>) StateKey.of("outOfScope", List.class);
+    @SuppressWarnings("unchecked")
+    public static final StateKey<List<String>> CONSTRAINTS = (StateKey<List<String>>) (StateKey<?>) StateKey.of("constraints", List.class);
+    @SuppressWarnings("unchecked")
+    public static final StateKey<List<String>> CONTEXT_LINKS = (StateKey<List<String>>) (StateKey<?>) StateKey.of("contextLinks", List.class);
+    @SuppressWarnings("unchecked")
+    public static final StateKey<List<ru.allstreets.developer.agents.AgentResponses.TaskBreakdownItem>> TASK_BREAKDOWN =
+            (StateKey<List<ru.allstreets.developer.agents.AgentResponses.TaskBreakdownItem>>) (StateKey<?>) StateKey.of("taskBreakdown", List.class);
+
     // ─── Управление графом ───
     public static final StateKey<Integer> REWORK_COUNT = StateKey.of("reworkCount", Integer.class);
     public static final StateKey<String> REROUTE_TARGET = StateKey.of("rerouteTarget", String.class);

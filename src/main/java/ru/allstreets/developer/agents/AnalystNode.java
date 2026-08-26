@@ -250,6 +250,28 @@ public class AnalystNode implements Agent {
         stateMap.put(TaskState.REQUIRES_DEVELOPMENT, requiresDev);
         stateMap.put(TaskState.REQUIRES_TESTING, requiresTest);
 
+        // SDD-поля для передачи разработчику
+        if (result != null) {
+            if (result.userStory() != null) {
+                stateMap.put(TaskState.USER_STORY, result.userStory());
+            }
+            if (result.acceptanceCriteria() != null && !result.acceptanceCriteria().isEmpty()) {
+                stateMap.put(TaskState.ACCEPTANCE_CRITERIA, result.acceptanceCriteria());
+            }
+            if (result.outOfScope() != null && !result.outOfScope().isEmpty()) {
+                stateMap.put(TaskState.OUT_OF_SCOPE, result.outOfScope());
+            }
+            if (result.constraints() != null && !result.constraints().isEmpty()) {
+                stateMap.put(TaskState.CONSTRAINTS, result.constraints());
+            }
+            if (result.contextLinks() != null && !result.contextLinks().isEmpty()) {
+                stateMap.put(TaskState.CONTEXT_LINKS, result.contextLinks());
+            }
+            if (result.taskBreakdown() != null && !result.taskBreakdown().isEmpty()) {
+                stateMap.put(TaskState.TASK_BREAKDOWN, result.taskBreakdown());
+            }
+        }
+
         taskRepo.findById(taskId).ifPresent(task -> {
             task.setAnalysisDone(true);
             task.setRequiresDevelopment(requiresDev);
