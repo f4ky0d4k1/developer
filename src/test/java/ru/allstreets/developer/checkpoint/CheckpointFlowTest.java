@@ -37,7 +37,7 @@ class CheckpointFlowTest {
                 .with(ru.allstreets.developer.state.TaskState.REWORK_COUNT, 2);
 
         // When: save checkpoint
-        checkpointService.saveCheckpoint("run-1", "analyst", ctx, "RUNNING");
+        checkpointService.saveCheckpoint("run-1", "analyst", ctx, 0, "RUNNING");
 
         // Then: verify saved
         verify(checkpointRepository).save(argThat(entity ->
