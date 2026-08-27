@@ -25,6 +25,13 @@
         "yandex-tracker-mcp@latest"
       ]
     },
+    "yandex-wiki": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "yandex-wiki-search-mcp@latest"
+      ]
+    },
     "grafana": {
       "type": "local",
       "command": [

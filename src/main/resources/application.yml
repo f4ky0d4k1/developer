@@ -68,51 +68,6 @@ telegram:
   allowed-chat-ids: 1270746894,-1001506621216,-4578261262,-1001549425035
   trigger-users: f4ky0d4k
 
-# MCP servers (доп. параметры для Spring-кода)
-mcp:
-  github:
-    command: docker
-    args: run,-i,--rm,-e,GITHUB_PERSONAL_ACCESS_TOKEN,ghcr.io/github/github-mcp-server
-    env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
-  yandex-tracker:
-    command: uvx
-    args: yandex-tracker-mcp@latest
-    env:
-      TRACKER_TOKEN: ${TRACKER_TOKEN}
-      TRACKER_CLOUD_ORG_ID: ${TRACKER_CLOUD_ORG_ID}
-      TRANSPORT: stdio
-  grafana:
-    command: uvx
-    args: mcp-grafana
-    env:
-      GRAFANA_URL: ${GRAFANA_URL}
-      GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN}
-  postgres:
-    command: npx
-    args: -y,@tejasanik/postgres-mcp-server
-    env:
-      PG_NAME_1: ${PG_NAME_1:local}
-      PG_HOST_1: ${PG_HOST_1:postgres}
-      PG_PORT_1: ${PG_PORT_1:5432}
-      PG_USERNAME_1: ${PG_USERNAME_1:developer}
-      PG_PASSWORD_1: ${PG_PASSWORD_1:developer}
-      PG_DATABASE_1: ${PG_DATABASE_1:agent_state}
-      PG_SSL_1: ${PG_SSL_1:false}
-      PG_DEFAULT_1: ${PG_DEFAULT_1:true}
-      PG_ACCESS_MODE_1: ${PG_ACCESS_MODE_1:readonly}
-      PG_DB_ACCESS_MODES_1: ${PG_DB_ACCESS_MODES_1:agent_state:readonly}
-      PG_NAME_2: ${PG_NAME_2:external}
-      PG_HOST_2: ${PG_HOST_2:}
-      PG_PORT_2: ${PG_PORT_2:5432}
-      PG_USERNAME_2: ${PG_USERNAME_2:}
-      PG_PASSWORD_2: ${PG_PASSWORD_2:}
-      PG_DATABASE_2: ${PG_DATABASE_2:}
-      PG_SSL_2: ${PG_SSL_2:false}
-      PG_DEFAULT_2: ${PG_DEFAULT_2:false}
-      PG_ACCESS_MODE_2: ${PG_ACCESS_MODE_2:readonly}
-      PG_DB_ACCESS_MODES_2: ${PG_DB_ACCESS_MODES_2:}
-
 # Skills — путь внутри репозитория (по умолчанию .windsurf)
 skills:
   path: ${SKILLS_PATH:.windsurf}

@@ -50,6 +50,9 @@ services:
       GITHUB_TOOLSETS: "repos,issues,pull_requests"
       TRACKER_TOKEN: ${TRACKER_TOKEN}
       TRACKER_CLOUD_ORG_ID: ${TRACKER_CLOUD_ORG_ID}
+      # Yandex Wiki MCP (переиспользует трекеровские токен и org ID)
+      WIKI_TOKEN: ${TRACKER_TOKEN}
+      WIKI_CLOUD_ORG_ID: ${TRACKER_CLOUD_ORG_ID}
       TRANSPORT: stdio
       GRAFANA_URL: ${GRAFANA_URL}
       GRAFANA_SERVICE_ACCOUNT_TOKEN: ${GRAFANA_SERVICE_ACCOUNT_TOKEN}

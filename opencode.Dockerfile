@@ -8,6 +8,7 @@ RUN apk add --no-cache --update ca-certificates python3 py3-pip curl docker-cli 
     mv /root/.local/bin/uv /usr/local/bin/uv && \
     mv /root/.local/bin/uvx /usr/local/bin/uvx && \
     uvx --python python3 yandex-tracker-mcp@latest --help 2>/dev/null; \
+    uvx --python python3 yandex-wiki-search-mcp@latest --help 2>/dev/null; \
     uvx --python python3 mcp-grafana --help 2>/dev/null; \
     true
 
