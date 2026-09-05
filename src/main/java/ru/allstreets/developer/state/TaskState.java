@@ -11,6 +11,7 @@ public final class TaskState {
 
     // ─── Идентификация задачи ───
     public static final StateKey<String> TASK_ID = StateKey.of("taskId", String.class);
+    public static final StateKey<String> TASK_TITLE = StateKey.of("taskTitle", String.class);
     public static final StateKey<String> TG_CHAT_ID = StateKey.of("tgChatId", String.class);
     public static final StateKey<String> TRACKER_ISSUE = StateKey.of("trackerIssue", String.class);
     public static final StateKey<String> TARGET_REPO = StateKey.of("targetRepo", String.class);

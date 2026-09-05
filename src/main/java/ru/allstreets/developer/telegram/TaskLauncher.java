@@ -63,8 +63,9 @@ public class TaskLauncher {
         String taskId = UUID.randomUUID().toString();
         String title = generateTitle(taskDescription);
 
-        String startMsg = "Задача принята. ID: " + taskId.substring(0, 8)
-                + (title != null ? "\n📋 " + title : "")
+        String startMsg = (title != null && !title.isBlank()
+                ? "📋 " + title + " (ID: " + taskId.substring(0, 8) + ")"
+                : "Задача принята. ID: " + taskId.substring(0, 8))
                 + "\nЗапускаю агентов...";
         telegram.sendMessage(chatId, startMsg, taskId);
 
@@ -157,6 +158,7 @@ public class TaskLauncher {
         try {
             var ctx = AgentContext.of(taskDescription)
                     .with(TaskState.TASK_ID, taskId)
+                    .with(TaskState.TASK_TITLE, title)
                     .with(TaskState.TG_CHAT_ID, String.valueOf(chatId))
                     .with(TaskState.REWORK_COUNT, 0);
             if (targetRepo != null && !targetRepo.isBlank()) {

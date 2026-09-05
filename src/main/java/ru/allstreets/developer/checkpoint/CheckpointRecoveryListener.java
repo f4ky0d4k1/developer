@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
-
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
@@ -22,13 +21,16 @@ public class CheckpointRecoveryListener {
     private final CheckpointService checkpointService;
     private final AgentGraphRunner graphRunner;
     private final TelegramGateway telegram;
+    private final TaskRepository taskRepo;
 
     public CheckpointRecoveryListener(CheckpointService checkpointService,
                                       AgentGraphRunner graphRunner,
-                                      TelegramGateway telegram) {
+                                      TelegramGateway telegram,
+                                      TaskRepository taskRepo) {
         this.checkpointService = checkpointService;
         this.graphRunner = graphRunner;
         this.telegram = telegram;
+        this.taskRepo = taskRepo;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -54,8 +56,15 @@ public class CheckpointRecoveryListener {
                 if (restoredCtx != null) {
                     String chatId = restoredCtx.get(ru.allstreets.developer.state.TaskState.TG_CHAT_ID);
                     if (chatId != null) {
+                        String title = taskRepo.findById(runId)
+                                .map(ru.allstreets.developer.checkpoint.TaskEntity::getTitle)
+                                .orElse(null);
+                        String taskLabel = (title != null && !title.isBlank())
+                                ? title + " (" + runId.substring(0, 8) + ")"
+                                : runId.substring(0, 8);
                         telegram.sendMessage(Long.parseLong(chatId),
-                                "🔄 Приложение перезапущено. Возобновляю задачу с узла: " + lastNode);
+                                "🔄 Приложение перезапущено. Возобновляю задачу: " + taskLabel
+                                        + " (узел: " + lastNode + ")");
                     }
                 } else {
                     log.warn("Восстановление невозможно для runId={} — checkpoint повреждён или старый формат. Пропуск.", runId);

@@ -115,7 +115,11 @@ public class AnalystNode implements Agent {
             String repoUrl = toRepoUrl(targetRepo);
 
             log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
-            telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу над задачей...");
+            String title = ctx.get(TaskState.TASK_TITLE);
+            String taskLabel = (title != null && !title.isBlank())
+                    ? title + " (" + taskId.substring(0, 8) + ")"
+                    : taskId.substring(0, 8);
+            telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу над задачей: " + taskLabel);
 
             slot = sessionPool.acquire(600);
             if (slot < 0) {
