@@ -41,12 +41,24 @@ public class TelegramGateway {
     public void sendMessage(long chatId, String text, String taskId) {
         log.info("Отправка в ТГ chatId={}: {}", chatId, text.length() > 100 ? text.substring(0, 100) + "..." : text);
         try {
-            sendWithRetry(chatId, text, "Markdown");
+            String escaped = escapeMarkdownUnderscores(text);
+            sendWithRetry(chatId, escaped, "Markdown");
             log.debug("sendMessage: успешно отправлено chatId={}", chatId);
             chatMemory.recordBotMessage(chatId, text, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
         }
+    }
+
+    /**
+     * Экранирует underscores между буквенно-цифровыми символами (NEW_LEAD → NEW\_LEAD),
+     * чтобы Telegram Markdown не интерпретировал их как italic-маркеры.
+     * Markdown-форматирование вида _italic_ (подчёркивание между пробелами/границами) сохраняется.
+     */
+    private String escapeMarkdownUnderscores(String text) {
+        if (text == null || text.isEmpty()) return text;
+        // _ между word-символами → \_  (NEW_LEAD, LEAD_STAGE_CHANGE и т.д.)
+        return text.replaceAll("(?<=\\w)_(?=\\w)", "\\\\_");
     }
 
     private void sendWithRetry(long chatId, String text, String parseMode) {
