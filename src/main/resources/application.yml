@@ -83,7 +83,7 @@ github:
   token: ${GITHUB_TOKEN}
   base-branch: ${GITHUB_BASE_BRANCH:main}
   pr-label: ${GITHUB_PR_LABEL:agent-generated}
-  bot-login: ${GITHUB_BOT_LOGIN}
+  bot-login: ${GITHUB_BOT_LOGIN:}
   monitor-repo: ${GITHUB_MONITOR_REPO:}  # репозиторий для мониторинга PR комментариев (owner/name)
   protected-branches: ${GITHUB_PROTECTED_BRANCHES:main}  # через запятую, ветки защищённые от записи LLM
 

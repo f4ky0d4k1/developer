@@ -143,10 +143,6 @@ public class TaskLauncher {
 
             telegram.sendMessage(chatId, "🔄 Задача " + taskId.substring(0, 8) +
                     " прервана. Передаю аналитику с дополненным контекстом...");
-
-            // Запуск новой задачи с дополненным контекстом
-            String augmentedDesc = "Контекст от пользователя (дополнение к предыдущей задаче):\n" + newContext;
-            launch(augmentedDesc, chatId);
         } else {
             log.debug("TaskLauncher: задача {} не running, interrupt не нужен", taskId);
             // Если задача HITL-paused — освобождаем ресурсы
