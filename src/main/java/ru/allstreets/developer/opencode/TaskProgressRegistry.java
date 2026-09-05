@@ -4,7 +4,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 
 import java.util.List;
@@ -33,23 +32,30 @@ public class TaskProgressRegistry {
     }
 
     /**
-     * Старт агента: сбрасывает прогресс, если запись уже есть, иначе создаёт.
-     * Единственное место, где нужна транзакция с чтением — вызывается один раз
-     * перед запуском агента, конкуренции нет.
+     * Старт агента: создаёт запись прогресса, если её ещё нет, либо сбрасывает
+     * существующую. Стандартный JPA-паттерн: findById → mutate → save.
      */
     @Transactional
     public void start(String taskId, String agentName) {
-        long now = System.currentTimeMillis();
-        if (repo.resetForAgent(taskId, agentName, now) > 0) {
-            log.debug("TaskProgressRegistry: reset taskId={}, agent={}", taskId, agentName);
-            return;
-        }
-        TaskEntity task = taskRepo.findById(taskId).orElse(null);
-        if (task == null) {
+        if (taskRepo.findById(taskId).isEmpty()) {
             log.warn("TaskProgressRegistry: task not found taskId={}, прогресс не сохранён", taskId);
             return;
         }
-        repo.save(new TaskProgressEntity(task, agentName));
+        long now = System.currentTimeMillis();
+        TaskProgressEntity entity = repo.findById(taskId).orElseGet(() -> new TaskProgressEntity(taskId, agentName));
+        entity.setAgentName(agentName);
+        entity.setCurrentTool(null);
+        entity.setToolCalls("");
+        entity.setRecentEvents("");
+        entity.setTotalTokens(0);
+        entity.setCost(0);
+        entity.setStepCount(0);
+        entity.setLastText(null);
+        entity.setError(null);
+        entity.setStartTimeMs(now);
+        entity.setLastUpdateMs(now);
+        entity.setFinished(false);
+        repo.save(entity);
         log.debug("TaskProgressRegistry: start taskId={}, agent={}", taskId, agentName);
     }
 
@@ -106,6 +112,7 @@ public class TaskProgressRegistry {
      * Обрезка истории событий на чтении: UPDATE в БД только дописывает,
      * ограничение применяется здесь.
      */
+    @SuppressWarnings("SameParameterValue")
     private List<String> lastN(List<String> items, int n) {
         return items.size() <= n ? items : items.subList(items.size() - n, items.size());
     }

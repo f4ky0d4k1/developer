@@ -6,19 +6,15 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.springframework.data.domain.Persistable;
 import ru.allstreets.developer.checkpoint.EntityUtil;
-import ru.allstreets.developer.checkpoint.TaskEntity;
 
 /**
  * Прогресс выполнения OpenCode агента по задаче.
- * One-to-one с TaskEntity, FK на agent_tasks.task_id.
  * <p>
- * Реализует {@link Persistable} с явным флагом {@code isNew}: id здесь —
- * derived identifier через {@code @MapsId} и проставляется уже в конструкторе,
- * поэтому стандартная эвристика Spring Data ({@code isNew() == (id == null)})
- * всегда считает новую сущность "уже существующей" и вызывает {@code merge()}
- * вместо {@code persist()}. Hibernate в этом случае может выполнить UPDATE по
- * несуществующей строке и упасть с {@code ObjectOptimisticLockingFailureException}
- * ({@code (or unsaved-value mapping was incorrect)}) вместо обычного INSERT.
+ * {@code @Id} назначается вручную (assigned identifier), поэтому Spring Data
+ * не может определить новую сущность по {@code id == null}. Реализован
+ * {@link Persistable} с флагом {@code isNew}, который сбрасывается в
+ * {@code @PostLoad} и {@code @PostPersist} — стандартный паттерн Spring Data
+ * для сущностей с assigned ID.
  */
 @Getter
 @Setter
@@ -33,12 +29,8 @@ public class TaskProgressEntity implements Persistable<String> {
 
     @Transient
     @Getter(lombok.AccessLevel.NONE)
-    private boolean isNew = false;
-
-    @OneToOne
-    @MapsId
-    @JoinColumn(name = "task_id")
-    private TaskEntity task;
+    @Setter(lombok.AccessLevel.NONE)
+    private boolean isNew = true;
 
     @Column(name = "agent_name", nullable = false)
     private String agentName;
@@ -76,9 +68,8 @@ public class TaskProgressEntity implements Persistable<String> {
     @Column(name = "finished", nullable = false, columnDefinition = "boolean default false")
     private boolean finished;
 
-    public TaskProgressEntity(TaskEntity task, String agentName) {
-        this.task = task;
-        this.taskId = task.getTaskId();
+    public TaskProgressEntity(String taskId, String agentName) {
+        this.taskId = taskId;
         this.agentName = agentName;
         this.startTimeMs = System.currentTimeMillis();
         this.lastUpdateMs = startTimeMs;
@@ -95,6 +86,12 @@ public class TaskProgressEntity implements Persistable<String> {
     @Override
     public boolean isNew() {
         return isNew;
+    }
+
+    @PostLoad
+    @PostPersist
+    void markNotNew() {
+        this.isNew = false;
     }
 
     @Override

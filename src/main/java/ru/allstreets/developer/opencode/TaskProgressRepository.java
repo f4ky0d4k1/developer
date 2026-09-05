@@ -1,5 +1,6 @@
 package ru.allstreets.developer.opencode;
 
+import org.springframework.data.domain.Persistable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -7,11 +8,11 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 /**
- * Прогресс OpenCode агента. Все мутации — атомарные UPDATE на стороне БД,
- * без read-modify-write. Это устраняет race condition между reader-потоком
- * OpenCode (tool/text/step события) и основным потоком агента: конкурентные
- * UPDATE сериализуются самой БД на уровне строки, поэтому не нужны
- * ни @Version, ни пессимистичные блокировки, ни retry.
+ * Прогресс OpenCode агента. Мутации в reader-потоке (tool/text/step события) —
+ * атомарные UPDATE на стороне БД без read-modify-write, чтобы избежать race
+ * condition с основным потоком агента. Создание и сброс записи — через
+ * стандартный JPA {@code save()} ({@link TaskProgressEntity} реализует
+ * {@link Persistable} для корректного persist/merge при assigned ID).
  */
 @Repository
 public interface TaskProgressRepository extends JpaRepository<TaskProgressEntity, String> {
@@ -77,29 +78,4 @@ public interface TaskProgressRepository extends JpaRepository<TaskProgressEntity
             nativeQuery = true)
     void markFinished(@Param("taskId") String taskId, @Param("now") long now);
 
-    /**
-     * Idempotent reset прогресса при старте агента. Одним UPDATE, без чтения.
-     *
-     * @return число обновлённых строк: 0 означает, что записи ещё нет и её нужно создать
-     */
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query(value = """
-            UPDATE task_progress SET
-                agent_name = :agentName,
-                current_tool = NULL,
-                tool_calls = '',
-                recent_events = '',
-                total_tokens = 0,
-                cost = 0,
-                step_count = 0,
-                last_text = NULL,
-                error = NULL,
-                start_time_ms = :now,
-                last_update_ms = :now,
-                finished = false
-            WHERE task_id = :taskId
-            """, nativeQuery = true)
-    int resetForAgent(@Param("taskId") String taskId,
-                      @Param("agentName") String agentName,
-                      @Param("now") long now);
 }
