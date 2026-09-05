@@ -97,7 +97,11 @@ public class OpenCodeClient {
 
             ObjectNode body = mapper.createObjectNode();
             body.put("agent", agentName);
-            body.put("model", model);
+            String[] modelParts = model.split("/", 2);
+            ObjectNode modelNode = mapper.createObjectNode();
+            modelNode.put("providerID", modelParts[0]);
+            modelNode.put("modelID", modelParts.length > 1 ? modelParts[1] : "");
+            body.set("model", modelNode);
             ArrayNode parts = body.putArray("parts");
             parts.addObject().put("type", "text").put("text", prompt);
 
