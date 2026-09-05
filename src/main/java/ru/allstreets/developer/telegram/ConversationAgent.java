@@ -1,6 +1,5 @@
 package ru.allstreets.developer.telegram;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -35,7 +34,6 @@ public class ConversationAgent {
     private final ActiveTaskRegistry taskRegistry;
     private final HumanInputRegistry humanInputRegistry;
     private final StructuredOutputHelper structuredOutput;
-    private final ObjectMapper objectMapper;
     private final String systemPrompt;
     private final TaskRepository taskRepo;
     private final TaskMcpTools taskMcpTools;
@@ -46,7 +44,6 @@ public class ConversationAgent {
                              ActiveTaskRegistry taskRegistry,
                              HumanInputRegistry humanInputRegistry,
                              StructuredOutputHelper structuredOutput,
-                             ObjectMapper objectMapper,
                              ResourceLoader resourceLoader,
                              TaskRepository taskRepo,
                              TaskMcpTools taskMcpTools) {
@@ -56,7 +53,6 @@ public class ConversationAgent {
         this.taskRegistry = taskRegistry;
         this.humanInputRegistry = humanInputRegistry;
         this.structuredOutput = structuredOutput;
-        this.objectMapper = objectMapper;
         this.systemPrompt = loadSystemPrompt(resourceLoader);
         this.taskRepo = taskRepo;
         this.taskMcpTools = taskMcpTools;
@@ -123,73 +119,22 @@ public class ConversationAgent {
                 chatId, chatMemory.getHistory(chatId).size(), pendingQuestions.size());
 
         try {
-            // Вызов с tools — .content() чтобы tool calling работал
-            String content;
+            // .entity() с tools — native structured output + tool calling
+            AgentResponses.FastDecision fastResult;
             try {
-                content = fastChatClient.prompt()
+                fastResult = fastChatClient.prompt()
                         .user(contextPrompt)
                         .call()
-                        .content();
+                        .entity(AgentResponses.FastDecision.class);
             } catch (IllegalStateException e) {
-                // LLM вызвала несуществующий tool (например LAUNCH_TASK как tool) — fallback без tools
+                // LLM вызвала несуществующий tool — fallback без tools
                 log.warn("ConversationAgent [fast]: tool error: {}, fallback без tools", e.getMessage());
                 return structuredOutputFallback(contextPrompt);
             }
 
-            if (content == null || content.isBlank()) {
-                log.warn("ConversationAgent [fast]: пустой ответ LLM");
-                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM");
-            }
-
-            log.info("ConversationAgent [fast]: raw content (len={}): {}", content.length(),
-                    content.length() > 500 ? content.substring(0, 500) + "..." : content);
-
-            // Парсим JSON из ответа
-            String json = structuredOutput.extractJson(content);
-            AgentResponses.FastDecision fastResult;
-            if (json != null) {
-                try {
-                    fastResult = objectMapper.readValue(json, AgentResponses.FastDecision.class);
-                } catch (Exception e) {
-                    log.warn("ConversationAgent [fast]: JSON parse failed: {}, retry", e.getMessage());
-                    fastResult = null;
-                }
-            } else {
-                log.warn("ConversationAgent [fast]: JSON не найден в ответе, retry с требованием JSON");
-                fastResult = null;
-            }
-
-            // Retry на той же модели с явным требованием JSON
             if (fastResult == null) {
-                String retryPrompt = contextPrompt + "\n\n" + systemPrompt
-                        + "\n\nВАЖНО: Ответь ТОЛЬКО в формате JSON. Не пиши текст вне JSON."
-                        + " Формат: {\"action\": \"...\", \"taskId\": \"...\", \"text\": \"...\", \"description\": \"...\"}";
-                log.info("ConversationAgent [fast]: retry с требованием JSON");
-                try {
-                    String retryContent = fastChatClient.prompt()
-                            .user(retryPrompt)
-                            .call()
-                            .content();
-                    if (retryContent != null && !retryContent.isBlank()) {
-                        String retryJson = structuredOutput.extractJson(retryContent);
-                        if (retryJson != null) {
-                            try {
-                                fastResult = objectMapper.readValue(retryJson, AgentResponses.FastDecision.class);
-                            } catch (Exception e) {
-                                log.warn("ConversationAgent [fast]: retry JSON parse failed: {}", e.getMessage());
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    log.warn("ConversationAgent [fast]: retry call failed: {}", e.getMessage());
-                }
-            }
-
-            if (fastResult == null) {
-                // Fallback: дешёвая модель без tools — передаём fallbackChatClient как
-                // основной и как fallback, чтобы callWithFallback сделал вторую попытку
-                // через .content() + ручной JSON extraction если .entity() не сработал
-                log.info("ConversationAgent [fast]: fallback на дешёвой модели");
+                // .entity() вернул null — fallback на дешёвую модель
+                log.warn("ConversationAgent [fast]: .entity() вернул null, fallback");
                 fastResult = structuredOutput.callWithFallback(
                         fallbackChatClient, fallbackChatClient, contextPrompt,
                         AgentResponses.FastDecision.class);
