@@ -138,7 +138,7 @@ public class ConversationAgent {
 
             if (content == null || content.isBlank()) {
                 log.warn("ConversationAgent [fast]: пустой ответ LLM");
-                return new Decision(Action.ERROR, null, null, "Пустой ответ LLM");
+                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM");
             }
 
             log.info("ConversationAgent [fast]: raw content (len={}): {}", content.length(),
@@ -171,54 +171,32 @@ public class ConversationAgent {
 
             if (fastResult == null) {
                 log.warn("ConversationAgent [fast]: пустой ответ после fallback");
-                return new Decision(Action.ERROR, null, null, "Пустой ответ LLM");
+                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM");
             }
 
-            Action action = parseAction(fastResult.action(), fastResult.description());
             log.info("ConversationAgent [fast]: action={} taskId={} description='{}'",
                     fastResult.action(), fastResult.taskId(),
                     fastResult.description() != null ? (fastResult.description().length() > 80 ? fastResult.description().substring(0, 80) + "..." : fastResult.description()) : "null");
 
-            return new Decision(action,
+            return new Decision(fastResult.action(),
                     fastResult.taskId() != null ? fastResult.taskId() : "",
                     fastResult.text() != null ? fastResult.text() : "",
                     fastResult.description() != null ? fastResult.description() : "");
 
         } catch (Exception e) {
             log.error("ConversationAgent [fast]: ошибка: {}", e.getMessage(), e);
-            return new Decision(Action.ERROR, null, null, "Ошибка LLM: " + e.getMessage());
-        }
-    }
-
-    private Action parseAction(String actionStr, String description) {
-        if (actionStr == null || actionStr.isBlank()) {
-            return (description != null && !description.isBlank()) ? Action.LAUNCH_TASK : Action.ANSWER;
-        }
-        String normalized = actionStr.toUpperCase().replace("-", "_").replace(" ", "_");
-        // Синонимы LLM для LAUNCH_TASK
-        if ("CREATE_TASK".equals(normalized) || "NEW_TASK".equals(normalized)
-                || "START_TASK".equals(normalized) || "RUN_TASK".equals(normalized)) {
-            log.info("ConversationAgent: маппинг action '{}' → LAUNCH_TASK", actionStr);
-            return Action.LAUNCH_TASK;
-        }
-        try {
-            return Action.valueOf(normalized);
-        } catch (IllegalArgumentException e) {
-            log.warn("ConversationAgent: неизвестный action '{}', defaulting to {}",
-                    actionStr, (description != null && !description.isBlank()) ? "LAUNCH_TASK" : "ANSWER");
-            return (description != null && !description.isBlank()) ? Action.LAUNCH_TASK : Action.ANSWER;
+            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage());
         }
     }
 
     private Decision structuredOutputFallback(String prompt) {
         String fullPrompt = systemPrompt + "\n\n" + prompt;
         AgentResponses.FastDecision result = structuredOutput.callWithFallback(
-                fallbackChatClient, null, fullPrompt, AgentResponses.FastDecision.class);
+                fallbackChatClient, fallbackChatClient, fullPrompt, AgentResponses.FastDecision.class);
         if (result == null) {
-            return new Decision(Action.ERROR, null, null, "Пустой ответ LLM (fallback)");
+            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)");
         }
-        Action action = parseAction(result.action(), result.description());
-        return new Decision(action,
+        return new Decision(result.action(),
                 result.taskId() != null ? result.taskId() : "",
                 result.text() != null ? result.text() : "",
                 result.description() != null ? result.description() : "");
@@ -254,8 +232,6 @@ public class ConversationAgent {
         return null;
     }
 
-    public enum Action {LAUNCH_TASK, HITL_ANSWER, ANSWER, STATUS, ERROR}
-
-    public record Decision(Action action, String taskId, String text, String description) {
+    public record Decision(AgentResponses.FastAction action, String taskId, String text, String description) {
     }
 }

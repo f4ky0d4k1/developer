@@ -225,7 +225,7 @@ public class AnalystNode implements Agent {
         if (result != null) {
             spec = (result.spec() != null && !result.spec().isBlank()) ? result.spec() : currentOutput;
             trackerIssueId = "N/A".equalsIgnoreCase(result.trackerIssue()) ? null : result.trackerIssue();
-            nextStep = result.nextStep() != null ? result.nextStep() : "done";
+            nextStep = result.nextStep() != null ? result.nextStep().name().toLowerCase() : "done";
             requiresDev = result.requiresDevelopment();
             requiresTest = result.requiresTesting();
         } else {

@@ -11,11 +11,19 @@ public final class AgentResponses {
     private AgentResponses() {
     }
 
+    public enum FastAction {
+        LAUNCH_TASK, HITL_ANSWER, ANSWER, STATUS, ERROR
+    }
+
+    public enum NextStep {
+        DEVELOPER, TESTER, DONE
+    }
+
     /**
      * Ответ fast mode — быстрый классификатор.
      */
     public record FastDecision(
-            String action,
+            FastAction action,
             String taskId,
             String text,
             String description
@@ -30,7 +38,7 @@ public final class AgentResponses {
             String trackerIssue,
             boolean needsClarification,
             String clarificationQuestion,
-            String nextStep,
+            NextStep nextStep,
             boolean requiresDevelopment,
             boolean requiresTesting,
             String userStory,

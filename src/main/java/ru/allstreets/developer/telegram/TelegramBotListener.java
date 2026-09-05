@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 
