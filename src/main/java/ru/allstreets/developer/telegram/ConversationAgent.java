@@ -160,10 +160,12 @@ public class ConversationAgent {
             }
 
             if (fastResult == null) {
-                // Fallback: dешёвая модель без tools
+                // Fallback: дешёвая модель без tools — передаём fallbackChatClient как
+                // основной и как fallback, чтобы callWithFallback сделал вторую попытку
+                // через .content() + ручной JSON extraction если .entity() не сработал
                 log.info("ConversationAgent [fast]: fallback на дешёвой модели");
                 fastResult = structuredOutput.callWithFallback(
-                        fallbackChatClient, null, contextPrompt,
+                        fallbackChatClient, fallbackChatClient, contextPrompt,
                         AgentResponses.FastDecision.class);
             }
 
