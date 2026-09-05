@@ -279,7 +279,7 @@ public class TelegramBotListener {
                             for (var entry : activeTasks.entrySet()) {
                                 if (entry.getValue() == ActiveTaskRegistry.TaskStatus.RUNNING
                                         && taskLauncher.isRunning(entry.getKey())) {
-                                    taskLauncher.interruptAndReroute(entry.getKey(), chat.id(), text);
+                                    taskLauncher.interruptRunningTask(entry.getKey(), chat.id());
                                     break;
                                 }
                             }

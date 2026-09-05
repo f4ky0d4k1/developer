@@ -101,10 +101,10 @@ public class TaskLauncher {
     }
 
     /**
-     * Прервать running задачу, сохранить checkpoint, передать работу аналитику
-     * с дополненным контекстом (новое сообщение пользователя).
+     * Прервать running задачу: cancel future, очистить checkpoints, пометить FAILED.
+     * Запуск новой задачи делает caller (LAUNCH_TASK handler).
      */
-    public void interruptAndReroute(String taskId, long chatId, String newContext) {
+    public void interruptRunningTask(String taskId, long chatId) {
         Future<?> future = runningTasks.get(taskId);
         if (future != null && !future.isDone()) {
             log.info("TaskLauncher: interrupt задачи {} для reroute", taskId);
@@ -142,7 +142,7 @@ public class TaskLauncher {
             }
 
             telegram.sendMessage(chatId, "🔄 Задача " + taskId.substring(0, 8) +
-                    " прервана. Передаю аналитику с дополненным контекстом...");
+                    " прервана. Запускаю новую...");
         } else {
             log.debug("TaskLauncher: задача {} не running, interrupt не нужен", taskId);
             // Если задача HITL-paused — освобождаем ресурсы
