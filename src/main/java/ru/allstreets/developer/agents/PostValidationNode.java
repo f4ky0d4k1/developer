@@ -10,13 +10,10 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.checkpoint.TaskRepository;
-import ru.allstreets.developer.opencode.OpenCodeClient;
-import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
 import ru.allstreets.developer.state.ValidationReport;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -31,26 +28,26 @@ public class PostValidationNode implements Agent {
 
     private static final Logger log = LoggerFactory.getLogger(PostValidationNode.class);
 
-    private final OpenCodeClient openCode;
-    private final OpenCodeSessionPool sessionPool;
     private final ChatClient chatClient;
     private final ChatClient fallbackChatClient;
     private final TelegramGateway telegram;
     private final StructuredOutputHelper structuredOutput;
     private final TaskRepository taskRepo;
+    private final TestExecutionService testExecution;
+    private final PullRequestCreationService prCreation;
 
-    public PostValidationNode(OpenCodeClient openCode, OpenCodeSessionPool sessionPool,
-                              @Qualifier("postValidationChatClient") ChatClient chatClient,
+    public PostValidationNode(@Qualifier("postValidationChatClient") ChatClient chatClient,
                               @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
-                              TaskRepository taskRepo) {
-        this.openCode = openCode;
-        this.sessionPool = sessionPool;
+                              TaskRepository taskRepo, TestExecutionService testExecution,
+                              PullRequestCreationService prCreation) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.telegram = telegram;
         this.structuredOutput = structuredOutput;
         this.taskRepo = taskRepo;
+        this.testExecution = testExecution;
+        this.prCreation = prCreation;
     }
 
     @Override
@@ -124,7 +121,7 @@ public class PostValidationNode implements Agent {
 
         if (validation == null && needsTest) {
             telegram.sendMessage(chatIdLong, "🔬 Запускаю тесты...");
-            validation = runTests(branch, chatIdLong, repoUrl, taskId);
+            validation = testExecution.runTests(branch, chatIdLong, repoUrl, taskId);
             if (validation == null) {
                 log.warn("Post-validation: не удалось распарсить отчёт тестов, считаем pass");
                 validation = new ValidationReport(
@@ -142,7 +139,7 @@ public class PostValidationNode implements Agent {
 
         String openCodeOutput;
         if (validation != null && validation.isPass()) {
-            openCodeOutput = createPullRequest(branch, spec, chatIdLong, repoUrl, taskId);
+            openCodeOutput = prCreation.createPullRequest(branch, spec, chatIdLong, repoUrl, taskId);
             if (openCodeOutput == null) {
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("post_validation",
                         new RuntimeException("Ошибка OpenCode при создании PR")));
@@ -183,67 +180,6 @@ public class PostValidationNode implements Agent {
                         TaskState.AGENT_ROLE, "post_validation"))
                 .completed(true)
                 .build();
-    }
-
-    private String createPullRequest(String branch, String spec, long chatIdLong, String repoUrl, String taskId) {
-        int slot = sessionPool.acquire(600);
-        if (slot < 0) {
-            telegram.sendMessage(chatIdLong, "❌ Таймаут ожидания слота OpenCode");
-            return null;
-        }
-        try {
-            sessionPool.prepareSlot(slot, repoUrl);
-            String workDir = sessionPool.getSlotWorkDir(slot);
-            String ocPrompt = getPrPrompt(branch, spec);
-
-            var ocResult = openCode.runAgent("post_validation", ocPrompt, workDir, taskId);
-            String output = ocResult.output() != null ? ocResult.output() : "";
-            log.info("Post-validation: OpenCode завершён. output: {} символов", output.length());
-            return output;
-        } catch (Exception e) {
-            log.error("Post-validation: ошибка OpenCode: {}", e.getMessage(), e);
-            telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + e.getMessage());
-            return null;
-        } finally {
-            sessionPool.cleanupSlot(slot);
-            sessionPool.release(slot);
-        }
-    }
-
-    private static String getPrPrompt(String branch, String spec) {
-        String branchOrNa = branch != null && !branch.isBlank() ? branch : "N/A";
-
-        return """
-                Тесты прошли. Создай Pull Request через GitHub MCP инструмент.
-                Если есть ветка %s — переключись на неё: git checkout %s
-                
-                - head: %s
-                - base: main
-                - title: Описание задачи
-                - body: ТЗ из контекста
-                
-                В конце ответа выведи JSON: prUrl, reroute, failed, summary.
-                
-                ТЗ:
-                %s
-                """.formatted(branchOrNa, branchOrNa, branchOrNa,
-                spec != null ? spec.substring(0, Math.min(500, spec.length())) : "N/A");
-    }
-
-    private static String getTestPrompt(String branch) {
-        String branchInfo = branch != null && !branch.isBlank()
-                ? "Если есть ветка %s — переключись на неё: git checkout %s".formatted(branch, branch)
-                : "Работай на текущей ветке.";
-
-        return """
-                Запусти все тесты проекта и проанализируй результаты.
-                %s
-                
-                Верни отчёт в JSON: status (pass/fail), total, passed, failed,
-                failures (массив: test, type=code_bug|logic_bug|test_bug, message, details),
-                coverage_gaps (массив строк).
-                Не редактируй код.
-                """.formatted(branchInfo);
     }
 
     private String buildReroutePrompt(String spec, String branch, ValidationReport validation, int reworkCount) {
@@ -380,106 +316,6 @@ public class PostValidationNode implements Agent {
                         TaskState.AGENT_ROLE, "post_validation"))
                 .completed(true)
                 .build();
-    }
-
-    /**
-     * Запуск тестов через OpenCode.
-     */
-    private ValidationReport runTests(String branch, long chatIdLong, String repoUrl, String taskId) {
-        int slot = sessionPool.acquire(600);
-        if (slot < 0) {
-            log.error("Post-validation: таймаут ожидания слота OpenCode для тестов");
-            telegram.sendMessage(chatIdLong, "⚠️ Не удалось получить слот OpenCode для запуска тестов");
-            return null;
-        }
-
-        try {
-            sessionPool.prepareSlot(slot, repoUrl);
-            String workDir = sessionPool.getSlotWorkDir(slot);
-
-            String prompt = getTestPrompt(branch);
-
-            var result = openCode.runAgent("post_validation", prompt, workDir, taskId);
-
-            if (result.error() != null && !result.error().isEmpty()) {
-                log.error("Post-validation: ошибка запуска тестов: {}", result.error());
-            }
-
-            ValidationReport report = parseValidationReport(result.output());
-
-            if (report == null) {
-                log.warn("Post-validation: не удалось распарсить JSON-отчёт тестов");
-                return null;
-            }
-
-            log.info("Post-validation: тесты завершены. status={}, passed={}/{}", report.status(), report.passed(), report.total());
-
-            String summary = "📊 Тесты: %s. Прошло: %d/%d, Упало: %d".formatted(
-                    report.status(), report.passed(), report.total(), report.failed());
-
-            if (report.isPass()) {
-                telegram.sendMessage(chatIdLong, summary);
-            } else {
-                StringBuilder msg = new StringBuilder(summary + "\n\n");
-                for (var f : report.failures()) {
-                    msg.append("• `").append(f.test()).append("` (")
-                            .append(f.type()).append("): ")
-                            .append(f.message()).append("\n");
-                }
-                telegram.sendMessage(chatIdLong, msg.toString());
-            }
-
-            return report;
-
-        } catch (Exception e) {
-            log.error("Post-validation: ошибка запуска тестов: {}", e.getMessage(), e);
-            return null;
-        } finally {
-            sessionPool.cleanupSlot(slot);
-            sessionPool.release(slot);
-        }
-    }
-
-    private ValidationReport parseValidationReport(String output) {
-        if (output == null || output.isBlank()) {
-            log.warn("Пустой output от валидатора");
-            return null;
-        }
-
-        try {
-            String parsePrompt = """
-                    Извлеки JSON-отчёт тестов из ответа валидатора и верни как structured output.
-                    Если поле отсутствует — верни null или 0.
-                    
-                    Ответ:
-                    %s
-                    """.formatted(output);
-
-            var dto = structuredOutput.callWithFallback(
-                    chatClient, fallbackChatClient, parsePrompt, AgentResponses.ValidatorReportDto.class);
-
-            if (dto == null) {
-                log.warn("Post-validation: structured output вернул null для отчёта тестов");
-                return null;
-            }
-
-            var status = ValidationReport.Status.valueOf(dto.status().toUpperCase());
-            List<ValidationReport.Failure> failures = new ArrayList<>();
-            if (dto.failures() != null) {
-                for (var f : dto.failures()) {
-                    var type = ValidationReport.FailureType.valueOf(f.type().toUpperCase());
-                    failures.add(new ValidationReport.Failure(f.test(), type, f.message(), f.details()));
-                }
-            }
-
-            List<String> coverageGaps = dto.coverageGaps() != null ? dto.coverageGaps() : List.of();
-
-            return new ValidationReport(status, dto.total(), dto.passed(), dto.failed(), failures, coverageGaps);
-
-        } catch (Exception e) {
-            log.error("Ошибка парсинга отчёта валидатора: {}", e.getMessage());
-            return null;
-        }
     }
 
     private static String toRepoUrl(String repo) {

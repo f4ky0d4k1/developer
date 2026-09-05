@@ -78,7 +78,13 @@ public class CheckpointService {
                     runId, nextNode, iterations, interruptReason != null);
 
         } catch (Exception e) {
-            log.error("Ошибка сериализации checkpoint для runId={}: {}", runId, e.getMessage());
+            log.error("Ошибка сериализации checkpoint для runId={}: {}", runId, e.getMessage(), e);
+            // Пробрасываем: молчаливое проглатывание означало, что граф продолжал
+            // работу без сохранённой точки восстановления — при падении приложения
+            // между такими сбоями resume откатывался на устаревший checkpoint без
+            // какого-либо сигнала о проблеме. JpaCheckpointStore.save() должен узнать
+            // о сбое, чтобы библиотека графа могла корректно перевести задачу в ошибку.
+            throw new IllegalStateException("Не удалось сохранить checkpoint для runId=" + runId, e);
         }
     }
 

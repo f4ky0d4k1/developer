@@ -1,6 +1,8 @@
 package ru.allstreets.developer.github;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.Getter;
 import lombok.Setter;
 import org.slf4j.Logger;
@@ -44,6 +46,8 @@ public class GitHubService {
      *
      * @return список PR (number, title, headBranch, htmlUrl)
      */
+    @CircuitBreaker(name = "github")
+    @Retry(name = "github")
     public List<PrInfo> listAgentPullRequests(String repo) {
         log.debug("Получение открытых PR с меткой '{}' в {}", prLabel, repo);
 
@@ -104,6 +108,8 @@ public class GitHubService {
      * @param prNumber номер PR
      * @return список комментариев
      */
+    @CircuitBreaker(name = "github")
+    @Retry(name = "github")
     public List<PrComment> listPrComments(String repo, int prNumber) {
         log.debug("Получение комментариев для PR #{} в {}", prNumber, repo);
 

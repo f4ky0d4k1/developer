@@ -6,7 +6,7 @@ WORKDIR /app
 
 # uv (uvx) + Python для MCP stdio transport (yandex-tracker, grafana)
 # Предустанавливаем Python и кэшируем MCP пакеты чтобы избежать таймаута при старте
-RUN apk add --no-cache curl bash git python3 py3-pip docker-cli && \
+RUN apk add --no-cache curl bash git python3 py3-pip && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv && \
     mv /root/.local/bin/uvx /usr/local/bin/uvx && \

@@ -1,8 +1,7 @@
 services:
 
   # ─── Agent runtime (Spring Boot + spring-agent-flow) ───
-  # MCP servers (yandex-tracker, grafana) запускаются через uvx внутри контейнера
-  # GitHub MCP запускается через docker run (нужен docker-in-docker или внешний socket)
+  # Обращается к OpenCode sidecar по HTTP (opencode.base-url), docker.sock не требуется.
   developer:
     build:
       context: .
@@ -15,7 +14,6 @@ services:
     env_file:
       - .env
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock  # для GitHub MCP (docker run)
       - repo-data:/work                             # shared volume с OpenCode для worktrees
     depends_on:
       postgres:

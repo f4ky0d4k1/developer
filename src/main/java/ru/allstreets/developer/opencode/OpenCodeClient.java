@@ -2,30 +2,52 @@ package ru.allstreets.developer.opencode;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClient;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
+/**
+ * HTTP-клиент к {@code opencode serve} sidecar (порт 4096) — заменяет прежний
+ * подход через {@code docker exec}, который требовал монтирования
+ * {@code /var/run/docker.sock} в контейнер {@code developer} и не давал
+ * реальной отмены работы агента по таймауту (убивался только локальный
+ * {@code docker exec}-клиент, а не процесс внутри sidecar-контейнера).
+ * <p>
+ * Использует HTTP API форка {@code anomalyco/opencode}:
+ * {@code POST /session?directory=...} — создание сессии, привязанной к рабочей директории;
+ * {@code POST /session/{id}/message} — отправка промпта, ожидание ответа;
+ * {@code POST /session/{id}/abort} — реальная отмена работающей сессии по таймауту.
+ * Все запросы дополнительно передают заголовок {@code x-opencode-directory} —
+ * сервер scoped запросы этим заголовком (см. project/session scoping в API форка).
+ */
 @Component
 public class OpenCodeClient {
 
     private static final Logger log = LoggerFactory.getLogger(OpenCodeClient.class);
     private static final ObjectMapper mapper = new ObjectMapper();
 
+    private final RestClient api;
     private final String model;
     private final int timeoutSeconds;
     private final TaskProgressRegistry progressRegistry;
 
     @Autowired
     public OpenCodeClient(
+            @SuppressWarnings("HttpUrlsUsage") @Value("${opencode.base-url:http://opencode:4096}") String baseUrl,
             @Value("${opencode.model:deepseek/deepseek-v4-pro}") String model,
             @Value("${opencode.timeout-seconds:300}") int timeoutSeconds,
             TaskProgressRegistry progressRegistry
@@ -33,13 +55,32 @@ public class OpenCodeClient {
         this.model = model;
         this.timeoutSeconds = timeoutSeconds;
         this.progressRegistry = progressRegistry;
+
+        var requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout((int) Duration.ofSeconds(10).toMillis());
+        // Небольшой запас сверх timeoutSeconds — реальная остановка работы
+        // делается через /session/{id}/abort, а не через обрыв соединения.
+        requestFactory.setReadTimeout((int) Duration.ofSeconds(timeoutSeconds + 30L).toMillis());
+
+        this.api = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(requestFactory)
+                .build();
     }
 
+    @CircuitBreaker(name = "opencode")
+    @Retry(name = "opencode")
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId) {
-        return runAgent(agentName, prompt, cwd, taskId, null);
+        return runAgentInternal(agentName, prompt, cwd, taskId, null);
     }
 
+    @CircuitBreaker(name = "opencode")
+    @Retry(name = "opencode")
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId, String sessionId) {
+        return runAgentInternal(agentName, prompt, cwd, taskId, sessionId);
+    }
+
+    private OpenCodeResult runAgentInternal(String agentName, String prompt, String cwd, String taskId, String sessionId) {
         log.info("Запуск OpenCode агента: {} в {} (промпт: {} символов, taskId={}, session={})",
                 agentName, cwd, prompt.length(), taskId, sessionId);
 
@@ -47,191 +88,135 @@ public class OpenCodeClient {
             progressRegistry.start(taskId, agentName);
         }
 
-        // Проверка окружения
+        String activeSessionId = sessionId;
         try {
-            ProcessBuilder checkPb = new ProcessBuilder("docker", "exec", "-w", cwd, "opencode",
-                    "sh", "-c", "ls -la .opencode 2>&1; echo '---'; ls .opencode/agents/ 2>&1; echo '---'; pwd");
-            checkPb.redirectErrorStream(true);
-            Process checkProc = checkPb.start();
-            String checkOut = new String(checkProc.getInputStream().readAllBytes());
-            checkProc.waitFor();
-            log.info("[OpenCode:{}] окружение в {}: {}", agentName, cwd, checkOut.trim().replace("\n", " | "));
+            if (activeSessionId == null || activeSessionId.isBlank()) {
+                activeSessionId = createSession(cwd, agentName);
+                log.info("[OpenCode:{}] создана сессия {} для директории {}", agentName, activeSessionId, cwd);
+            }
+
+            ObjectNode body = mapper.createObjectNode();
+            body.put("agent", agentName);
+            body.put("model", model);
+            ArrayNode parts = body.putArray("parts");
+            parts.addObject().put("type", "text").put("text", prompt);
+
+            JsonNode response = api.post()
+                    .uri("/session/{id}/message", activeSessionId)
+                    .header("x-opencode-directory", cwd)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve()
+                    .body(JsonNode.class);
+
+            return parseResponse(agentName, response, activeSessionId, taskId);
+
+        } catch (ResourceAccessException e) {
+            log.error("[OpenCode:{}] таймаут/ошибка соединения после {}с: {}", agentName, timeoutSeconds, e.getMessage());
+            abortQuietly(activeSessionId, cwd, agentName);
+            if (taskId != null) {
+                progressRegistry.recordError(taskId, "timeout/connection: " + e.getMessage());
+            }
+            throw new RuntimeException("Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName, e);
         } catch (Exception e) {
-            log.warn("[OpenCode:{}] не удалось проверить окружение: {}", agentName, e.getMessage());
-        }
-
-        List<String> command = new ArrayList<>(List.of(
-                "docker", "exec", "-w", cwd,
-                "opencode",
-                "opencode", "run",
-                "--agent", agentName,
-                "--model", model,
-                "--format", "json"
-        ));
-        if (sessionId != null && !sessionId.isBlank()) {
-            command.add("--session");
-            command.add(sessionId);
-        }
-        command.add("--");
-        command.add(prompt);
-
-        log.info("[OpenCode:{}] команда: {}", agentName, String.join(" ", command.stream().limit(14).toList()) + " ...");
-
-        Process process;
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-            process = pb.start();
-        } catch (Exception e) {
+            log.error("[OpenCode:{}] ошибка вызова: {}", agentName, e.getMessage(), e);
+            abortQuietly(activeSessionId, cwd, agentName);
+            if (taskId != null) {
+                progressRegistry.recordError(taskId, e.getMessage());
+            }
             throw new RuntimeException("Ошибка запуска OpenCode агента " + agentName + ": " + e.getMessage(), e);
+        } finally {
+            if (taskId != null) {
+                progressRegistry.markFinished(taskId);
+            }
         }
-        return runAgentProcess(agentName, process, taskId);
     }
 
-    private OpenCodeResult runAgentProcess(String agentName, Process process, String taskId) {
-        StringBuilder agentText = new StringBuilder();
+    private String createSession(String cwd, String agentName) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("title", agentName + "-" + System.currentTimeMillis());
+
+        JsonNode session = api.post()
+                .uri(uriBuilder -> uriBuilder.path("/session").queryParam("directory", cwd).build())
+                .header("x-opencode-directory", cwd)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .body(JsonNode.class);
+
+        if (session == null || session.path("id").isMissingNode()) {
+            throw new RuntimeException("OpenCode не вернул session id при создании сессии для " + agentName);
+        }
+        return session.path("id").asText();
+    }
+
+    private void abortQuietly(String sessionId, String cwd, String agentName) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        try {
+            api.post()
+                    .uri("/session/{id}/abort", sessionId)
+                    .header("x-opencode-directory", cwd)
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("[OpenCode:{}] сессия {} остановлена (abort)", agentName, sessionId);
+        } catch (Exception e) {
+            log.warn("[OpenCode:{}] не удалось прервать сессию {}: {}", agentName, sessionId, e.getMessage());
+        }
+    }
+
+    private OpenCodeResult parseResponse(String agentName, JsonNode response, String sessionId, String taskId) {
+        if (response == null) {
+            return new OpenCodeResult("error", "", null, null, List.of(),
+                    "OpenCode вернул пустой ответ", sessionId);
+        }
+
+        JsonNode info = response.path("info");
+        JsonNode parts = response.path("parts");
+
+        StringBuilder text = new StringBuilder();
         List<String> toolCalls = new ArrayList<>();
-        String[] sessionIdRef = {null};
-        String[] errorRef = {null};
-        long[] totalTokensRef = {0};
-        double[] costRef = {0};
 
-        // Чтение вывода в отдельном потоке — иначе readLine() блокирует forever
-        // и waitFor(timeout) никогда не сработает
-        Thread readerThread = new Thread(() -> {
-            int lineCount = 0;
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    lineCount++;
-                    if (lineCount <= 5) {
-                        log.info("[OpenCode:{}] вывод #{}: {}", agentName, lineCount,
-                                line.length() > 300 ? line.substring(0, 300) + "..." : line);
-                    }
-                    try {
-                        JsonNode event = mapper.readTree(line);
-                        String type = event.path("type").asText("");
-
-                        if (sessionIdRef[0] == null) {
-                            sessionIdRef[0] = event.path("sessionID").asText(null);
+        if (parts.isArray()) {
+            for (JsonNode part : parts) {
+                String type = part.path("type").asText("");
+                switch (type) {
+                    case "text" -> {
+                        String t = part.path("text").asText("");
+                        text.append(t);
+                        if (taskId != null && !t.isBlank()) {
+                            progressRegistry.recordText(taskId, t);
                         }
-
-                        JsonNode part = event.path("part");
-
-                        switch (type) {
-                            case "text" -> {
-                                String text = part.path("text").asText("");
-                                agentText.append(text);
-                                log.info("[OpenCode:{}] text: {}", agentName,
-                                        text.length() > 200 ? text.substring(0, 200) + "..." : text);
-                                if (taskId != null) {
-                                    progressRegistry.recordText(taskId, text);
-                                }
-                            }
-                            case "tool_use" -> {
-                                String toolName = part.path("tool").asText("unknown");
-                                String input = part.path("input").toString();
-                                log.info("[OpenCode:{}] tool_use: {} input: {}", agentName, toolName,
-                                        input.length() > 300 ? input.substring(0, 300) + "..." : input);
-                                toolCalls.add(toolName);
-                                if (taskId != null) {
-                                    progressRegistry.recordToolCall(taskId, toolName);
-                                }
-                            }
-                            case "tool_start" -> {
-                                String toolName = part.path("tool").asText("unknown");
-                                log.info("[OpenCode:{}] tool_start: {}", agentName, toolName);
-                                toolCalls.add(toolName);
-                                if (taskId != null) {
-                                    progressRegistry.recordToolCall(taskId, toolName);
-                                }
-                            }
-                            case "tool_finish" -> {
-                                String toolName = part.path("tool").asText("unknown");
-                                String output = part.path("output").asText("");
-                                log.info("[OpenCode:{}] tool_finish: {} output: {}", agentName, toolName,
-                                        output.length() > 300 ? output.substring(0, 300) + "..." : output);
-                            }
-                            case "step_finish" -> {
-                                JsonNode tokens = part.path("tokens");
-                                long stepTokens = 0;
-                                if (!tokens.isMissingNode()) {
-                                    stepTokens = tokens.path("total").asLong(0);
-                                    totalTokensRef[0] += stepTokens;
-                                }
-                                double stepCost = part.path("cost").asDouble(0);
-                                costRef[0] += stepCost;
-                                String reason = part.path("reason").asText("");
-                                log.info("[OpenCode:{}] step_finish: reason={}, tokens={}, cost={}",
-                                        agentName, reason, totalTokensRef[0], String.format("%.4f", costRef[0]));
-                                if (taskId != null) {
-                                    progressRegistry.recordStepFinish(taskId, stepTokens, stepCost, reason);
-                                }
-                            }
-                            case "error" -> {
-                                errorRef[0] = part.path("message").asText("Unknown error");
-                                log.error("[OpenCode:{}] error: {}", agentName, errorRef[0]);
-                                if (taskId != null) {
-                                    progressRegistry.recordError(taskId, errorRef[0]);
-                                }
-                            }
-                            default -> log.debug("[OpenCode:{}] event: {}", agentName, type);
-                        }
-                    } catch (Exception parseEx) {
-                        log.debug("[OpenCode:{}] non-JSON line: {}", agentName,
-                                line.length() > 200 ? line.substring(0, 200) + "..." : line);
                     }
+                    case "tool", "tool-invocation", "tool_call", "tool_use" -> {
+                        String toolName = part.path("tool").asText(part.path("toolName").asText("unknown"));
+                        toolCalls.add(toolName);
+                        if (taskId != null) {
+                            progressRegistry.recordToolCall(taskId, toolName);
+                        }
+                    }
+                    default -> log.debug("[OpenCode:{}] part type: {}", agentName, type);
                 }
-            } catch (Exception e) {
-                log.error("[OpenCode:{}] ошибка чтения вывода: {}", agentName, e.getMessage(), e);
             }
-        }, "opencode-reader-" + agentName);
-        readerThread.setDaemon(true);
-        readerThread.start();
-
-        boolean finished;
-        try {
-            finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
-            throw new RuntimeException("Прерван запуск OpenCode агента: " + agentName, e);
         }
 
-        if (!finished) {
-            process.destroyForcibly();
-            log.error("[OpenCode:{}] таймаут {}с — процесс убит", agentName, timeoutSeconds);
-            throw new RuntimeException("Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName);
+        String error = null;
+        JsonNode errorNode = info.path("error");
+        if (!errorNode.isMissingNode() && !errorNode.isNull()) {
+            error = errorNode.has("message") ? errorNode.path("message").asText() : errorNode.toString();
         }
 
-        // Ждём завершения потока чтения (процесс уже завершился — поток быстро дочитает)
-        try {
-            readerThread.join(5000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (error != null && taskId != null) {
+            progressRegistry.recordError(taskId, error);
         }
 
-        String sessionId = sessionIdRef[0];
-        String error = errorRef[0];
-        long totalTokens = totalTokensRef[0];
-        double cost = costRef[0];
-
-        if (taskId != null) {
-            progressRegistry.markFinished(taskId);
-        }
-
-        int exitCode = process.exitValue();
-        log.info("Агент {} завершил работу. exit={}, session={}, tokens={}, cost={}, toolCalls={}, текст={} символов",
-                agentName, exitCode, sessionId, totalTokens, String.format("%.4f", cost),
-                toolCalls, agentText.length());
-
-        if (exitCode != 0 && error == null) {
-            error = "OpenCode exit code: " + exitCode;
-        }
+        log.info("Агент {} завершил работу. session={}, toolCalls={}, текст={} символов, error={}",
+                agentName, sessionId, toolCalls, text.length(), error);
 
         return new OpenCodeResult(
-                exitCode == 0 ? "success" : "error",
-                agentText.toString(),
+                error == null ? "success" : "error",
+                text.toString(),
                 null,
                 null,
                 toolCalls,

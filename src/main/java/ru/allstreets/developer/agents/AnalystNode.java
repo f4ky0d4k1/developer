@@ -123,6 +123,10 @@ public class AnalystNode implements Agent {
                         new RuntimeException("Таймаут ожидания слота OpenCode")));
             }
 
+            // Слот освобождается здесь только при ошибке/пустом выводе. При успехе он
+            // намеренно остаётся зарезервированным — либо будет освобождён общим кодом
+            // ниже (после structured output), либо сохранён в checkpoint при HITL-паузе.
+            boolean releaseSlotOnExit = true;
             try {
                 sessionPool.prepareSlot(slot, repoUrl);
                 String workDir = sessionPool.getSlotWorkDir(slot);
@@ -135,8 +139,6 @@ public class AnalystNode implements Agent {
                 if (ocResult.error() != null && !ocResult.error().isEmpty()) {
                     log.error("Аналитик: ошибка OpenCode: {}", ocResult.error());
                     telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + ocResult.error());
-                    sessionPool.cleanupSlot(slot);
-                    sessionPool.release(slot);
                     return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
                             new RuntimeException("OpenCode error: " + ocResult.error())));
                 }
@@ -144,20 +146,22 @@ public class AnalystNode implements Agent {
                 if (currentOutput.isBlank()) {
                     log.error("Аналитик: OpenCode вернул пустой вывод");
                     telegram.sendMessage(chatIdLong, "❌ OpenCode вернул пустой результат");
-                    sessionPool.cleanupSlot(slot);
-                    sessionPool.release(slot);
                     return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
                             new RuntimeException("OpenCode returned empty output")));
                 }
 
                 log.info("Аналитик: OpenCode завершён. output: {} символов, session={}",
                         currentOutput.length(), currentSessionId);
+                releaseSlotOnExit = false;
 
             } catch (Exception e) {
                 log.error("Аналитик: ошибка OpenCode: {}", e.getMessage(), e);
-                sessionPool.cleanupSlot(slot);
-                sessionPool.release(slot);
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst", e));
+            } finally {
+                if (releaseSlotOnExit) {
+                    sessionPool.cleanupSlot(slot);
+                    sessionPool.release(slot);
+                }
             }
         }
 

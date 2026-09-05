@@ -60,7 +60,8 @@ public class TelegramBotListener {
     void init() {
         if (allowedChatIdsRaw == null || allowedChatIdsRaw.isBlank()) {
             allowedChatIds = Set.of();
-            log.info("Telegram whitelist отключён — бот принимает сообщения из всех чатов");
+            log.warn("Telegram whitelist (telegram.allowed-chat-ids) не задан — бот НЕ будет обрабатывать сообщения " +
+                    "ни из одного чата (deny-by-default). Задайте telegram.allowed-chat-ids для включения.");
         } else {
             allowedChatIds = Arrays.stream(allowedChatIdsRaw.split(","))
                     .map(String::trim)
@@ -72,7 +73,8 @@ public class TelegramBotListener {
 
         if (triggerUsersRaw == null || triggerUsersRaw.isBlank()) {
             triggerUsers = Set.of();
-            log.info("Telegram trigger-users отключён — любой пользователь может запускать агентов");
+            log.warn("Telegram trigger-users (telegram.trigger-users) не задан — запуск агентов НЕ будет разрешён " +
+                    "ни одному пользователю (deny-by-default). Задайте telegram.trigger-users для включения.");
         } else {
             triggerUsers = Arrays.stream(triggerUsersRaw.split(","))
                     .map(String::trim)
@@ -84,11 +86,11 @@ public class TelegramBotListener {
     }
 
     private boolean isChatAllowed(long chatId) {
-        return allowedChatIds.isEmpty() || allowedChatIds.contains(chatId);
+        return !allowedChatIds.isEmpty() && allowedChatIds.contains(chatId);
     }
 
     private boolean isTriggerUser(String username) {
-        return triggerUsers.isEmpty() || (username != null && triggerUsers.contains(username.toLowerCase()));
+        return !triggerUsers.isEmpty() && username != null && triggerUsers.contains(username.toLowerCase());
     }
 
     /**

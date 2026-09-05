@@ -306,41 +306,33 @@ public class TaskLauncher {
     }
 
     private void resumeTask(String taskId, long chatId, String additionalContext) {
-        try {
-            Message[] additional = (additionalContext != null && !additionalContext.isBlank())
-                    ? new Message[]{new UserMessage(
-                    "Дополнение от пользователя при перезапуске:\n" + additionalContext)}
-                    : new Message[0];
-
-            AgentResult result = graphRunner.resume(taskId, additional);
-            handleResumeResult(taskId, chatId, result);
-
-        } catch (Exception e) {
-            if (Thread.currentThread().isInterrupted()) {
-                log.info("TaskLauncher: restart задачи {} прерван (interrupt)", taskId);
-                return;
-            }
-            log.error("Ошибка restart задачи {}: {}", taskId, e.getMessage(), e);
-            telegram.sendMessage(chatId, "❌ Ошибка перезапуска: " + e.getMessage(), taskId);
-            taskRegistry.markFailed(taskId);
-        } finally {
-            runningTasks.remove(taskId);
-        }
+        Message[] additional = (additionalContext != null && !additionalContext.isBlank())
+                ? new Message[]{new UserMessage("Дополнение от пользователя при перезапуске:\n" + additionalContext)}
+                : new Message[0];
+        resumeInternal(taskId, chatId, additional, "restart", "Ошибка перезапуска: ");
     }
 
     private void resumeHitlTask(String taskId, long chatId, String answer) {
+        Message[] additional = new Message[]{new UserMessage(answer)};
+        resumeInternal(taskId, chatId, additional, "HITL resume", "Ошибка возобновления: ");
+    }
+
+    /**
+     * Общая логика возобновления графа: используется и при restart из checkpoint,
+     * и при resume после HITL-ответа пользователя — отличаются только тем, какое
+     * дополнительное сообщение подмешивается в контекст.
+     */
+    private void resumeInternal(String taskId, long chatId, Message[] additional, String logContext, String errorPrefix) {
         try {
-            Message[] additional = new Message[]{new UserMessage(answer)};
             AgentResult result = graphRunner.resume(taskId, additional);
             handleResumeResult(taskId, chatId, result);
-
         } catch (Exception e) {
             if (Thread.currentThread().isInterrupted()) {
-                log.info("TaskLauncher: HITL resume задачи {} прерван (interrupt)", taskId);
+                log.info("TaskLauncher: {} задачи {} прерван (interrupt)", logContext, taskId);
                 return;
             }
-            log.error("Ошибка HITL resume задачи {}: {}", taskId, e.getMessage(), e);
-            telegram.sendMessage(chatId, "❌ Ошибка возобновления: " + e.getMessage(), taskId);
+            log.error("Ошибка {} задачи {}: {}", logContext, taskId, e.getMessage(), e);
+            telegram.sendMessage(chatId, "❌ " + errorPrefix + e.getMessage(), taskId);
             taskRegistry.markFailed(taskId);
         } finally {
             runningTasks.remove(taskId);
