@@ -192,3 +192,52 @@ transient-флагом `isNew`, выставляемым в конструкто
    точечная правка `parseResponse`/`parseResponse`'s `switch` в `OpenCodeClient`.
 2. Убедиться, что `opencode.jsonc`/агенты форка поддерживают `agent`/`model` в body `/session/{id}/message` так же, как
    раньше в CLI `opencode run --agent --model`.
+
+## 18. LLM-вызовы через `.content()` вместо `.entity()` — потеря structured output
+
+**Статус: DONE**
+
+Все LLM-вызовы в проекте использовали `.content()` (свободный текст) с ручным JSON extraction через
+`extractJson()` + `ObjectMapper.readValue()`. Это приводило к:
+- "Пустой ответ LLM" когда модель возвращала plain text вместо JSON
+- Потере rich-контекста (модель возвращала развёрнутый ответ, но без JSON-обёртки)
+- Каскад retry-логики в `ConversationAgent` (~60 строк ручного парсинга)
+
+Исправлено: все `.content()` заменены на `.entity(TargetClass.class)` — Spring AI native structured output:
+- `ConversationAgent.processMessage` → `.entity(FastDecision.class)` с tool calling
+- `StructuredOutputHelper.callWithFallback` → fallback тоже через `.entity()` (не `.content()`)
+- `TelegramGateway.reformatForTelegram` → `.entity(ReformattedText.class)`
+- `TaskLauncher.generateTitle` → `.entity(TaskTitle.class)`
+- Удалены: `extractJson()`, `buildJsonSchemaHint()`, `ObjectMapper` из `StructuredOutputHelper`
+- Добавлены records `ReformattedText` и `TaskTitle` в `AgentResponses`
+
+## 19. OpenCodeClient: `application/octet-stream` вместо `application/json`
+
+**Статус: DONE**
+
+OpenCode server возвращает `Content-Type: application/octet-stream` вместо `application/json`.
+Spring `RestClient` не находит конвертер для десериализации в `JsonNode` → ошибка
+`Error while extracting response for type [JsonNode]`.
+
+Исправлено: ответы читаются как `String` + `mapper.readTree(rawResponse)` в `createSession()` и
+`runAgentInternal()`. Добавлен `.accept(MediaType.APPLICATION_JSON)` на оба запроса.
+
+## 20. Каскадный рестарт: двойной запуск задачи при `interruptAndReroute`
+
+**Статус: DONE**
+
+`interruptAndReroute` прерывал старую задачу **и** запускал новую через `launch()`.
+Затем `LAUNCH_TASK` handler в `TelegramBotListener` тоже вызывал `launch()`.
+Результат: 2 задачи на 1 сообщение пользователя (83e1152c + 09aeba81).
+
+Исправлено: метод переименован в `interruptRunningTask` (Single Responsibility) — только прерывает.
+Запуск новой задачи делает caller (`LAUNCH_TASK` handler). Удалён неиспользуемый параметр `newContext`.
+
+## 21. PR-мониторинг 404 при пустом `GITHUB_MONITOR_REPO`
+
+**Статус: DONE**
+
+`GITHUB_MONITOR_REPO` не задан → GitHub API получает `/repos//pulls` → 404 каждую минуту.
+
+Исправлено: `PrCommentMonitor.monitorPullRequests` пропускает цикл если `monitorRepo` пустой.
+`GITHUB_BOT_LOGIN` в `application.yml` получил empty default (`${GITHUB_BOT_LOGIN:}`).
