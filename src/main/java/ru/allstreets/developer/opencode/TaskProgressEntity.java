@@ -1,32 +1,39 @@
 package ru.allstreets.developer.opencode;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.MapsId;
-import jakarta.persistence.OneToOne;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.springframework.data.domain.Persistable;
 import ru.allstreets.developer.checkpoint.EntityUtil;
 import ru.allstreets.developer.checkpoint.TaskEntity;
 
 /**
  * Прогресс выполнения OpenCode агента по задаче.
  * One-to-one с TaskEntity, FK на agent_tasks.task_id.
+ * <p>
+ * Реализует {@link Persistable} с явным флагом {@code isNew}: id здесь —
+ * derived identifier через {@code @MapsId} и проставляется уже в конструкторе,
+ * поэтому стандартная эвристика Spring Data ({@code isNew() == (id == null)})
+ * всегда считает новую сущность "уже существующей" и вызывает {@code merge()}
+ * вместо {@code persist()}. Hibernate в этом случае может выполнить UPDATE по
+ * несуществующей строке и упасть с {@code ObjectOptimisticLockingFailureException}
+ * ({@code (or unsaved-value mapping was incorrect)}) вместо обычного INSERT.
  */
 @Getter
 @Setter
 @NoArgsConstructor
 @Entity
 @Table(name = "task_progress")
-public class TaskProgressEntity {
+public class TaskProgressEntity implements Persistable<String> {
 
     @Id
     @Column(name = "task_id")
     private String taskId;
+
+    @Transient
+    @Getter(lombok.AccessLevel.NONE)
+    private boolean isNew = false;
 
     @OneToOne
     @MapsId
@@ -77,6 +84,17 @@ public class TaskProgressEntity {
         this.lastUpdateMs = startTimeMs;
         this.toolCalls = "";
         this.recentEvents = "";
+        this.isNew = true;
+    }
+
+    @Override
+    public String getId() {
+        return taskId;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
     }
 
     @Override
