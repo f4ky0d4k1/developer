@@ -104,6 +104,9 @@ public class PrCommentMonitor {
      */
     @Scheduled(fixedDelay = 60000, initialDelay = 15000)
     public void monitorPullRequests() {
+        if (monitorRepo == null || monitorRepo.isBlank()) {
+            return;
+        }
         try {
             List<GitHubService.PrInfo> prs = github.listAgentPullRequests(monitorRepo);
             if (prs.isEmpty()) {
