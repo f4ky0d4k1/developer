@@ -57,23 +57,28 @@ public class StructuredOutputHelper {
         }
 
         try {
-            String content = Retry.decorateSupplier(llmRetry, () ->
-                    fallbackChatClient.prompt()
-                            .user(prompt + "\n\nВерни только JSON без пояснений.")
-                            .call()
-                            .content()
-            ).get();
-            log.trace("StructuredOutput: fallback .content() = '{}' для {}",
-                    content != null ? (content.length() > 300 ? content.substring(0, 300) + "..." : content) : "null",
-                    targetClass.getSimpleName());
-            if (content == null || content.isBlank()) {
-                log.error("StructuredOutput: fallback .content() вернул null/пусто для {}", targetClass.getSimpleName());
-                return null;
-            }
+            String content = Retry.decorateSupplier(llmRetry, () -> {
+                String raw = fallbackChatClient.prompt()
+                        .user(prompt + "\n\nВерни только JSON без пояснений. Не пиши текст вне JSON.")
+                        .call()
+                        .content();
+                if (raw == null || raw.isBlank()) {
+                    log.warn("StructuredOutput: fallback .content() вернул пусто, retry");
+                    throw new RuntimeException("LLM вернул пустой ответ");
+                }
+                String extracted = extractJson(raw);
+                if (extracted == null) {
+                    log.warn("StructuredOutput: JSON не найден в fallback content, retry. Content: '{}'",
+                            raw.length() > 200 ? raw.substring(0, 200) + "..." : raw);
+                    throw new RuntimeException("LLM вернул ответ без JSON");
+                }
+                return raw;
+            }).get();
 
             String json = extractJson(content);
             if (json == null) {
-                log.error("StructuredOutput: JSON не найден в fallback content для {}", targetClass.getSimpleName());
+                log.error("StructuredOutput: JSON не найден в fallback content для {} после retry",
+                        targetClass.getSimpleName());
                 return null;
             }
 

@@ -155,7 +155,7 @@ public class ConversationAgent {
                     fastResult = null;
                 }
             } else {
-                log.warn("ConversationAgent [fast]: JSON не найден в ответе");
+                log.warn("ConversationAgent [fast]: JSON не найден в ответе, retry через fallback");
                 fastResult = null;
             }
 
