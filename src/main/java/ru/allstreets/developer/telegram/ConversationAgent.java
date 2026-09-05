@@ -151,12 +151,38 @@ public class ConversationAgent {
                 try {
                     fastResult = objectMapper.readValue(json, AgentResponses.FastDecision.class);
                 } catch (Exception e) {
-                    log.warn("ConversationAgent [fast]: JSON parse failed: {}, fallback", e.getMessage());
+                    log.warn("ConversationAgent [fast]: JSON parse failed: {}, retry", e.getMessage());
                     fastResult = null;
                 }
             } else {
-                log.warn("ConversationAgent [fast]: JSON не найден в ответе, retry через fallback");
+                log.warn("ConversationAgent [fast]: JSON не найден в ответе, retry с требованием JSON");
                 fastResult = null;
+            }
+
+            // Retry на той же модели с явным требованием JSON
+            if (fastResult == null) {
+                String retryPrompt = contextPrompt + "\n\n" + systemPrompt
+                        + "\n\nВАЖНО: Ответь ТОЛЬКО в формате JSON. Не пиши текст вне JSON."
+                        + " Формат: {\"action\": \"...\", \"taskId\": \"...\", \"text\": \"...\", \"description\": \"...\"}";
+                log.info("ConversationAgent [fast]: retry с требованием JSON");
+                try {
+                    String retryContent = fastChatClient.prompt()
+                            .user(retryPrompt)
+                            .call()
+                            .content();
+                    if (retryContent != null && !retryContent.isBlank()) {
+                        String retryJson = structuredOutput.extractJson(retryContent);
+                        if (retryJson != null) {
+                            try {
+                                fastResult = objectMapper.readValue(retryJson, AgentResponses.FastDecision.class);
+                            } catch (Exception e) {
+                                log.warn("ConversationAgent [fast]: retry JSON parse failed: {}", e.getMessage());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("ConversationAgent [fast]: retry call failed: {}", e.getMessage());
+                }
             }
 
             if (fastResult == null) {
