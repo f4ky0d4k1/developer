@@ -33,7 +33,15 @@ public class TaskProgressRegistry {
 
     /**
      * Старт агента: создаёт запись прогресса, если её ещё нет, либо сбрасывает
-     * существующую. Стандартный JPA-паттерн: findById → mutate → save.
+     * существующую.
+     * <ul>
+     *   <li>Существующая запись: {@code findById} возвращает managed entity —
+     *       просто мутируем поля, Hibernate сам сделает UPDATE через dirty
+     *       checking на коммите транзакции. {@code save()} не вызывается,
+     *       чтобы избежать {@code merge()} на detached entity.</li>
+     *   <li>Новая запись: {@code save()} вызовет {@code persist()}, т.к.
+     *       {@link TaskProgressEntity#isNew()} возвращает {@code true}.</li>
+     * </ul>
      */
     @Transactional
     public void start(String taskId, String agentName) {
@@ -42,20 +50,26 @@ public class TaskProgressRegistry {
             return;
         }
         long now = System.currentTimeMillis();
-        TaskProgressEntity entity = repo.findById(taskId).orElseGet(() -> new TaskProgressEntity(taskId, agentName));
-        entity.setAgentName(agentName);
-        entity.setCurrentTool(null);
-        entity.setToolCalls("");
-        entity.setRecentEvents("");
-        entity.setTotalTokens(0);
-        entity.setCost(0);
-        entity.setStepCount(0);
-        entity.setLastText(null);
-        entity.setError(null);
-        entity.setStartTimeMs(now);
-        entity.setLastUpdateMs(now);
-        entity.setFinished(false);
-        repo.save(entity);
+        TaskProgressEntity existing = repo.findById(taskId).orElse(null);
+        if (existing != null) {
+            existing.setAgentName(agentName);
+            existing.setCurrentTool(null);
+            existing.setToolCalls("");
+            existing.setRecentEvents("");
+            existing.setTotalTokens(0);
+            existing.setCost(0);
+            existing.setStepCount(0);
+            existing.setLastText(null);
+            existing.setError(null);
+            existing.setStartTimeMs(now);
+            existing.setLastUpdateMs(now);
+            existing.setFinished(false);
+        } else {
+            TaskProgressEntity created = new TaskProgressEntity(taskId, agentName);
+            created.setStartTimeMs(now);
+            created.setLastUpdateMs(now);
+            repo.save(created);
+        }
         log.debug("TaskProgressRegistry: start taskId={}, agent={}", taskId, agentName);
     }
 
