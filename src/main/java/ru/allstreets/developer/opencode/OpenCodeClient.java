@@ -105,13 +105,17 @@ public class OpenCodeClient {
             ArrayNode parts = body.putArray("parts");
             parts.addObject().put("type", "text").put("text", prompt);
 
-            JsonNode response = api.post()
+            String rawResponse = api.post()
                     .uri("/session/{id}/message", activeSessionId)
                     .header("x-opencode-directory", cwd)
                     .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
-                    .body(JsonNode.class);
+                    .body(String.class);
+
+            JsonNode response = rawResponse != null && !rawResponse.isBlank()
+                    ? mapper.readTree(rawResponse) : null;
 
             return parseResponse(agentName, response, activeSessionId, taskId);
 
@@ -140,13 +144,17 @@ public class OpenCodeClient {
         ObjectNode body = mapper.createObjectNode();
         body.put("title", agentName + "-" + System.currentTimeMillis());
 
-        JsonNode session = api.post()
+        String rawSession = api.post()
                 .uri(uriBuilder -> uriBuilder.path("/session").queryParam("directory", cwd).build())
                 .header("x-opencode-directory", cwd)
                 .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
                 .body(body)
                 .retrieve()
-                .body(JsonNode.class);
+                .body(String.class);
+
+        JsonNode session = rawSession != null && !rawSession.isBlank()
+                ? mapper.readTree(rawSession) : null;
 
         if (session == null || session.path("id").isMissingNode()) {
             throw new RuntimeException("OpenCode не вернул session id при создании сессии для " + agentName);
