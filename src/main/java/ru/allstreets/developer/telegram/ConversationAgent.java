@@ -126,9 +126,10 @@ public class ConversationAgent {
                         .user(contextPrompt)
                         .call()
                         .entity(AgentResponses.FastDecision.class);
-            } catch (IllegalStateException e) {
-                // LLM вызвала несуществующий tool — fallback без tools
-                log.warn("ConversationAgent [fast]: tool error: {}, fallback без tools", e.getMessage());
+            } catch (Exception e) {
+                // .entity() failed — tool error, JSON parse, network etc — fallback без tools
+                log.warn("ConversationAgent [fast]: .entity() failed: {} | {}, fallback без tools",
+                        e.getClass().getSimpleName(), e.getMessage());
                 return structuredOutputFallback(contextPrompt);
             }
 
@@ -162,9 +163,11 @@ public class ConversationAgent {
 
     private Decision structuredOutputFallback(String prompt) {
         String fullPrompt = systemPrompt + "\n\n" + prompt;
+        log.info("ConversationAgent [fast]: structuredOutputFallback, prompt len={}", fullPrompt.length());
         AgentResponses.FastDecision result = structuredOutput.callWithFallback(
                 fallbackChatClient, fallbackChatClient, fullPrompt, AgentResponses.FastDecision.class);
         if (result == null) {
+            log.error("ConversationAgent [fast]: callWithFallback вернул null — обе модели не смогли дать JSON");
             return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)");
         }
         return new Decision(result.action(),

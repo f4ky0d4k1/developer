@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.config.AgentGraphRunner;
+import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
@@ -88,7 +89,8 @@ public class TaskLauncher {
                     Описание задачи:
                     %s
                     """.formatted(taskDescription.length() > 500 ? taskDescription.substring(0, 500) : taskDescription);
-            String title = fallbackChatClient.prompt().user(prompt).call().content();
+            var result = fallbackChatClient.prompt().user(prompt).call().entity(AgentResponses.TaskTitle.class);
+            String title = result != null ? result.title() : null;
             if (title != null) {
                 title = title.trim().replaceAll("^[\"']+|[\"']+$", "");
                 if (title.length() > 80) title = title.substring(0, 80);

@@ -19,6 +19,12 @@ public final class AgentResponses {
         DEVELOPER, TESTER, DONE
     }
 
+    public record ReformattedText(String text) {
+    }
+
+    public record TaskTitle(String title) {
+    }
+
     /**
      * Ответ fast mode — быстрый классификатор.
      */

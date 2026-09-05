@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import ru.allstreets.developer.agents.AgentResponses;
 
 import java.util.Map;
 
@@ -109,7 +110,8 @@ public class TelegramGateway {
                     Текст:
                     %s
                     """.formatted(text.length() > 3000 ? text.substring(0, 3000) + "..." : text);
-            return fastChatClient.prompt().user(prompt).call().content();
+            var result = fastChatClient.prompt().user(prompt).call().entity(AgentResponses.ReformattedText.class);
+            return result != null ? result.text() : null;
         } catch (Exception e) {
             log.warn("reformatForTelegram: ошибка LLM: {}", e.getMessage());
             return null;
