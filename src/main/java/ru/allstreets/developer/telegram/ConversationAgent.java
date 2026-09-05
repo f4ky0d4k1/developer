@@ -174,7 +174,7 @@ public class ConversationAgent {
                 return new Decision(Action.ERROR, null, null, "Пустой ответ LLM");
             }
 
-            Action action = parseAction(fastResult.action());
+            Action action = parseAction(fastResult.action(), fastResult.description());
             log.info("ConversationAgent [fast]: action={} taskId={} description='{}'",
                     fastResult.action(), fastResult.taskId(),
                     fastResult.description() != null ? (fastResult.description().length() > 80 ? fastResult.description().substring(0, 80) + "..." : fastResult.description()) : "null");
@@ -190,13 +190,23 @@ public class ConversationAgent {
         }
     }
 
-    private Action parseAction(String actionStr) {
-        if (actionStr == null) return Action.ANSWER;
+    private Action parseAction(String actionStr, String description) {
+        if (actionStr == null || actionStr.isBlank()) {
+            return (description != null && !description.isBlank()) ? Action.LAUNCH_TASK : Action.ANSWER;
+        }
+        String normalized = actionStr.toUpperCase().replace("-", "_").replace(" ", "_");
+        // Синонимы LLM для LAUNCH_TASK
+        if ("CREATE_TASK".equals(normalized) || "NEW_TASK".equals(normalized)
+                || "START_TASK".equals(normalized) || "RUN_TASK".equals(normalized)) {
+            log.info("ConversationAgent: маппинг action '{}' → LAUNCH_TASK", actionStr);
+            return Action.LAUNCH_TASK;
+        }
         try {
-            return Action.valueOf(actionStr.toUpperCase().replace("-", "_"));
+            return Action.valueOf(normalized);
         } catch (IllegalArgumentException e) {
-            log.warn("ConversationAgent: неизвестный action '{}', defaulting to ANSWER", actionStr);
-            return Action.ANSWER;
+            log.warn("ConversationAgent: неизвестный action '{}', defaulting to {}",
+                    actionStr, (description != null && !description.isBlank()) ? "LAUNCH_TASK" : "ANSWER");
+            return (description != null && !description.isBlank()) ? Action.LAUNCH_TASK : Action.ANSWER;
         }
     }
 
@@ -207,7 +217,7 @@ public class ConversationAgent {
         if (result == null) {
             return new Decision(Action.ERROR, null, null, "Пустой ответ LLM (fallback)");
         }
-        Action action = parseAction(result.action());
+        Action action = parseAction(result.action(), result.description());
         return new Decision(action,
                 result.taskId() != null ? result.taskId() : "",
                 result.text() != null ? result.text() : "",
