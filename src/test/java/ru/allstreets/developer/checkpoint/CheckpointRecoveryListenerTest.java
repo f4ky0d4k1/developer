@@ -1,41 +1,38 @@
 package ru.allstreets.developer.checkpoint;
 
 import io.github.asekka.springai.agents.core.AgentContext;
-import io.github.asekka.springai.agents.core.AgentError;
-import io.github.asekka.springai.agents.core.AgentResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.state.TaskState;
-import ru.allstreets.developer.telegram.TelegramGateway;
+import ru.allstreets.developer.telegram.TaskLauncher;
 
 import java.util.List;
 import java.util.Optional;
 
-import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 /**
- * Восстановление при рестарте: уже завершённую задачу не поднимаем (устаревший checkpoint
- * чистим), а провал возобновления <b>уведомляем</b> в Telegram — раньше задача «тихо умирала».
+ * Восстановление при рестарте: уже завершённую задачу не поднимаем (устаревший checkpoint чистим),
+ * а незавершённую отдаём {@link TaskLauncher#resumeAfterRestart} — общий executor, регистрация в
+ * {@code runningTasks}, уведомления об успехе/провале (а не «тихая смерть» на потоке старта).
  */
 class CheckpointRecoveryListenerTest {
 
     private static final String RUN_ID = "11111111-1111-1111-1111-111111111111";
 
     private CheckpointService checkpointService;
-    private AgentGraphRunner graphRunner;
-    private TelegramGateway telegram;
+    private TaskLauncher taskLauncher;
     private TaskRepository taskRepo;
     private CheckpointRecoveryListener listener;
 
     @BeforeEach
     void setUp() {
         checkpointService = mock(CheckpointService.class);
-        graphRunner = mock(AgentGraphRunner.class);
-        telegram = mock(TelegramGateway.class);
+        taskLauncher = mock(TaskLauncher.class);
         taskRepo = mock(TaskRepository.class);
-        listener = new CheckpointRecoveryListener(checkpointService, graphRunner, telegram, taskRepo);
+        listener = new CheckpointRecoveryListener(checkpointService, taskLauncher, taskRepo);
 
         when(checkpointService.getUnfinishedCheckpoints())
                 .thenReturn(List.of(new CheckpointEntity("cp-1", RUN_ID, "analyst", "{}", "RUNNING")));
@@ -53,26 +50,41 @@ class CheckpointRecoveryListenerTest {
         listener.recoverUnfinishedTasks();
 
         verify(checkpointService).cleanup(RUN_ID);
-        verify(graphRunner, never()).resume(anyString());
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
     }
 
     @Test
-    void resumeFailure_isNotifiedToTelegram() {
-        when(graphRunner.resume(RUN_ID))
-                .thenReturn(AgentResult.failed(AgentError.of("analyst", new IllegalStateException("repo missing"))));
-
+    void runningTask_isResumedThroughTaskLauncher() {
         listener.recoverUnfinishedTasks();
 
-        verify(telegram).sendMessage(eq(42L), contains("не удалось"));
-        verify(telegram).sendMessage(eq(42L), contains("repo missing"));
+        verify(taskLauncher).resumeAfterRestart(RUN_ID, 42L);
     }
 
     @Test
-    void resumeSuccess_noFailureNotification() {
-        when(graphRunner.resume(RUN_ID)).thenReturn(AgentResult.ofText("ok"));
+    void checkpointWithoutChatId_isSkipped() {
+        when(checkpointService.restoreCheckpoint(RUN_ID)).thenReturn(AgentContext.of("x"));
 
         listener.recoverUnfinishedTasks();
 
-        verify(telegram, never()).sendMessage(anyLong(), contains("не удалось"));
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+    }
+
+    @Test
+    void corruptCheckpoint_isSkipped() {
+        when(checkpointService.restoreCheckpoint(RUN_ID)).thenReturn(null);
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+    }
+
+    @Test
+    void noUnfinishedCheckpoints_doesNothing() {
+        when(checkpointService.getUnfinishedCheckpoints()).thenReturn(List.of());
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        verify(checkpointService, never()).cleanup(anyString());
     }
 }

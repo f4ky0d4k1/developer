@@ -356,9 +356,11 @@ chat_memory(
 
 Исправлено:
 
-- recovery **уведомляет в Telegram** о провале возобновления (с причиной из `AgentError.cause()`);
 - recovery **пропускает** задачи со статусом `FAILED`/`COMPLETED` в БД и чистит их устаревший RUNNING-чекпоинт;
 - статус задачи (а не только чекпоинта) стал дискриминатором «возобновлять / нет»: RUNNING → resume (в т.ч. HITL-пауза и
-  крэш посреди узла), FAILED/COMPLETED → не трогать.
+  крэш посреди узла), FAILED/COMPLETED → не трогать;
+- возобновление идёт через `TaskLauncher.resumeAfterRestart` (общий `taskExecutor` + регистрация в `runningTasks`), а не
+  синхронным `graphRunner.resume` на потоке `ApplicationReadyEvent`: старт не блокируется, возобновлённую задачу можно
+  остановить, она попадает в graceful shutdown, а исход уведомляется теми же путями, что и обычный resume.
 
-Тесты: `CheckpointRecoveryListenerTest` (FAILED не поднимается + чистка; провал notify; успех без notify).
+Тесты: `CheckpointRecoveryListenerTest` (5), `TaskLauncherResumeAfterRestartTest` (2).

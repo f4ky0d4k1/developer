@@ -56,10 +56,6 @@ public class TaskLauncher {
         this.fallbackChatClient = fallbackChatClient;
     }
 
-    public void launch(String taskDescription, long chatId) {
-        launch(taskDescription, chatId, null);
-    }
-
     public void launch(String taskDescription, long chatId, String targetRepo) {
         String taskId = UUID.randomUUID().toString();
         String title = generateTitle(taskDescription);
@@ -314,6 +310,44 @@ public class TaskLauncher {
         } catch (java.util.concurrent.RejectedExecutionException e) {
             log.error("TaskLauncher: restart задачи {} отклонён (backpressure): {}", taskId, e.getMessage());
             telegram.sendMessage(chatId, "⏳ Система перегружена — попробуйте позже.", taskId);
+            return false;
+        }
+    }
+
+    /**
+     * Возобновить задачу, незавершённую до перезапуска приложения ({@code CheckpointRecoveryListener}).
+     * <p>В отличие от «ручного» возобновления через {@link #graphRunner}, идёт через общий
+     * {@code taskExecutor} и регистрируется в {@code runningTasks}: старт приложения не блокируется,
+     * возобновлённую задачу можно остановить ({@link #cancel}), она попадает в graceful shutdown,
+     * а уведомления об успехе/провале отправляет {@link #resumeInternal}.
+     *
+     * @return {@code true} — возобновление поставлено в очередь; {@code false} — нет чекпоинта или executor перегружен
+     */
+    public boolean resumeAfterRestart(String taskId, long chatId) {
+        if (isRunning(taskId)) {
+            log.warn("TaskLauncher: задача {} уже running — recovery не требуется", taskId.substring(0, 8));
+            return false;
+        }
+        if (checkpointService.getLatestCheckpoint(taskId) == null) {
+            log.warn("TaskLauncher: нет checkpoint для recovery задачи {}", taskId.substring(0, 8));
+            telegram.sendMessage(chatId, "❌ Не удалось возобновить задачу " + taskId.substring(0, 8)
+                    + " — checkpoint не найден.", taskId);
+            return false;
+        }
+
+        taskRegistry.markRunning(taskId);
+        telegram.sendMessage(chatId, "🔄 Приложение перезапущено. Возобновляю задачу "
+                + taskId.substring(0, 8) + " из checkpoint...", taskId);
+
+        try {
+            Future<?> future = executor.submit(() ->
+                    resumeInternal(taskId, chatId, new Message[0], "recovery", "Ошибка возобновления: "));
+            runningTasks.put(taskId, future);
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            log.error("TaskLauncher: recovery задачи {} отклонён (backpressure): {}", taskId, e.getMessage());
+            telegram.sendMessage(chatId, "⏳ Система перегружена — не удалось возобновить задачу "
+                    + taskId.substring(0, 8) + ".", taskId);
             return false;
         }
     }
