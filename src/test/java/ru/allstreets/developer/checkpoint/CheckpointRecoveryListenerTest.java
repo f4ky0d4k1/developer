@@ -61,6 +61,19 @@ class CheckpointRecoveryListenerTest {
     }
 
     @Test
+    void hitlPausedCheckpoint_isNotResumed_keptForUserAnswer() {
+        // Инидент 330559f5: задача ждала ответа пользователя, а recovery её сам поднял.
+        when(checkpointService.getUnfinishedCheckpoints()).thenReturn(List.of(
+                new CheckpointEntity("cp-1", RUN_ID, "analyst", "{}", "RUNNING", 0, "HITL_CLARIFICATION")));
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        // checkpoint НЕ чистим — он нужен для resume по ответу пользователя.
+        verify(checkpointService, never()).cleanup(anyString());
+    }
+
+    @Test
     void checkpointWithoutChatId_isSkipped() {
         when(checkpointService.restoreCheckpoint(RUN_ID)).thenReturn(AgentContext.of("x"));
 

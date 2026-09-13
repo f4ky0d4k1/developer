@@ -16,6 +16,8 @@ import ru.allstreets.developer.telegram.TaskLauncher;
  * <ul>
  *   <li>задача, уже помеченная {@code FAILED}/{@code COMPLETED} в БД, не поднимается заново
  *       (устаревший RUNNING-checkpoint чистится) — иначе отработавшая задача «оживает» на рестарте;</li>
+ *   <li>HITL-пауза ({@code interruptReason} != null) не возобновляется — задача ждёт ответа пользователя;
+ *       checkpoint сохраняется для resume по ответу;</li>
  *   <li>возобновление идёт через {@link TaskLauncher#resumeAfterRestart} — на общем executor, с регистрацией
  *       в {@code runningTasks}: старт не блокируется, задачу можно остановить, а успех/провал уведомляется в Telegram.</li>
  * </ul>
@@ -57,6 +59,15 @@ public class CheckpointRecoveryListener {
             if ("FAILED".equalsIgnoreCase(status) || "COMPLETED".equalsIgnoreCase(status)) {
                 log.warn("Пропуск восстановления runId={}: задача уже {} — чищу устаревший checkpoint", runId, status);
                 checkpointService.cleanup(runId);
+                continue;
+            }
+
+            // HITL-пауза: checkpoint с interruptReason — задача намеренно ждёт ответа пользователя.
+            // Автовосстановление её не поднимает (иначе агент продолжит без ответа); checkpoint НЕ
+            // чистим — он нужен для resume по ответу пользователя.
+            if (checkpoint.getInterruptReason() != null) {
+                log.info("Пропуск восстановления runId={}: HITL-пауза ({}) — ждём ответ пользователя",
+                        runId, checkpoint.getInterruptReason());
                 continue;
             }
 
