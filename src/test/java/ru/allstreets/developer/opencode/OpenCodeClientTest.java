@@ -80,12 +80,17 @@ class OpenCodeClientTest extends PostgresTestBase {
     }
 
     private OpenCodeClient client() {
-        return new OpenCodeClient(api, runRepo, progress, 300, 1);
+        return new OpenCodeClient(api, runRepo, progress, 300, 1, 120);
     }
 
     @SuppressWarnings("SameParameterValue")
     private OpenCodeClient client(int timeoutSeconds) {
-        return new OpenCodeClient(api, runRepo, progress, timeoutSeconds, 1);
+        return new OpenCodeClient(api, runRepo, progress, timeoutSeconds, 1, 120);
+    }
+
+    @SuppressWarnings("SameParameterValue")
+    private OpenCodeClient client(int timeoutSeconds, int stallTimeoutSeconds) {
+        return new OpenCodeClient(api, runRepo, progress, timeoutSeconds, 1, stallTimeoutSeconds);
     }
 
     @Test
@@ -163,6 +168,41 @@ class OpenCodeClientTest extends PostgresTestBase {
         assertEquals(1, aborted.size());
     }
 
+    @Test
+    void runAgent_hungAgent_stallsEarlyAndPersistsPartial() {
+        transformer.partialAssistant = true;
+        // sidecar сообщает idle, прогресса нет — агент завис (сессия не busy).
+        sidecar.stubFor(get(urlPathEqualTo("/session/status"))
+                .willReturn(okJson("{\"ses_1\":{\"type\":\"idle\"}}")));
+
+        // stall=2с срабатывает раньше большого бюджета (60с).
+        var result = client(60, 2).runAgent("analyst", "промпт", "/work/slot-0", "task-1");
+
+        assertEquals("error", result.status());
+        assertTrue(result.error().contains("завис"), "ожидали детекцию зависания: " + result.error());
+        sidecar.verify(postRequestedFor(urlPathEqualTo("/session/ses_1/abort")));
+
+        var aborted = runRepo.findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(
+                "task-1", "analyst", List.of(OpenCodeRunStatus.ABORTED));
+        assertEquals(1, aborted.size());
+        // Партиал сохранён — работа агента не потеряна.
+        assertEquals("частичный вывод", aborted.getFirst().getOutput());
+    }
+
+    @Test
+    void runAgent_busySession_isNotKilledAsHung() {
+        transformer.partialAssistant = true;
+        // Агент долго работает (busy) — stall-детекция не должна его убивать.
+        sidecar.stubFor(get(urlPathEqualTo("/session/status"))
+                .willReturn(okJson("{\"ses_1\":{\"type\":\"busy\"}}")));
+
+        // При busy зависание не детектируется → доходим до бюджета.
+        var result = client(2, 2).runAgent("analyst", "промпт", "/work/slot-0", "task-1");
+
+        assertEquals("error", result.status());
+        assertTrue(result.error().contains("Таймаут"), "ожидали таймаут бюджета, не stall: " + result.error());
+    }
+
     // ---------------------------------------------------------------------
 
     /**
@@ -178,12 +218,14 @@ class OpenCodeClientTest extends PostgresTestBase {
         private String messageId;
         private boolean twoPhase;
         private boolean emptyAssistant;
+        private boolean partialAssistant;
         private int listCalls;
 
         void reset() {
             messageId = null;
             twoPhase = false;
             emptyAssistant = false;
+            partialAssistant = false;
             listCalls = 0;
         }
 
@@ -209,6 +251,10 @@ class OpenCodeClientTest extends PostgresTestBase {
             if ("GET".equals(method) && url.matches(".*/session/[^/]+/message$")) {
                 if (emptyAssistant) {
                     return jsonList(response, java.util.Collections.emptyList());
+                }
+                if (partialAssistant) {
+                    // Ассистент есть, текст копится, но сообщение никогда не завершается.
+                    return jsonList(response, List.of(assistant(messageId, "частичный вывод", false)));
                 }
                 listCalls++;
                 boolean complete = !twoPhase || listCalls > 1;

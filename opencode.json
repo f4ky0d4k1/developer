@@ -4,7 +4,10 @@
     "yandex-tracker": {
       "enabled": true,
       "type": "local",
-      "command": ["uvx", "yandex-tracker-mcp@latest"],
+      "command": [
+        "uvx",
+        "yandex-tracker-mcp@latest"
+      ],
       "environment": {
         "TRACKER_TOKEN": "{file:./.secrets/yandex-token}",
         "TRACKER_CLOUD_ORG_ID": "{file:./.secrets/yandex-org-id}",
@@ -14,7 +17,10 @@
     "yandex-wiki": {
       "enabled": true,
       "type": "local",
-      "command": ["uvx", "yandex-wiki-search-mcp@latest"],
+      "command": [
+        "uvx",
+        "yandex-wiki-search-mcp@latest"
+      ],
       "environment": {
         "WIKI_TOKEN": "{file:./.secrets/yandex-token}",
         "WIKI_CLOUD_ORG_ID": "{file:./.secrets/yandex-org-id}",
@@ -24,10 +30,16 @@
     "grafana": {
       "enabled": true,
       "type": "local",
-      "command": ["uvx", "mcp-grafana"],
+      "command": [
+        "uvx",
+        "mcp-grafana",
+        "-grafana-timeout",
+        "120s"
+      ],
+      "timeout": 120000,
       "environment": {
         "GRAFANA_URL": "https://allstreeets.grafana.net",
-        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "{env:GRAFANA_TOKEN}"
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "{file:./.secrets/grafana-token}"
       }
     },
     "idea": {

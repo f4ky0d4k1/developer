@@ -97,7 +97,7 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
     }
 
     private OpenCodeClient client() {
-        return new OpenCodeClient(api, runRepo, progress, 60, 1);
+        return new OpenCodeClient(api, runRepo, progress, 60, 1, 120);
     }
 
     @Test
@@ -142,6 +142,23 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
         }
     }
 
+    @Test
+    void sessionStatus_reportsBusyWhileAgentWorks() throws Exception {
+        // LLM отвечает с задержкой, чтобы застать агента в работе.
+        stubLlmDelayed("E2E_OK", 8000);
+
+        String sid = api.createSession("/work");
+        String mid = "msg_" + java.util.UUID.randomUUID();
+        api.promptAsync(sid, "/work", mid, "analyst", "пробный промпт");
+
+        Thread.sleep(3000);
+        var status = api.sessionStatus(sid);
+        log.info("session status while working: {}", status);
+
+        assertNotNull(status, "сессия должна присутствовать в /session/status");
+        assertTrue(status.isBusy(), "во время работы сессия должна быть busy, была: " + status);
+    }
+
     // ---------------------------------------------------------------------
 
     @SuppressWarnings("SameParameterValue")
@@ -150,6 +167,16 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
                 .willReturn(aResponse()
                         .withStatus(200)
                         .withHeader("Content-Type", "text/event-stream; charset=utf-8")
+                        .withBody(sseStream(content))));
+    }
+
+    @SuppressWarnings("SameParameterValue")
+    private void stubLlmDelayed(String content, int delayMs) {
+        llm.stubFor(post(urlPathMatching(".*/chat/completions"))
+                .willReturn(aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "text/event-stream; charset=utf-8")
+                        .withFixedDelay(delayMs)
                         .withBody(sseStream(content))));
     }
 

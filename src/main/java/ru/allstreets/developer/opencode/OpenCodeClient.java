@@ -40,19 +40,22 @@ public class OpenCodeClient {
     private final TaskProgressRegistry progressRegistry;
     private final int timeoutSeconds;
     private final int pollIntervalSeconds;
+    private final int stallTimeoutSeconds;
 
     public OpenCodeClient(
             OpenCodeApi api,
             OpenCodeRunRepository runRepo,
             TaskProgressRegistry progressRegistry,
             @Value("${opencode.timeout-seconds:300}") int timeoutSeconds,
-            @Value("${opencode.poll-interval-seconds:5}") int pollIntervalSeconds
+            @Value("${opencode.poll-interval-seconds:5}") int pollIntervalSeconds,
+            @Value("${opencode.stall-timeout-seconds:120}") int stallTimeoutSeconds
     ) {
         this.api = api;
         this.runRepo = runRepo;
         this.progressRegistry = progressRegistry;
         this.timeoutSeconds = timeoutSeconds;
         this.pollIntervalSeconds = Math.max(1, pollIntervalSeconds);
+        this.stallTimeoutSeconds = Math.max(pollIntervalSeconds, stallTimeoutSeconds);
     }
 
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId) {
@@ -186,18 +189,14 @@ public class OpenCodeClient {
         String sessionId = run.getSessionId();
         String messageId = run.getMessageId();
         long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        long lastProgressAt = System.currentTimeMillis();
         String prevText = "";
 
         while (true) {
-            if (System.currentTimeMillis() > deadline) {
-                log.warn("[OpenCode:{}] бюджет времени истёк ({}с), abort сессии {}",
-                        agentName, timeoutSeconds, sessionId);
-                api.abort(sessionId, run.getCwd());
-                run.setStatus(OpenCodeRunStatus.ABORTED);
-                run.setLastPolledAt(Instant.now());
-                runRepo.save(run);
-                return fail(taskId, agentName,
-                        "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName, sessionId);
+            long now = System.currentTimeMillis();
+            if (now > deadline) {
+                return abortAndFail(run, agentName, taskId, prevText,
+                        "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName);
             }
 
             List<OpenCodeApi.MessageEnvelope> messages;
@@ -231,13 +230,7 @@ public class OpenCodeClient {
                     .filter(m -> m.info() != null && messageId.equals(m.info().parentID()))
                     .findFirst().orElse(null);
 
-            if (assistant == null) {
-                // Агент ещё не создал ответ — ждём дальше.
-                sleep();
-                continue;
-            }
-
-            if (assistant.hasError()) {
+            if (assistant != null && assistant.hasError()) {
                 String err = extractError(assistant);
                 log.error("[OpenCode:{}] агент завершился с ошибкой: {}", agentName, err);
                 run.setStatus(OpenCodeRunStatus.FAILED);
@@ -246,28 +239,81 @@ public class OpenCodeClient {
                 return fail(taskId, agentName, err, sessionId);
             }
 
-            // Прогресс: отдаём в реестр только приращение текста (delta).
-            String full = assistant.text();
-            if (full.length() > prevText.length()) {
-                String delta = full.substring(prevText.length());
-                if (taskId != null) {
-                    progressRegistry.recordText(taskId, delta);
+            if (assistant != null) {
+                // Прогресс: отдаём в реестр только приращение текста (delta).
+                String full = assistant.text();
+                if (full.length() > prevText.length()) {
+                    String delta = full.substring(prevText.length());
+                    if (taskId != null) {
+                        progressRegistry.recordText(taskId, delta);
+                    }
+                    prevText = full;
+                    lastProgressAt = now;
                 }
-                prevText = full;
+
+                if (assistant.isCompleted()) {
+                    log.info("Агент {} завершил работу. session={}, текст={} символов",
+                            agentName, sessionId, full.length());
+                    run.setStatus(OpenCodeRunStatus.DONE);
+                    run.setOutput(full);
+                    runRepo.save(run);
+                    return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
+                }
             }
 
-            if (assistant.isCompleted()) {
-                log.info("Агент {} завершил работу. session={}, текст={} символов",
-                        agentName, sessionId, full.length());
-                run.setStatus(OpenCodeRunStatus.DONE);
-                run.setOutput(full);
-                runRepo.save(run);
-                return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
+            // Детекция зависания: работающий агент держит сессию busy/retry (в т.ч. во время
+            // долгих tool-вызовов) — такие long-running задачи не трогаем. Если же sidecar
+            // явно сообщает idle, а прогресса нет уже stallTimeout — агент завис.
+            Boolean busy = sessionIsBusy(sessionId);
+            long nowMs = System.currentTimeMillis();
+            if (Boolean.TRUE.equals(busy)) {
+                lastProgressAt = nowMs;
+            } else if (Boolean.FALSE.equals(busy) && nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
+                return abortAndFail(run, agentName, taskId, prevText,
+                        "OpenCode агент завис: сессия idle без прогресса " + stallTimeoutSeconds + "с");
             }
-            // assistant ещё в работе (нет time.completed) — ждём дальше.
 
             sleep();
         }
+    }
+
+    /**
+     * Статус сессии: {@code TRUE} — busy/retry (работает), {@code FALSE} — явно idle,
+     * {@code null} — неизвестно (ошибка/сессия отсутствует). При {@code null} не считаем
+     * простой зависанием — консервативно, чтобы не убить рабочую задачу.
+     */
+    private Boolean sessionIsBusy(String sessionId) {
+        try {
+            var status = api.sessionStatus(sessionId);
+            if (status == null) {
+                return null;
+            }
+            return status.isBusy();
+        } catch (Exception e) {
+            log.debug("[OpenCode] статус сессии {} недоступен: {}", sessionId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Прервать сессию и вернуть ошибку, сохранив накопленный частичный вывод агента
+     * (иначе при таймауте теряем всю работу без следа).
+     */
+    private OpenCodeResult abortAndFail(OpenCodeRunEntity run, String agentName, String taskId,
+                                        String partialText, String message) {
+        log.warn("[OpenCode:{}] {} — abort сессии {} (сохранён частичный вывод: {} символов)",
+                agentName, message, run.getSessionId(), partialText.length());
+        try {
+            api.abort(run.getSessionId(), run.getCwd());
+        } catch (Exception e) {
+            log.warn("[OpenCode:{}] не удалось abort сессии {}: {}", agentName, run.getSessionId(), e.getMessage());
+        }
+        run.setStatus(OpenCodeRunStatus.ABORTED);
+        run.setOutput(partialText);
+        run.setError(message);
+        run.setLastPolledAt(Instant.now());
+        runRepo.save(run);
+        return fail(taskId, agentName, message, run.getSessionId());
     }
 
     private String extractError(OpenCodeApi.MessageEnvelope env) {

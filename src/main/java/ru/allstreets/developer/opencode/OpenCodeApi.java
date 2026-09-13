@@ -216,6 +216,14 @@ public class OpenCodeApi {
     }
 
     /**
+     * Статус одной сессии ({@code idle}/{@code busy}/{@code retry}) или {@code null},
+     * если сессии нет в списке. Используется для детекции зависания агента.
+     */
+    public SessionStatus sessionStatus(String sessionId) {
+        return sessionStatuses().get(sessionId);
+    }
+
+    /**
      * Отменить работу сессии.
      */
     public boolean abort(String sessionId, String cwd) {
@@ -406,6 +414,12 @@ public class OpenCodeApi {
      * {@code type = "idle" | "busy" | "retry"}.
      */
     public record SessionStatus(String type, Integer attempt, String message, Long next) {
+        /**
+         * Агент работает: обрабатывает prompt или выполняет инструмент.
+         */
+        public boolean isBusy() {
+            return "busy".equals(type) || "retry".equals(type);
+        }
     }
 
     /**

@@ -53,43 +53,80 @@ public class WorktreeManager {
     /**
      * Подготовить слот: clone репо на main, если ещё не существует.
      * Spring НЕ переключает ветки — агенты OpenCode сами создают ветки через git.
+     * <p>
+     * Fail-fast: без целевого репозитория агент работать не может (аналитик читает код,
+     * разработчик/тестировщик правят), поэтому пустой {@code repoUrl} — сразу ошибка, а не
+     * запуск агента в пустой директории (именно так задача жгла бюджет 300с вхолостую).
+     * Если слот существует, но не является git-репозиторием (остался от прошлых запусков
+     * или повреждён) — чистим и клонируем заново.
      */
     public void prepareSlot(int slotIndex, String repoUrl) {
         Path slotDir = getSlotWorkDir(slotIndex);
         log.info("Подготовка слота {} → {} (repo: {})", slotIndex, slotDir, repoUrl);
 
+        if (repoUrl == null || repoUrl.isBlank()) {
+            throw new IllegalStateException(
+                    "Не задан целевой репозиторий (TARGET_REPO) для слота " + slotIndex
+                            + " — агент не может работать без кода репозитория");
+        }
+
         try {
-            if (Files.exists(slotDir) && Files.isDirectory(slotDir)) {
-                Path gitDir = slotDir.resolve(".git");
-                if (Files.exists(gitDir)) {
-                    // Уже клонировано — обновляем main (с retry на случай TLS ошибок)
-                    runCommand(slotDir, "git", "config", "http.sslVerify", "false");
-                    runCommandWithRetry(slotDir, 3, "git", "fetch", "origin");
-                    runCommand(slotDir, "git", "checkout", "main");
-                    runCommandWithRetry(slotDir, 3, "git", "pull", "origin", "main");
-                    linkOpencodeConfig(slotDir);
-                    log.info("Слот {} обновлён на main", slotIndex);
-                    return;
-                }
+            if (isGitRepo(slotDir)) {
+                // Уже клонировано — обновляем main (с retry на случай TLS ошибок)
+                runCommand(slotDir, "git", "config", "http.sslVerify", "false");
+                runCommandWithRetry(slotDir, 3, "git", "fetch", "origin");
+                runCommand(slotDir, "git", "checkout", "main");
+                runCommandWithRetry(slotDir, 3, "git", "pull", "origin", "main");
+                linkOpencodeConfig(slotDir);
+                log.info("Слот {} обновлён на main", slotIndex);
+                return;
             }
 
+            // Слот не является валидным репозиторием: подчищаем остатки от прошлых запусков.
+            if (Files.exists(slotDir)) {
+                log.warn("Слот {} не является git-репозиторием — очищаю перед клоном: {}", slotIndex, slotDir);
+                deleteRecursively(slotDir);
+            }
             Files.createDirectories(slotDir);
 
-            if (repoUrl != null && !repoUrl.isBlank()) {
-                runCommand(slotDir.getParent(), "git", "clone",
-                        "-c", "http.sslVerify=false",
-                        authenticatedUrl(repoUrl), slotDir.toString());
-                runCommand(slotDir, "git", "config", "http.sslVerify", "false");
-            } else {
-                log.warn("repoUrl не задан, слот {} — пустая директория", slotIndex);
+            runCommand(slotDir.getParent(), "git", "clone",
+                    "-c", "http.sslVerify=false",
+                    authenticatedUrl(repoUrl), slotDir.toString());
+            runCommand(slotDir, "git", "config", "http.sslVerify", "false");
+
+            if (!isGitRepo(slotDir)) {
+                throw new IllegalStateException(
+                        "Слот " + slotIndex + " не является git-репозиторием после клонирования: " + slotDir);
             }
 
             log.info("Слот {} подготовлен", slotIndex);
             linkOpencodeConfig(slotDir);
 
+        } catch (RuntimeException e) {
+            log.error("Ошибка подготовки слота {}: {}", slotIndex, e.getMessage(), e);
+            throw e;
         } catch (Exception e) {
             log.error("Ошибка подготовки слота {}: {}", slotIndex, e.getMessage(), e);
             throw new RuntimeException("Не удалось подготовить слот: " + e.getMessage(), e);
+        }
+    }
+
+    private static boolean isGitRepo(Path dir) {
+        return Files.isDirectory(dir) && Files.exists(dir.resolve(".git"));
+    }
+
+    private static void deleteRecursively(Path path) throws IOException {
+        if (!Files.exists(path)) {
+            return;
+        }
+        try (var walk = Files.walk(path)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            });
         }
     }
 

@@ -62,6 +62,9 @@ opencode:
   work-dir: ${OPENCODE_WORK_DIR:/work}
   timeout-seconds: 300
   poll-interval-seconds: 5
+  # Если sidecar сообщает idle и нет прогресса столько секунд — считаем агента зависшим
+  # и прерываем (работающие агенты держат сессию busy и не трогаются).
+  stall-timeout-seconds: 120
   model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
   slots: 5
   max-clarifications: 10

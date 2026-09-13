@@ -8,7 +8,11 @@ permissions:
   read: allow
   webfetch: allow
   websearch: allow
-  question: allow
+  # question: deny — агент работает в async-режиме (prompt_async + опрос), отвечать на
+  # question-инструмент некому → он бы заблокировал сессию до таймаута. Уточнения
+  # запрашиваются ТОЛЬКО через JSON (needsClarification/clarificationQuestion), их
+  # обрабатывает Spring (Telegram HITL). См. ШАГ 2.
+  question: deny
   plan_enter: deny
   plan_exit: deny
 ---
