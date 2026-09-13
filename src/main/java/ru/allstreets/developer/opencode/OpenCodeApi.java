@@ -89,6 +89,7 @@ public class OpenCodeApi {
         this.api = RestClient.builder()
                 .baseUrl(baseUrl)
                 .requestFactory(requestFactory)
+                .requestInterceptor(new ru.allstreets.developer.config.LoggingClientHttpRequestInterceptor())
                 .build();
 
         log.info("OpenCodeApi инициализирован: baseUrl={}, model={}, пул соединений: 50 total / 20 per route", baseUrl, model);

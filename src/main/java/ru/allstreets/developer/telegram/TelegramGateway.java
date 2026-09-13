@@ -29,6 +29,7 @@ public class TelegramGateway {
                            @Qualifier("fallbackChatClient") ChatClient fastChatClient) {
         this.api = RestClient.builder()
                 .baseUrl("https://api.telegram.org/bot" + botToken)
+                .requestInterceptor(new ru.allstreets.developer.config.LoggingClientHttpRequestInterceptor())
                 .build();
         this.rateLimiter = rateLimiterRegistry.rateLimiter("telegram");
         this.chatMemory = chatMemory;

@@ -175,6 +175,7 @@ public class GitHubService {
                 .baseUrl("https://api.github.com")
                 .defaultHeader("Authorization", "Bearer " + token)
                 .defaultHeader("Accept", "application/vnd.github.v3+json")
+                .requestInterceptor(new ru.allstreets.developer.config.LoggingClientHttpRequestInterceptor())
                 .build();
     }
 }
