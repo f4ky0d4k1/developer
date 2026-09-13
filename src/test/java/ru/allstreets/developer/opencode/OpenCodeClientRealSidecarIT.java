@@ -52,7 +52,9 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
     private OpenCodeApi api;
     private TaskProgressRegistry progress;
 
+    // Контейнер живёт весь прогон класса (stop в @AfterAll) — try-with-resources неприменим.
     @BeforeAll
+    @SuppressWarnings("resource")
     static void startContainers() {
         // LLM-мок: биндим на 0.0.0.0, чтобы opencode-контейнер достал его по host.docker.internal
         llm = new WireMockServer(WireMockConfiguration.options().dynamicPort().bindAddress("0.0.0.0"));
@@ -163,6 +165,7 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
                 + "data: [DONE]\n\n";
     }
 
+    @SuppressWarnings("HttpUrlsUsage")
     private static String opencodeConfig(int llmPort) {
         return """
                 {

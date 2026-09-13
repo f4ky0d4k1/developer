@@ -169,7 +169,10 @@ class OpenCodeClientTest extends PostgresTestBase {
      * Перехватывает messageID из {@code prompt_async} и возвращает assistant-сообщение
      * с {@code parentID == messageID} в ответе на список сообщений. Эмулирует реальный
      * контракт opencode 1.18.x (messageID → user-сообщение; assistant → отдельное сообщение).
+     * {@code ResponseTransformer} помечен deprecated в WireMock 3.9 (миграция на новый
+     * extension SPI), но недипрекейтед-эквивалента для генерации ответа нет.
      */
+    @SuppressWarnings("deprecation")
     static class SidecarTransformer extends ResponseTransformer {
 
         private String messageId;
