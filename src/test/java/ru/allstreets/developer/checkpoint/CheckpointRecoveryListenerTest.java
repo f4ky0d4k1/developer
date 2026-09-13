@@ -43,14 +43,27 @@ class CheckpointRecoveryListenerTest {
     }
 
     @Test
-    void completedOrFailedTask_isNotResumed_staleCheckpointCleaned() {
+    void failedTask_isNotResumed_butCheckpointKeptForManualRestart() {
+        // Ручной restart упавшей задачи должен подняться с упавшего узла, а не с нуля,
+        // поэтому чекпоинт НЕ чистим. Авто-оживания нет — resumeAfterRestart не зовём.
         when(taskRepo.findById(RUN_ID))
                 .thenReturn(Optional.of(new TaskEntity(RUN_ID, "FAILED", "d", "t", 42L)));
 
         listener.recoverUnfinishedTasks();
 
-        verify(checkpointService).cleanup(RUN_ID);
         verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        verify(checkpointService, never()).cleanup(anyString());
+    }
+
+    @Test
+    void completedTask_isNotResumed_staleCheckpointCleaned() {
+        when(taskRepo.findById(RUN_ID))
+                .thenReturn(Optional.of(new TaskEntity(RUN_ID, "COMPLETED", "d", "t", 42L)));
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        verify(checkpointService).cleanup(RUN_ID);
     }
 
     @Test

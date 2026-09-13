@@ -14,8 +14,9 @@ import ru.allstreets.developer.telegram.TaskLauncher;
  * <p>
  * Ключевые гарантии:
  * <ul>
- *   <li>задача, уже помеченная {@code FAILED}/{@code COMPLETED} в БД, не поднимается заново
- *       (устаревший RUNNING-checkpoint чистится) — иначе отработавшая задача «оживает» на рестарте;</li>
+ *   <li>задача {@code COMPLETED} не поднимается, а её устаревший RUNNING-checkpoint чистится;</li>
+ *   <li>задача {@code FAILED} не поднимается (авто-оживания нет), но её checkpoint СОХРАНЯЕТСЯ —
+ *       ручной restart возобновляется с упавшего узла, а не с нуля;</li>
  *   <li>HITL-пауза ({@code interruptReason} != null) не возобновляется — задача ждёт ответа пользователя;
  *       checkpoint сохраняется для resume по ответу;</li>
  *   <li>возобновление идёт через {@link TaskLauncher#resumeAfterRestart} — на общем executor, с регистрацией
@@ -56,9 +57,15 @@ public class CheckpointRecoveryListener {
 
             // Не поднимаем задачу, которая уже завершилась (устаревший RUNNING-checkpoint).
             String status = taskRepo.findById(runId).map(TaskEntity::getStatus).orElse(null);
-            if ("FAILED".equalsIgnoreCase(status) || "COMPLETED".equalsIgnoreCase(status)) {
-                log.warn("Пропуск восстановления runId={}: задача уже {} — чищу устаревший checkpoint", runId, status);
+            if ("COMPLETED".equalsIgnoreCase(status)) {
+                log.warn("Пропуск восстановления runId={}: задача уже COMPLETED — чищу устаревший checkpoint", runId);
                 checkpointService.cleanup(runId);
+                continue;
+            }
+            // Упавшую задачу сами не поднимаем (авто-оживания нет), но чекпоинт СОХРАНЯЕМ:
+            // ручной restart должен возобновиться с упавшего узла, а не с нуля (инцидент 0ad6c58f).
+            if ("FAILED".equalsIgnoreCase(status)) {
+                log.info("Пропуск восстановления runId={}: задача FAILED — чекпоинт оставлен для ручного restart", runId);
                 continue;
             }
 

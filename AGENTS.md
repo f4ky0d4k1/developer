@@ -48,8 +48,9 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
   safe stub and marks it `git update-index --skip-worktree` (or `.git/info/exclude`). Don't reintroduce a path where
   this gets committed.
 - **Recovery resumes via the executor**: `CheckpointRecoveryListener` skips already-FAILED/COMPLETED tasks and resumes
-  through `TaskLauncher.resumeAfterRestart` (taskExecutor + `runningTasks`), not a synchronous `graphRunner.resume` on
-  the startup thread.
+  RUNNING ones through `TaskLauncher.resumeAfterRestart` (taskExecutor + `runningTasks`), not a synchronous
+  `graphRunner.resume` on the startup thread. A FAILED task's checkpoint is **kept** (not cleaned) so a manual restart
+  resumes from the failed node; only COMPLETED/stale RUNNING checkpoints are cleaned.
 
 ## Conventions
 
