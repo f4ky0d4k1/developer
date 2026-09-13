@@ -46,7 +46,7 @@ class OpenCodeApiTest {
                 .withQueryParam("directory", equalTo("/work/slot-0"))
                 .willReturn(okJson("{\"id\":\"ses_abc123\"}")));
 
-        String id = api(wm).createSession("/work/slot-0", "analyst-title");
+        String id = api(wm).createSession("/work/slot-0");
 
         assertEquals("ses_abc123", id);
     }

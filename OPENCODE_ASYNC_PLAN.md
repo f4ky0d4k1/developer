@@ -541,3 +541,34 @@ Resume: если для `(taskId, agentName)` есть строка в стат�
 
 Не покрыто тестами (нужен живой sidecar/продакшн-лог): фактическая форма `info`/`parts` на
 первом опросе против реального OpenCode, и Задача 5 (слоты в БД).
+
+---
+
+## Часть 8. E2E против реального sidecar — исправления контракта (2026-09-13)
+
+Добавлен `OpenCodeClientRealSidecarIT`: реальный контейнер `ghcr.io/anomalyco/opencode`
+(сейчас **v1.18.18**) + WireMock как LLM-провайдер (`baseURL` → `host.docker.internal`) +
+Testcontainers Postgres. Тест прогоняет полный цикл `runAgent` и проверяет, что именно
+уходит на вход мок-LLM (`model`, промпт, `tools`). Он вскрыл **5 расхождений с планом**,
+все исправлены:
+
+1. **`POST /session` не принимает `title`** (400). Заголовок генерирует сервер.
+   `createSession` теперь шлёт пустое тело.
+2. **sidecar отвергает `Transfer-Encoding: chunked`** POST (закрывает соединение без ответа).
+   Тело сериализуется в строку → `Content-Length`.
+3. **keep-alive reuse ломается** (`NoHttpResponseException` на POST после GET). Включён
+   `Connection: close` (для локального sidecar keep-alive не нужен).
+4. **`messageID` обязан начинаться с `msg_`** (валидация `Expected a string starting with "msg"`).
+   Генерируем `"msg_" + UUID`, а не голый UUID.
+5. **ГЛАВНОЕ: `messageID` — это id USER-сообщения, а не ответа агента.** Ответ агента —
+   отдельное assistant-сообщение с `parentID == messageID`. Опрос `GET /session/:id/message/:id`
+   возвращает наш промпт (role=user, никогда не завершается). Правильно — опрашивать
+   `GET /session/:id/message` (список) и искать assistant-сообщение по `parentID`.
+
+Это опровергает допущение плана (п.1.5.1 «messageID — ключ идемпотентности для опроса»):
+idempotency-ключ остаётся (по нему находим наш промпт), но завершение детектируется по
+assistant-сообщению с `parentID == messageID`. Реализация: `OpenCodeApi.listMessages` +
+`MessageInfo.parentID` + переписанный цикл опроса в `OpenCodeClient`.
+
+`OpenCodeClientTest` (WireMock-стаб sidecar) переведён на новый контракт через кастомный
+`ResponseTransformer`, эмулирующий messageID → user + assistant по parentID.

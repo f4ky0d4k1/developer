@@ -146,8 +146,9 @@ public class OpenCodeClient {
         }
 
         // Новый прогон
-        String sid = sessionId != null ? sessionId : api.createSession(cwd, agentName);
-        String messageId = UUID.randomUUID().toString();
+        String sid = sessionId != null ? sessionId : api.createSession(cwd);
+        // sidecar требует messageID в формате "msg_..." (как ses_/msg_ у нативных id).
+        String messageId = "msg_" + UUID.randomUUID();
         OpenCodeRunEntity run = new OpenCodeRunEntity(
                 taskId, agentName, sid, messageId, cwd, OpenCodeRunStatus.STARTING);
         runRepo.save(run); // INSERT до prompt_async — не теряем messageId при падении
@@ -199,12 +200,12 @@ public class OpenCodeClient {
                         "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName, sessionId);
             }
 
-            OpenCodeApi.MessageEnvelope env;
+            List<OpenCodeApi.MessageEnvelope> messages;
             try {
-                env = api.getMessage(sessionId, run.getCwd(), messageId);
+                messages = api.listMessages(sessionId, run.getCwd());
             } catch (OpenCodeApi.OpenCodeApiException e) {
                 // 5xx от sidecar — не retriable (п.1.2 плана); фиксируем провал прогона.
-                log.error("[OpenCode:{}] getMessage HTTP {} (ref={}): {}",
+                log.error("[OpenCode:{}] listMessages HTTP {} (ref={}): {}",
                         agentName, e.status(), e.errorRef(), e.getMessage());
                 run.setStatus(OpenCodeRunStatus.FAILED);
                 run.setError(e.getMessage());
@@ -224,14 +225,20 @@ public class OpenCodeClient {
 
             run.setLastPolledAt(Instant.now());
 
-            if (env == null) {
-                // 404: сообщение ещё не создано sidecar — ждём дальше.
+            // Ответ агента — assistant-сообщение, чей parentID равен нашему user-сообщению
+            // (messageID, который мы задали в prompt_async).
+            OpenCodeApi.MessageEnvelope assistant = messages.stream()
+                    .filter(m -> m.info() != null && messageId.equals(m.info().parentID()))
+                    .findFirst().orElse(null);
+
+            if (assistant == null) {
+                // Агент ещё не создал ответ — ждём дальше.
                 sleep();
                 continue;
             }
 
-            if (env.hasError()) {
-                String err = extractError(env);
+            if (assistant.hasError()) {
+                String err = extractError(assistant);
                 log.error("[OpenCode:{}] агент завершился с ошибкой: {}", agentName, err);
                 run.setStatus(OpenCodeRunStatus.FAILED);
                 run.setError(err);
@@ -239,27 +246,25 @@ public class OpenCodeClient {
                 return fail(taskId, agentName, err, sessionId);
             }
 
-            if (env.isAssistant()) {
-                // Прогресс: отдаём в реестр только приращение текста (delta).
-                String full = env.text();
-                if (full.length() > prevText.length()) {
-                    String delta = full.substring(prevText.length());
-                    if (taskId != null) {
-                        progressRegistry.recordText(taskId, delta);
-                    }
-                    prevText = full;
+            // Прогресс: отдаём в реестр только приращение текста (delta).
+            String full = assistant.text();
+            if (full.length() > prevText.length()) {
+                String delta = full.substring(prevText.length());
+                if (taskId != null) {
+                    progressRegistry.recordText(taskId, delta);
                 }
-
-                if (env.isCompleted()) {
-                    log.info("Агент {} завершил работу. session={}, текст={} символов",
-                            agentName, sessionId, full.length());
-                    run.setStatus(OpenCodeRunStatus.DONE);
-                    run.setOutput(full);
-                    runRepo.save(run);
-                    return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
-                }
+                prevText = full;
             }
-            // role != "assistant" (наш user-промпт) — это не ответ агента, ждём дальше.
+
+            if (assistant.isCompleted()) {
+                log.info("Агент {} завершил работу. session={}, текст={} символов",
+                        agentName, sessionId, full.length());
+                run.setStatus(OpenCodeRunStatus.DONE);
+                run.setOutput(full);
+                runRepo.save(run);
+                return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
+            }
+            // assistant ещё в работе (нет time.completed) — ждём дальше.
 
             sleep();
         }

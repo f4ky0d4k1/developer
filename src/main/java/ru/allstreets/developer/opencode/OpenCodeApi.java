@@ -1,6 +1,7 @@
 package ru.allstreets.developer.opencode;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -74,6 +75,9 @@ public class OpenCodeApi {
         CloseableHttpClient httpClient = HttpClients.custom()
                 .setConnectionManager(connectionManager)
                 .evictIdleConnections(TimeValue.ofSeconds(30))
+                // sidecar (Bun) закрывает reused-соединение на POST после GET — NoHttpResponse.
+                // Для локального sidecar keep-alive не даёт выгоды, отключаем (Connection: close).
+                .setDefaultHeaders(java.util.List.of(new org.apache.hc.core5.http.message.BasicHeader("Connection", "close")))
                 .build();
 
         HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
@@ -109,12 +113,12 @@ public class OpenCodeApi {
 
     /**
      * Создать сессию, привязанную к рабочей директории. Возвращает {@code sessionId}.
+     * Тело пустое: с opencode 1.18.x поле {@code title} больше не принимается
+     * (400 BadRequest), заголовок генерируется самим сервером.
      */
-    public String createSession(String cwd, String title) {
-        ObjectNode body = mapper.createObjectNode();
-        body.put("title", title);
+    public String createSession(String cwd) {
         RawResponse resp = exchange(HttpMethod.POST, uriBuilder -> uriBuilder.path("/session")
-                .queryParam("directory", cwd).build(), cwd, body);
+                .queryParam("directory", cwd).build(), cwd, mapper.createObjectNode());
         if (!resp.is2xx()) {
             throw openCodeError("createSession", resp);
         }
@@ -175,6 +179,27 @@ public class OpenCodeApi {
     }
 
     /**
+     * Список сообщений сессии. Ответ — массив {@code [{info, parts}]}. Используется для
+     * опроса: ответ агента — это assistant-сообщение с {@code parentID == нашему messageId}.
+     */
+    @Retry(name = "opencodeApi")
+    public List<MessageEnvelope> listMessages(String sessionId, String cwd) {
+        RawResponse resp = exchange(HttpMethod.GET, "/session/" + sessionId + "/message", cwd, null);
+        if (!resp.is2xx()) {
+            throw openCodeError("listMessages", resp);
+        }
+        if (resp.body() == null || resp.body().isBlank()) {
+            return List.of();
+        }
+        try {
+            return mapper.readValue(resp.body(), new TypeReference<>() {
+            });
+        } catch (JsonProcessingException e) {
+            throw new OpenCodeApiException("OpenCode: не удалось распарсить список сообщений: " + e.getMessage(), 0, null);
+        }
+    }
+
+    /**
      * Статус всех сессий — health-gate перед опросом.
      */
     @Retry(name = "opencodeApi")
@@ -228,7 +253,10 @@ public class OpenCodeApi {
             }
             if (requestBody != null) {
                 request = request.contentType(MediaType.APPLICATION_JSON);
-                request = request.body(requestBody);
+                // Сериализуем тело в строку заранее: так RestClient шлёт Content-Length,
+                // а не Transfer-Encoding: chunked. sidecar (Bun) не принимает chunked POST
+                // (закрывает соединение без ответа → NoHttpResponseException).
+                request = request.body(toJson(requestBody));
             }
             var response = request.retrieve().toEntity(String.class);
             return new RawResponse(response.getStatusCode().value(), response.getBody());
@@ -245,6 +273,17 @@ public class OpenCodeApi {
             return mapper.readTree(raw);
         } catch (JsonProcessingException e) {
             throw new OpenCodeApiException("OpenCode: не-JSON ответ на " + op + ": " + e.getMessage(), 0, null);
+        }
+    }
+
+    private String toJson(Object body) {
+        if (body instanceof String s) {
+            return s;
+        }
+        try {
+            return mapper.writeValueAsString(body);
+        } catch (JsonProcessingException e) {
+            throw new OpenCodeApiException("OpenCode: не удалось сериализовать тело запроса: " + e.getMessage(), 0, null);
         }
     }
 
@@ -323,15 +362,16 @@ public class OpenCodeApi {
 
     /**
      * {@code UserMessage | AssistantMessage}. {@code role} — дискриминатор.
-     * Для assistant-сообщений есть {@code time.completed}, {@code error}, {@code finish};
-     * у user-сообщений их нет (остаются null).
+     * Для assistant-сообщений есть {@code time.completed}, {@code error}, {@code finish}
+     * и {@code parentID} (id user-сообщения-промпта); у user-сообщений их нет (остаются null).
      */
     public record MessageInfo(
             String id,
             String role,
             TimeInfo time,
             MessageError error,
-            String finish
+            String finish,
+            String parentID
     ) {
     }
 

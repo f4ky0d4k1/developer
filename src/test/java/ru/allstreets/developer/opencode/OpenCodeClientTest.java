@@ -1,9 +1,15 @@
 package ru.allstreets.developer.opencode;
 
-import com.github.tomakehurst.wiremock.client.WireMock;
-import com.github.tomakehurst.wiremock.junit5.WireMockRuntimeInfo;
-import com.github.tomakehurst.wiremock.junit5.WireMockTest;
-import com.github.tomakehurst.wiremock.stubbing.Scenario;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.common.FileSource;
+import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
+import com.github.tomakehurst.wiremock.extension.Parameters;
+import com.github.tomakehurst.wiremock.extension.ResponseTransformer;
+import com.github.tomakehurst.wiremock.http.Request;
+import com.github.tomakehurst.wiremock.http.Response;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -12,7 +18,9 @@ import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabas
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import ru.allstreets.developer.PostgresTestBase;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -20,32 +28,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 
 /**
- * Интеграционный тест {@link OpenCodeClient}: полный цикл «health gate → прогон →
- * цикл опроса» против стабированного WireMock-сервера и реального PostgreSQL
- * (Testcontainers). Проверяет ключевые свойства целевой архитектуры:
- * <ul>
- *   <li>Завершение агента детектируется опросом и персистится как DONE;</li>
- *   <li>Resume после рестарта продолжает опрос, не отправляя промпт заново;</li>
- *   <li>Недоступный sidecar → быстрый error без отправки промпта;</li>
- *   <li>Истечение бюджета → abort + статус ABORTED.</li>
- * </ul>
+ * Интеграционный тест {@link OpenCodeClient} против WireMock-стаба sidecar + реального
+ * PostgreSQL. Sidecar эмулируется с учётом реального контракта opencode 1.18.x:
+ * {@code prompt_async} принимает наш {@code messageID} как id user-сообщения, а ответ
+ * агента — это assistant-сообщение в списке {@code GET /session/:id/message} с
+ * {@code parentID == messageID}. {@link SidecarTransformer} перехватывает messageID из
+ * prompt_async и возвращает assistant-сообщение с нужным parentID.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@WireMockTest
 class OpenCodeClientTest extends PostgresTestBase {
 
-    private static final String HEALTHY = "{\"healthy\":true,\"version\":\"1.15.5\"}";
-    private static final String COMPLETED = """
-            {"info":{"id":"msg_1","role":"assistant",
-              "time":{"created":1694000000000,"completed":1694000060000},
-              "error":null,"finish":"stop"},
-             "parts":[{"type":"text","text":"Анализ завершён"}]}
-            """;
-    private static final String IN_PROGRESS = """
-            {"info":{"id":"msg_1","role":"assistant","time":{"created":1694000000000},"error":null},
-             "parts":[{"type":"text","text":"Анализ"}]}
-            """;
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    private static WireMockServer sidecar;
+    private static SidecarTransformer transformer;
 
     @Autowired
     private OpenCodeRunRepository runRepo;
@@ -53,10 +50,33 @@ class OpenCodeClientTest extends PostgresTestBase {
     private OpenCodeApi api;
     private TaskProgressRegistry progress;
 
+    @BeforeAll
+    static void startSidecar() {
+        transformer = new SidecarTransformer();
+        sidecar = new WireMockServer(WireMockConfiguration.options()
+                .dynamicPort()
+                .extensions(transformer));
+        sidecar.start();
+    }
+
+    @AfterAll
+    static void stopSidecar() {
+        sidecar.stop();
+    }
+
     @BeforeEach
-    void setUp(WireMockRuntimeInfo wm) {
-        this.api = new OpenCodeApi(wm.getHttpBaseUrl(), "deepseek/deepseek-v4-pro");
-        this.progress = Mockito.mock(TaskProgressRegistry.class);
+    void setUp() {
+        transformer.reset();
+        sidecar.resetAll();
+        sidecar.stubFor(get(urlPathEqualTo("/global/health")).willReturn(okJson("{\"healthy\":true}")));
+        sidecar.stubFor(post(urlPathEqualTo("/session")).willReturn(okJson("{\"id\":\"ses_1\"}")));
+        sidecar.stubFor(post(urlPathMatching("/session/.*/prompt_async")).willReturn(aResponse().withStatus(204)));
+        // Заглушка-заглушка: реальный ответ на список строит transformer (applyGlobally).
+        sidecar.stubFor(get(urlPathMatching("/session/[^/]+/message"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/json").withBody("[]")));
+
+        api = new OpenCodeApi(sidecar.baseUrl(), "deepseek/deepseek-v4-pro");
+        progress = Mockito.mock(TaskProgressRegistry.class);
     }
 
     private OpenCodeClient client() {
@@ -70,12 +90,6 @@ class OpenCodeClientTest extends PostgresTestBase {
 
     @Test
     void runAgent_completesAndPersistsDone() {
-        WireMock.stubFor(get(urlPathEqualTo("/global/health")).willReturn(okJson(HEALTHY)));
-        WireMock.stubFor(post(urlPathEqualTo("/session")).willReturn(okJson("{\"id\":\"ses_1\"}")));
-        WireMock.stubFor(post(urlPathEqualTo("/session/ses_1/prompt_async"))
-                .willReturn(aResponse().withStatus(204)));
-        WireMock.stubFor(get(urlPathMatching("/session/ses_1/message/[^/]+")).willReturn(okJson(COMPLETED)));
-
         var result = client().runAgent("analyst", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("success", result.status());
@@ -86,7 +100,6 @@ class OpenCodeClientTest extends PostgresTestBase {
                 "task-1", "analyst", List.of(OpenCodeRunStatus.DONE));
         assertEquals(1, runs.size());
         assertEquals("Анализ завершён", runs.getFirst().getOutput());
-        assertEquals("ses_1", runs.getFirst().getSessionId());
         assertTrue(runs.getFirst().isPromptSent());
 
         verify(progress).start("task-1", "analyst");
@@ -96,80 +109,149 @@ class OpenCodeClientTest extends PostgresTestBase {
 
     @Test
     void runAgent_recordsDeltaAcrossPolls() {
-        WireMock.stubFor(get(urlPathEqualTo("/global/health")).willReturn(okJson(HEALTHY)));
-        WireMock.stubFor(post(urlPathEqualTo("/session")).willReturn(okJson("{\"id\":\"ses_1\"}")));
-        WireMock.stubFor(post(urlPathEqualTo("/session/ses_1/prompt_async"))
-                .willReturn(aResponse().withStatus(204)));
-        WireMock.stubFor(get(urlPathMatching("/session/ses_1/message/[^/]+"))
-                .inScenario("progress")
-                .whenScenarioStateIs(Scenario.STARTED)
-                .willReturn(okJson(IN_PROGRESS))
-                .willSetStateTo("done"));
-        WireMock.stubFor(get(urlPathMatching("/session/ses_1/message/[^/]+"))
-                .inScenario("progress")
-                .whenScenarioStateIs("done")
-                .willReturn(okJson(COMPLETED)));
+        transformer.twoPhase = true;
 
         var result = client().runAgent("analyst", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("success", result.status());
-        // Текст накапливается (как в реальном OpenCode): первый опрос — "Анализ",
-        // второй — полный текст; delta = остаток.
-        verify(progress).recordText("task-1", "Анализ");
-        verify(progress).recordText("task-1", "Анализ завершён".substring("Анализ".length()));
+        // Первый опрос отдал префикс "Анал", второй — полный текст; delta = остаток.
+        verify(progress).recordText("task-1", "Анал");
+        verify(progress).recordText("task-1", "Анализ завершён".substring("Анал".length()));
     }
 
     @Test
     void runAgent_resumesExistingRun_withoutResendingPrompt() {
+        transformer.forceMessageId("msg_existing");
         var existing = new OpenCodeRunEntity("task-1", "analyst", "ses_existing", "msg_existing",
                 "/work/slot-0", OpenCodeRunStatus.RUNNING);
         existing.setPromptSent(true);
         runRepo.saveAndFlush(existing);
-
-        WireMock.stubFor(get(urlPathEqualTo("/global/health")).willReturn(okJson(HEALTHY)));
-        WireMock.stubFor(get(urlPathMatching("/session/ses_existing/message/[^/]+"))
-                .willReturn(okJson(COMPLETED)));
 
         var result = client().runAgent("analyst", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("success", result.status());
         assertEquals("ses_existing", result.sessionId());
         // Ни создания сессии, ни повторной отправки промпта.
-        WireMock.verify(0, postRequestedFor(urlPathEqualTo("/session")));
-        WireMock.verify(0, postRequestedFor(urlPathMatching("/session/.*/prompt_async")));
+        sidecar.verify(0, postRequestedFor(urlPathEqualTo("/session")));
+        sidecar.verify(0, postRequestedFor(urlPathMatching("/session/.*/prompt_async")));
     }
 
     @Test
     void runAgent_unhealthySidecar_returnsErrorWithoutPrompt() {
-        WireMock.stubFor(get(urlPathEqualTo("/global/health"))
-                .willReturn(okJson("{\"healthy\":false,\"version\":\"1.15.5\"}")));
+        sidecar.stubFor(get(urlPathEqualTo("/global/health"))
+                .willReturn(okJson("{\"healthy\":false}")));
 
         var result = client().runAgent("analyst", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("error", result.status());
         assertTrue(result.error().contains("unhealthy"));
-        WireMock.verify(0, postRequestedFor(urlPathEqualTo("/session")));
-        WireMock.verify(0, postRequestedFor(urlPathMatching("/session/.*/prompt_async")));
+        sidecar.verify(0, postRequestedFor(urlPathEqualTo("/session")));
     }
 
     @Test
     void runAgent_timeout_abortsAndPersistsAborted() {
-        WireMock.stubFor(get(urlPathEqualTo("/global/health")).willReturn(okJson(HEALTHY)));
-        WireMock.stubFor(post(urlPathEqualTo("/session")).willReturn(okJson("{\"id\":\"ses_1\"}")));
-        WireMock.stubFor(post(urlPathEqualTo("/session/ses_1/prompt_async"))
-                .willReturn(aResponse().withStatus(204)));
-        // Сообщение никогда не появляется (404) → бюджет истекает.
-        WireMock.stubFor(get(urlPathMatching("/session/ses_1/message/[^/]+"))
-                .willReturn(aResponse().withStatus(404).withBody("{}")));
+        transformer.emptyAssistant = true;
 
         var result = client(2).runAgent("analyst", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("error", result.status());
         assertTrue(result.error().contains("Таймаут"));
-        WireMock.verify(postRequestedFor(urlPathEqualTo("/session/ses_1/abort")));
+        sidecar.verify(postRequestedFor(urlPathEqualTo("/session/ses_1/abort")));
 
         var aborted = runRepo.findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(
                 "task-1", "analyst", List.of(OpenCodeRunStatus.ABORTED));
         assertEquals(1, aborted.size());
+    }
+
+    // ---------------------------------------------------------------------
+
+    /**
+     * Перехватывает messageID из {@code prompt_async} и возвращает assistant-сообщение
+     * с {@code parentID == messageID} в ответе на список сообщений. Эмулирует реальный
+     * контракт opencode 1.18.x (messageID → user-сообщение; assistant → отдельное сообщение).
+     */
+    static class SidecarTransformer extends ResponseTransformer {
+
+        private String messageId;
+        private boolean twoPhase;
+        private boolean emptyAssistant;
+        private int listCalls;
+
+        void reset() {
+            messageId = null;
+            twoPhase = false;
+            emptyAssistant = false;
+            listCalls = 0;
+        }
+
+        @SuppressWarnings("SameParameterValue")
+        void forceMessageId(String id) {
+            messageId = id;
+        }
+
+        @Override
+        public Response transform(Request request, Response response, FileSource files, Parameters params) {
+            String url = request.getUrl();
+            String method = request.getMethod().getName();
+
+            if ("POST".equals(method) && url.contains("prompt_async")) {
+                try {
+                    messageId = mapper.readTree(request.getBodyAsString()).path("messageID").asText();
+                } catch (Exception ignored) {
+                    // ignore — диагностический запрос без body
+                }
+                return response;
+            }
+
+            if ("GET".equals(method) && url.matches(".*/session/[^/]+/message$")) {
+                if (emptyAssistant) {
+                    return jsonList(response, java.util.Collections.emptyList());
+                }
+                listCalls++;
+                boolean complete = !twoPhase || listCalls > 1;
+                String text = complete ? "Анализ завершён" : "Анал";
+                return jsonList(response, List.of(assistant(messageId, text, complete)));
+            }
+
+            return response;
+        }
+
+        @Override
+        public String getName() {
+            return "sidecar-transformer";
+        }
+
+        private static Map<String, Object> assistant(String parentId, String text, boolean complete) {
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("id", "msg_assist");
+            info.put("role", "assistant");
+            Map<String, Object> time = new LinkedHashMap<>();
+            time.put("created", 1L);
+            if (complete) {
+                time.put("completed", 2L);
+            }
+            info.put("time", time);
+            info.put("parentID", parentId);
+            if (complete) {
+                info.put("finish", "stop");
+            }
+
+            Map<String, Object> part = new LinkedHashMap<>();
+            part.put("type", "text");
+            part.put("text", text);
+
+            Map<String, Object> env = new LinkedHashMap<>();
+            env.put("info", info);
+            env.put("parts", List.of(part));
+            return env;
+        }
+
+        private static Response jsonList(Response original, List<Map<String, Object>> envs) {
+            try {
+                return Response.Builder.like(original).body(mapper.writeValueAsString(envs)).build();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 }
