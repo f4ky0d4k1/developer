@@ -261,13 +261,15 @@ public class AnalystNode implements Agent {
 
         String tgMessage = "📋 Анализ завершён.";
         if (trackerIssueId != null) {
-            tgMessage += "\n📌 Tracker: [" + trackerIssueId + "](https://tracker.yandex.ru/" + trackerIssueId + ")";
+            tgMessage += "\n📌 Tracker: " + trackerIssueId + " — https://tracker.yandex.ru/" + trackerIssueId;
         }
         if (!spec.isBlank()) {
             int maxLen = 4000;
             tgMessage += "\n\n" + (spec.length() > maxLen ? spec.substring(0, maxLen) + "..." : spec);
         }
-        telegram.sendMessage(chatIdLong, tgMessage);
+        // Спека — свободный текст (пути, `_`, `[`, backticks): Markdown на нём ломается,
+        // шлём без parse_mode, ссылку Telegram сделает кликабельной сам.
+        telegram.sendPlainMessage(chatIdLong, tgMessage, taskId);
 
         var stateMap = new java.util.HashMap<io.github.asekka.springai.agents.core.StateKey<?>, Object>();
         stateMap.put(TaskState.SPEC, spec);

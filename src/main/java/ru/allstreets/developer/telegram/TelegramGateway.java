@@ -52,6 +52,22 @@ public class TelegramGateway {
     }
 
     /**
+     * Отправить сообщение <b>без разметки</b> (parse_mode отсутствует). Для свободного
+     * текста — спек, отчётов, путей, кода — где спецсимволы `_ * [ ] ` ломают legacy
+     * Markdown (инцидент: «сбитое» форматирование анализа). URL в тексте Telegram делает
+     * кликабельным сам, поэтому ссылку достаточно передать голым адресом.
+     */
+    public void sendPlainMessage(long chatId, String text, String taskId) {
+        log.info("Отправка plain в ТГ chatId={}: {}", chatId, text.length() > 100 ? text.substring(0, 100) + "..." : text);
+        try {
+            sendWithRetry(chatId, text, null);
+            chatMemory.recordBotMessage(chatId, text, taskId);
+        } catch (Exception e) {
+            log.error("Ошибка отправки plain в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
+        }
+    }
+
+    /**
      * Экранирует underscores между буквенно-цифровыми символами (NEW_LEAD → NEW\_LEAD),
      * чтобы Telegram Markdown не интерпретировал их как italic-маркеры.
      * Markdown-форматирование вида _italic_ (подчёркивание между пробелами/границами) сохраняется.
