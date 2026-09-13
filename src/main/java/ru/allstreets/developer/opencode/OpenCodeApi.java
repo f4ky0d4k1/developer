@@ -386,8 +386,9 @@ public class OpenCodeApi {
 
     /**
      * {@code UserMessage | AssistantMessage}. {@code role} — дискриминатор.
-     * Для assistant-сообщений есть {@code time.completed}, {@code error}, {@code finish}
-     * и {@code parentID} (id user-сообщения-промпта); у user-сообщений их нет (остаются null).
+     * Для assistant-сообщений есть {@code time.completed}, {@code error}, {@code finish},
+     * {@code parentID} (id user-сообщения-промпта), а также {@code cost}/{@code tokens}
+     * (используются для прогресса: tokens/steps).
      */
     public record MessageInfo(
             String id,
@@ -395,8 +396,27 @@ public class OpenCodeApi {
             TimeInfo time,
             MessageError error,
             String finish,
-            String parentID
+            String parentID,
+            Double cost,
+            Tokens tokens
     ) {
+        /** Суммарное число токенов шага (input + output + reasoning). */
+        public long totalTokens() {
+            if (tokens == null) {
+                return 0;
+            }
+            return nz(tokens.input()) + nz(tokens.output()) + nz(tokens.reasoning());
+        }
+
+        private static long nz(Integer v) {
+            return v != null ? v : 0;
+        }
+    }
+
+    /**
+     * Токены assistant-сообщения (шага): {@code {input, output, reasoning, cache}}.
+     */
+    public record Tokens(Integer input, Integer output, Integer reasoning) {
     }
 
     /**
@@ -415,9 +435,10 @@ public class OpenCodeApi {
     }
 
     /**
-     * Part — union из 12 типов; нам нужен только text.
+     * Part — union из 12 типов; нам нужны {@code text} (ответ) и {@code tool} (имя инструмента
+     * для прогресса).
      */
-    public record Part(String type, String text) {
+    public record Part(String type, String text, String tool) {
     }
 
     /**

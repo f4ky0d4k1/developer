@@ -90,8 +90,6 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 
 ## Known gaps (don't "fix" blindly)
 
-- `TaskProgressRegistry.recordToolCall`/`recordStepFinish` are not wired — only `recordText` is called, so
-  `steps/tokens/tool_calls` in task detail are always 0.
 - opencode sidecar logs are not shipped to Loki (Alloy config exists but is not deployed) — no log visibility into agent
   tool calls.
 

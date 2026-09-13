@@ -194,6 +194,9 @@ public class OpenCodeClient {
         long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
         long lastProgressAt = System.currentTimeMillis();
         String prevText = "";
+        // Прогресс за текущий прогон: сколько tool-вызовов и шагов уже записали (дельта опроса).
+        int recordedToolCalls = 0;
+        java.util.Set<String> recordedSteps = new java.util.HashSet<>();
 
         while (true) {
             long now = System.currentTimeMillis();
@@ -260,6 +263,33 @@ public class OpenCodeClient {
                 run.setError(err);
                 runRepo.save(run);
                 return fail(taskId, agentName, err, sessionId);
+            }
+
+            // Прогресс steps/tool_calls/tokens: считаем дельту по всем шагам-сообщениям, чтобы не
+            // дублировать при повторных опросах. Раньше recordToolCall/recordStepFinish вообще не
+            // вызывались — steps/tool_calls всегда были 0 (known gap).
+            if (taskId != null) {
+                List<OpenCodeApi.Part> parts = replies.stream()
+                        .flatMap(r -> r.parts() == null
+                                ? java.util.stream.Stream.<OpenCodeApi.Part>empty()
+                                : r.parts().stream())
+                        .toList();
+                long toolTotal = parts.stream().filter(p -> "tool".equals(p.type())).count();
+                if (toolTotal > recordedToolCalls) {
+                    parts.stream().filter(p -> "tool".equals(p.type()))
+                            .skip(recordedToolCalls)
+                            .forEach(p -> progressRegistry.recordToolCall(taskId,
+                                    p.tool() != null && !p.tool().isBlank() ? p.tool() : "tool"));
+                    recordedToolCalls = (int) toolTotal;
+                }
+                for (OpenCodeApi.MessageEnvelope r : replies) {
+                    String rid = r.info() != null ? r.info().id() : null;
+                    if (r.isCompleted() && rid != null && recordedSteps.add(rid)) {
+                        progressRegistry.recordStepFinish(taskId, r.info().totalTokens(),
+                                r.info().cost() != null ? r.info().cost() : 0.0,
+                                r.info().finish() != null ? r.info().finish() : "stop");
+                    }
+                }
             }
 
             // Текст всех шагов: прогресс (delta) и итоговый вывод.

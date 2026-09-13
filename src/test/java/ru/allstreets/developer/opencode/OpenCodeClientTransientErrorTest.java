@@ -50,7 +50,7 @@ class OpenCodeClientTransientErrorTest {
 
     private static OpenCodeApi.MessageEnvelope completed(String parentId, String text) {
         var info = new OpenCodeApi.MessageInfo("msg_assist", "assistant",
-                new OpenCodeApi.TimeInfo(1L, 2L), null, "stop", parentId);
-        return new OpenCodeApi.MessageEnvelope(info, List.of(new OpenCodeApi.Part("text", text)));
+                new OpenCodeApi.TimeInfo(1L, 2L), null, "stop", parentId, null, null);
+        return new OpenCodeApi.MessageEnvelope(info, List.of(new OpenCodeApi.Part("text", text, null)));
     }
 }
