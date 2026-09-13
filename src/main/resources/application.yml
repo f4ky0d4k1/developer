@@ -61,6 +61,7 @@ opencode:
   base-url: ${OPENCODE_BASE_URL:http://opencode:4096}
   work-dir: ${OPENCODE_WORK_DIR:/work}
   timeout-seconds: 300
+  poll-interval-seconds: 5
   model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
   slots: 5
   max-clarifications: 10
@@ -153,11 +154,6 @@ resilience4j:
           - java.net.SocketTimeoutException
           - java.util.concurrent.TimeoutException
     instances:
-      opencode:
-        baseConfig: default
-        slowCallDurationThreshold: 300s
-        recordExceptions:
-          - java.lang.RuntimeException
       github:
         baseConfig: default
         recordExceptions:
@@ -179,12 +175,15 @@ resilience4j:
         maxAttempts: 3
         waitDuration: 3s
     instances:
-      opencode:
+      # Retry только на идемпотентных GET-опросах OpenCodeApi (health/getMessage/
+      # sessionStatuses) и только на сетевых ошибках. promptAsync неидемпотентен —
+      # @Retry на нём запрещён (повторяется лишь после проверки через getMessage).
+      opencodeApi:
         baseConfig: default
-        maxAttempts: 2
-        waitDuration: 10s
+        maxAttempts: 3
+        waitDuration: 3s
         retryExceptions:
-          - java.lang.RuntimeException
+          - org.springframework.web.client.ResourceAccessException
       github:
         baseConfig: default
         retryExceptions:

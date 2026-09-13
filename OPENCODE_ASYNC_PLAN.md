@@ -7,10 +7,11 @@
 
 ---
 
-## Часть 1. Факты, добытые из Grafana Loki (не догадки)
+## Часть 1. Факты, добытые из Grafana Loki + SDK types + GitHub issues (не догадки)
 
 Датасорс `grafanacloud-logs`, `{service_name="developer"}`, окно 7 дней.
-Закрывает оговорку п.1 в `ARCHITECTURE_AUDIT.md` — API больше не «непроверенный по докам».
+Источники: Loki-логи `developer`, SDK types `@opencode-ai/sdk` (TS + Elixir),
+GitHub issues `sst/opencode` и `anomalyco/opencode`, docs `uplift-labs/opencode-dev-docs`.
 
 ### 1.1 Что реально работает
 
@@ -68,27 +69,166 @@
   `CheckpointRecoveryListener.recoverUnfinishedTasks` → `AgentGraphRunner.resume` → `runAgent`.
   Т.е. рестарт приложения сам по себе порождает волну вызовов OpenCode.
 
-### 1.5 Реальный API (docs + подтверждено логами)
+### 1.5 Реальный API (docs + подтверждено логами + SDK types)
 
 Подтверждённый набор эндпоинтов `opencode serve` (форк `anomalyco/opencode`):
 
-| Метод  | Путь                              | Назначение                        | Ответ            |
-|--------|-----------------------------------|-----------------------------------|------------------|
-| `GET`  | `/global/health`                  | health + версия                   | `{healthy, version}` |
-| `POST` | `/session?directory=`             | создать сессию                    | `Session`        |
+| Метод  | Путь                              | Назначение                        | Ответ                   |
+|--------|-----------------------------------|-----------------------------------|-------------------------|
+| `GET`  | `/global/health`                  | health + версия                   | `{healthy, version}`    |
+| `POST` | `/session?directory=`             | создать сессию                    | `Session`               |
 | `GET`  | `/session/status`                 | статус **всех** сессий            | `{[id]: SessionStatus}` |
-| `POST` | `/session/:id/prompt_async`       | отправить промпт **без ожидания** | `204 No Content` |
-| `GET`  | `/session/:id/message`            | список сообщений сессии           | `{info, parts}[]`|
-| `GET`  | `/session/:id/message/:messageID` | одно сообщение + parts            | `{info, parts}`  |
-| `POST` | `/session/:id/abort`              | отменить работу сессии            | `boolean`        |
-| `GET`  | `/event`                          | SSE-поток событий                 | event stream     |
+| `POST` | `/session/:id/prompt_async`       | отправить промпт **без ожидания** | **204 No Content**      |
+| `GET`  | `/session/:id/message`            | список сообщений сессии           | `Array<{info, parts}>`  |
+| `GET`  | `/session/:id/message/:messageID` | одно сообщение + parts            | `{info, parts}`         |
+| `POST` | `/session/:id/abort`              | отменить работу сессии            | `boolean`               |
+| `GET`  | `/event`                          | SSE-поток событий                 | event stream            |
 
-Body у `prompt_async` тот же, что у `message`:
-`{ messageID?, model?, agent?, noReply?, system?, tools?, parts }`.
+#### 1.5.1 `prompt_async` — критическая деталь
+
+**Ответ: 204 No Content** — сервер НЕ возвращает `messageID`.
+Но `messageID` — это **опциональное поле в request body**:
+
+```json
+{
+  "messageID": "our-uuid-here",
+  ←
+  мы
+  генерируем
+  сами
+  "model": {
+    "providerID": "...",
+    "modelID": "..."
+  },
+  "agent": "analyst",
+  "parts": [
+    {
+      "type": "text",
+      "text": "..."
+    }
+  ]
+}
+```
+
+Источник: `SessionPromptAsyncData.body.messageID?: string` (SDK types.gen.ts),
+`PromptInput.message_id: Option<String>` (Rust SDK docs.rs).
 
 **Ключевой вывод:** `messageID` можно задать *своим* → это готовый ключ идемпотентности.
 Мы больше не обязаны угадывать, «долетел» ли запрос: можно спросить у сервера
 `GET /session/:id/message/:messageID`.
+
+#### 1.5.2 Форма ответа `GET /session/:id/message/:messageID`
+
+Подтверждено из TS SDK (`SessionMessageResponses.200`) и Elixir SDK (`session_message_200_json_resp`):
+
+```json
+{
+  "info": {
+    // UserMessage | AssistantMessage
+    "id": "msg_...",
+    "sessionID": "ses_...",
+    "role": "assistant",
+    "time": {
+      "created": 1694000000000,
+      "completed": 1694000060000
+      ←
+      присутствует
+      =
+      завершено
+    },
+    "error": null,
+    ← {
+  name,
+  data
+} при ошибке
+"finish": "stop", ← причина завершения
+"cost": 0.001,
+"tokens": {...},
+"parentID": "msg_...",
+"modelID": "...",
+"providerID": "...",
+"mode": "...",
+"path": {"cwd": "...", "root": "..."}
+},
+"parts": [
+{"type": "text", "text": "...", "id": "...", ...},
+{"type": "tool", "callID": "...", "tool": "...", "state": {...}},
+{"type": "step-start", ...},
+{"type": "step-finish", ...},
+...
+]
+}
+```
+
+**Детекция завершения** (для `AssistantMessage`):
+
+- `info.time.completed` присутствует (не null) → сообщение завершено
+- `info.error` не null → ошибка (структура: `{ name: "...", data: { message, ref? } }`)
+- `info.finish` присутствует → причина завершения (`"stop"`, `"length"`, и т.д.)
+- `info.role == "assistant"` — подтверждает, что это ответ агента, а не user-промпт
+
+**Part-типы** (полный список из SDK):
+`text`, `reasoning`, `file`, `tool`, `step-start`, `step-finish`,
+`snapshot`, `patch`, `agent`, `retry`, `compaction`, `subtask`.
+
+Для извлечения текста агента: `parts[].type == "text"` → `parts[].text`.
+
+#### 1.5.3 `GET /session/status` — форма ответа
+
+```json
+{
+  "ses_xxx": {
+    "type": "idle"
+  },
+  "ses_yyy": {
+    "type": "busy"
+  },
+  "ses_zzz": {
+    "type": "retry",
+    "attempt": 2,
+    "message": "...",
+    "next": 1694000060000
+  }
+}
+```
+
+Карта `sessionID → SessionStatus`. Используется как health-gate перед опросом:
+если сессия `busy` → агент ещё работает, можно опрашивать `getMessage`.
+Если `idle` → агент завершил, опрашиваем `getMessage` для результата.
+
+#### 1.5.4 SSE `/event` — НЕ использовать как основной канал
+
+**Найден критический баг** (GitHub issue #27966, `anomalyco/opencode`):
+в версиях 1.14.42–1.15.1 SSE-поток `/event` **не доставляет** `message.part.updated`
+и `message.updated` события (SyncEvent → Bus.subscribeAll не доходит).
+Исправлено в 1.15.5+ (#27825, #28051, #27959).
+
+Мы используем `ghcr.io/anomalyco/opencode` без тега → версия неизвестна.
+SSE ненадёжен для детектирования завершения.
+
+**Решение: опрос `GET /session/:id/message/:messageID` — единственный надёжный способ.**
+SSE можно добавить позже как оптимизацию (для прогресса в реальном времени),
+но не как механизм детектирования завершения.
+
+#### 1.5.5 Структура 500-ошибки
+
+Тело 500-ответа от OpenCode:
+
+```json
+{
+  "name": "UnknownError",
+  "data": {
+    "message": "Unexpected server error. Check server logs for details.",
+    "ref": "err_3dbade67"
+  }
+}
+```
+
+Соответствует SDK-типу `UnknownError = { name: "UnknownError", data: { message: string } }`.
+Поле `ref` — server-side correlation ID для поиска в `docker logs opencode`.
+
+Другие типы ошибок: `ProviderAuthError`, `MessageOutputLengthError`,
+`MessageAbortedError`, `APIError` (с `statusCode`, `isRetryable`, `responseBody`).
 
 ---
 
@@ -132,7 +272,7 @@ Body у `prompt_async` тот же, что у `message`:
 
 ## Часть 3. Задачи
 
-### Задача 0 — сделать причину 500 наблюдаемой `TODO`
+### Задача 0 — сделать причину 500 наблюдаемой `DONE`
 
 Без логов sidecar причина `ref: err_XXXXX` недоступна. Добавить в
 `grafana-alloy/config.alloy` сбор логов docker-контейнеров (`loki.source.docker` +
@@ -140,7 +280,7 @@ Body у `prompt_async` тот же, что у `message`:
 
 Иначе диагностика 500 остаётся ручным `docker logs opencode`.
 
-### Задача 1 — низкоуровневый клиент `OpenCodeApi` `TODO`
+### Задача 1 — низкоуровневый клиент `OpenCodeApi` `DONE`
 
 Новый класс, только HTTP, без бизнес-логики:
 
@@ -160,29 +300,116 @@ Body у `prompt_async` тот же, что у `message`:
 - Убрать `llmParseResponse` целиком: п.1.1 показал, что сессия отдаёт валидный JSON,
   а на не-JSON ответ (HTML-ошибка) LLM всё равно не придумает `parts[]`. Это была маскировка.
 
-### Задача 2 — персистентность прогона `TODO`
+#### Парсинг ответов — Java records вместо JsonNode и LLM
+
+**Контекст:** OpenCode сервер написан на Effect.ts с `HttpApiEndpoint` — каждый эндпоинт
+декларирует `success`/`error` схемы через `Schema.Struct`. Фреймворк Effect **enforces** их:
+серверный код не может вернуть объект, не matching схеме. SDK-типы (`types.gen.ts`)
+генерируются **автоматически из OpenAPI-спецификации** через `@hey-api/openapi-ts`.
+TS и Elixir SDK совпадают, потому что оба идут из одного источника.
+
+**Где гарантия ломается** (и почему нужен защитный парсинг):
+
+1. **Мы не пиним версию образа.** `FROM ghcr.io/anomalyco/opencode` без тега → `docker pull`
+   может принести любую версию. Схема меняется между мажорами: уже есть **v1**
+   (`types.gen.ts`) и **v2** (`v2/gen/types.gen.ts`) — разные поля, разные структуры.
+   Обновление образа = потенциально другой JSON.
+2. **Это форк** (`anomalyco/opencode`), не upstream `sst/opencode`. Форк может расходиться
+   с upstream — добавлять поля, менять структуры, не обновляя SDK-типы.
+3. **Error-ответы — другая схема.** Успешный `GET /message/:id` → `{info, parts}`.
+   Ошибка 500 → `{name: "UnknownError", data: {message, ref}}`. Это **не тот же JSON**,
+   Jackson упадёт при попытке десериализовать 500-ответ в `MessageEnvelope`.
+4. **Union-типы.** `info` — это `UserMessage | AssistantMessage`. У них **разные поля**:
+   у `AssistantMessage` есть `time.completed`, `error`, `finish`, `cost`, `tokens`;
+   у `UserMessage` их нет. Jackson не умеет polymorphic deserialization без
+   `@JsonTypeInfo` discriminator. Поле `role` ("assistant" | "user") работает как
+   дискриминатор, но его надо настроить.
+5. **Сетевой слой.** 502/503/504 от proxy (docker network, nginx) → HTML, не JSON.
+   `mapper.readValue()` выбросит `JsonProcessingException`.
+
+**Решение: прямые Java records + защитный парсинг.**
+
+Records (минимально нужные поля, `FAIL_ON_UNKNOWN_PROPERTIES = false`):
+
+```java
+// Ответ GET /session/:id/message/:messageID
+record MessageEnvelope(MessageInfo info, List<Part> parts) {
+}
+
+// AssistantMessage — только то, что используем
+// role = discriminator для UserMessage vs AssistantMessage
+record MessageInfo(
+        String id,
+        String role,              // "assistant" | "user"
+        TimeInfo time,            // { created, completed? }
+        MessageError error,       // null = нет ошибки
+        String finish             // "stop" | "length" | null
+) {
+}
+
+record TimeInfo(long created, Long completed) {
+}  // completed != null → завершено
+
+record MessageError(String name, ErrorData data) {
+}
+
+record ErrorData(String message, String ref) {
+}   // ref = "err_XXXXX"
+
+// Part — union из 12 типов, но нам нужен только text
+record Part(String type, String text) {
+}           // остальные поля игнорируем
+
+// Error-ответ (500/4xx)
+record OpenCodeError(String name, ErrorData data) {
+}
+
+// SessionStatus
+record SessionStatus(String type, Integer attempt, String message, Long next) {
+}
+// type = "idle" | "busy" | "retry"
+```
+
+Парсинг:
+
+- `mapper.configure(FAIL_ON_UNKNOWN_PROPERTIES, false)` — forward-compatible,
+  новые поля не ломают парсинг при обновлении образа.
+- HTTP-статус **до** парсинга тела: 2xx → `MessageEnvelope`; 4xx/5xx → `OpenCodeError`;
+  не-JSON (HTML/прокси) → catch `JsonProcessingException`, fallback на ручной
+  `JsonNode` обход (не на LLM).
+- `role` как discriminator: если `info.role == "assistant"` → проверяем `time.completed`;
+  если `"user"` → игнорируем (нас интересует только ответ агента).
+- Детекция завершения: `info.time.completed != null`.
+- Извлечение текста: `parts.stream().filter(p -> "text".equals(p.type())).map(Part::text)`.
+- LLM fallback **не нужен** ни в каком сценарии: валидный JSON парсит Jackson,
+  невалидный (HTML/прокси-ошибка) LLM тоже не спасёт.
+
+**Пинить версию образа:** `ghcr.io/anomalyco/opencode:1.15.5` вместо `latest`
+(см. Задачу 0 — после уточнения текущей версии через `docker logs opencode`).
+
+### Задача 2 — персистентность прогона `DONE`
 
 `OpenCodeRunEntity` + `OpenCodeRunRepository`:
 
-| поле           | смысл                                                     |
-|----------------|-----------------------------------------------------------|
-| `id`           | PK                                                        |
-| `taskId`       | задача                                                    |
-| `agentName`    | analyst / developer / tester / post_validation            |
-| `sessionId`    | сессия OpenCode                                           |
-| `messageId`    | **ключ идемпотентности**, генерируем сами до отправки      |
-| `slot`         | занятый слот                                              |
-| `status`       | STARTING / RUNNING / DONE / FAILED / ABORTED              |
-| `output`       | накопленный текст                                         |
-| `error`        | текст ошибки                                              |
-| `startedAt`    | старт                                                     |
-| `lastPolledAt` | последний успешный опрос                                  |
+| поле           | смысл                                                 |
+|----------------|-------------------------------------------------------|
+| `id`           | PK                                                    |
+| `taskId`       | задача                                                |
+| `agentName`    | analyst / developer / tester / post_validation        |
+| `sessionId`    | сессия OpenCode                                       |
+| `messageId`    | **ключ идемпотентности**, генерируем сами до отправки |
+| `slot`         | занятый слот                                          |
+| `status`       | STARTING / RUNNING / DONE / FAILED / ABORTED          |
+| `output`       | накопленный текст                                     |
+| `error`        | текст ошибки                                          |
+| `startedAt`    | старт                                                 |
+| `lastPolledAt` | последний успешный опрос                              |
 
 Уникальный индекс по `(taskId, agentName, messageId)`.
 Запись создаётся **до** `prompt_async` — иначе при падении между отправкой и записью
 мы потеряем `messageId` и не сможем найти работу агента.
 
-### Задача 3 — переписать `OpenCodeClient` на опрос `TODO`
+### Задача 3 — переписать `OpenCodeClient` на опрос `DONE`
 
 Публичный контракт `runAgent(...)` и `OpenCodeResult` **сохранить** — вызывающие узлы
 (`AnalystNode`, `DeveloperNode`, `TesterNode`, `TestExecutionService`,
@@ -195,7 +422,7 @@ Resume: если для `(taskId, agentName)` есть строка в стат�
 Прогресс писать в `TaskProgressRegistry` из цикла опроса — это чинит и то, что сейчас
 прогресс появляется только по завершении.
 
-### Задача 4 — снять опасные аннотации `TODO`
+### Задача 4 — снять опасные аннотации `DONE`
 
 В `application.yml`:
 
@@ -239,6 +466,78 @@ Resume: если для `(taskId, agentName)` есть строка в стат�
 6. Задача 5 (слоты) — отдельным шагом, независима от 1–4.
 7. Задача 6 (проверка).
 
-Открытый вопрос к проверке в бою: точное поле завершения в `info`
-(ожидается `time.completed`). На первом опросе логировать фактическую форму `info`,
-чтобы уточнить детекцию по реальным данным, а не по докам.
+### 1.6 Дополнительная находка: StaleObjectStateException
+
+В логах найден второй тип ошибки — `org.hibernate.StaleObjectStateException`
+на `TaskProgressEntity`. Concurrent-обновление прогресса из разных потоков
+вызывает `merge` конфликт. Это отдельный баг, не связанный с OpenCode API,
+но требует исправления (optimistic locking или `@Version` поле).
+
+---
+
+## Часть 5. Открытые вопросы (закрыты исследованием)
+
+| Вопрос                                 | Ответ                                                    | Источник                 |
+|----------------------------------------|----------------------------------------------------------|--------------------------|
+| Форма `info`/`parts` в реальном ответе | `{info: AssistantMessage, parts: Part[]}`                | SDK TS + Elixir, п.1.5.2 |
+| Поле завершения                        | `info.time.completed` (не null) + `info.finish`          | SDK types.gen.ts         |
+| SSE `/event` как альтернатива опросу   | **Нет**, баг в 1.14.42–1.15.1                            | GitHub #27966            |
+| Форма `SessionStatus`                  | `{type: "idle\|busy\|retry"}`                            | SDK types.gen.ts         |
+| Причина 500 в body                     | `UnknownError` с `ref` — server-side, нужны логи sidecar | Loki + SDK types         |
+| `prompt_async` возвращает messageID?   | **Нет**, 204 No Content. messageID — input параметр      | SDK types, Rust docs     |
+
+**Все гипотезы проверены. План готов к реализации.**
+
+---
+
+## Часть 6. Статус реализации (2026-09-13)
+
+Задачи 0–4 реализованы, 5–6 — остались.
+
+- **Задача 1 (`OpenCodeApi`)** — новый класс, Apache HttpClient 5 (пул 50/20, evict idle 30с),
+  connect 5с / read 15с, `FAIL_ON_UNKNOWN_PROPERTIES=false`, records-модель ответов.
+  `@Retry(name="opencodeApi")` только на GET (health/getMessage/sessionStatuses) и только на
+  `ResourceAccessException`; `promptAsync` — без retry. `llmParseResponse` удалён.
+- **Задача 2 (персистентность)** — `OpenCodeRunEntity` + `OpenCodeRunRepository` + enum
+  `OpenCodeRunStatus` (STARTING/RUNNING/DONE/FAILED/ABORTED). Отклонение от плана: вместо
+  поля `slot` хранится `cwd` (slot не виден на уровне `OpenCodeClient` — его держат узлы
+  графа); добавлен флаг `promptSent` для корректного resume в окне INSERT↔prompt_async.
+  Уникальный индекс `(task_id, agent_name, message_id)`.
+- **Задача 3 (`OpenCodeClient`)** — health gate → resume-or-start → цикл опроса с бюджетом.
+  Resume различает «промпт ушёл / не ушёл / не проверить» через `messageExists()`
+  (проверка GET перед повторным отправом — принцип «неидемпотентный prompt_async не
+  повторяется без проверки через GET»). Прогресс пишется в `TaskProgressRegistry` по
+  приращению текста (delta). Публичный контракт `runAgent`/`OpenCodeResult` сохранён.
+- **Задача 4 (аннотации)** — из `runAgent` сняты `@Retry` и `@CircuitBreaker`; убраны
+  `retry.instances.opencode` и `circuitbreaker.instances.opencode`; добавлен
+  `retry.instances.opencodeApi`; в `opencode`-блок добавлен `poll-interval-seconds`.
+- **Задача 0 (логи sidecar)** — в `config.alloy` добавлены `discovery.docker` +
+  `loki.source.docker` + `loki.relabel` + `loki.write` (service_name="opencode"); в
+  `docker-compose.yml` смонтирован docker.sock в `grafana-alloy` и добавлены env
+  `ALLOY_LOKI_URL/USER/PASSWORD`; обновлён `.env.template`.
+
+Осталось: **Задача 5** (слоты в БД с TTL) и **Задача 6** (end-to-end проверка: опрос видит
+завершение, рестарт не теряет работу, 500 не плодит вторую сессию).
+
+---
+
+## Часть 7. Тесты (Testcontainers + WireMock, 2026-09-13)
+
+Автоматизирована проверка ядра новой архитектуры (покрывает суть Задачи 6):
+
+- `OpenCodeApiTest` — WireMock-стаб sidecar: форма `prompt_async` (messageID/model/agent/parts),
+  парсинг assistant/user/404/500 с `ref`. 9 тестов.
+- `OpenCodeRunRepositoryTest` — Testcontainers PostgreSQL: save/find, resume-выборка,
+  уникальный индекс `(task_id, agent_name, message_id)`. 5 тестов.
+- `OpenCodeClientTest` — Testcontainers + WireMock: полный цикл «health gate → прогон →
+  опрос», delta-прогресс, resume без повторной отправки промпта, unhealthy → error без промпта,
+  таймаут → abort + ABORTED. 5 тестов.
+
+Запуск: `./mvnw test -Dtest='OpenCodeApiTest,OpenCodeRunRepositoryTest,OpenCodeClientTest'`
+(требует Docker Desktop). Версия Testcontainers переопределена на `2.0.5` в `pom.xml` —
+пиннутая Spring Boot 3.4.1 версия `1.20.4` несовместима с Docker Desktop 29.x, а модули
+в 2.0 переименованы (`junit-jupiter` → `testcontainers-junit-jupiter`, `postgresql` →
+`testcontainers-postgresql`).
+
+Не покрыто тестами (нужен живой sidecar/продакшн-лог): фактическая форма `info`/`parts` на
+первом опросе против реального OpenCode, и Задача 5 (слоты в БД).

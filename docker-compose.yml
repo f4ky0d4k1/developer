@@ -98,7 +98,7 @@ services:
     networks:
       - agent-net
 
-  # ─── Grafana Alloy — сбор метрик → Grafana Cloud ───
+  # ─── Grafana Alloy — сбор метрик + логов docker-контейнеров → Grafana Cloud ───
   grafana-alloy:
     build:
       context: ./grafana-alloy
@@ -109,6 +109,11 @@ services:
       - .env
     environment:
       DEVELOPER_ADDRESS: developer:8081
+      # Логи opencode → Loki используют секреты LOKI_HOST/USERNAME/PASSWORD,
+      # уже загруженные через env_file: .env (см. config.alloy, loki.write).
+    volumes:
+      # для loki.source.docker + discovery.docker (чтение логов opencode)
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - developer
     networks:

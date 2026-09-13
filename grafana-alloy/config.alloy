@@ -41,3 +41,47 @@ prometheus.remote_write "metrics_service" {
         }
     }
 }
+
+// ─── Сбор логов docker-контейнеров (opencode sidecar) → Loki ───
+// Причина: 500-ошибки sidecar (`ref: err_XXXXX`) видны только в
+// `docker logs opencode`; отправка их в Loki делает диагностику наблюдаемой
+// (появляется service_name="opencode" рядом с service_name="developer").
+discovery.docker "docker_logs" {
+    host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "opencode_logs" {
+    targets = discovery.docker.docker_logs.targets
+
+    rule {
+        source_labels = ["__meta_docker_container_name"]
+        regex         = "^/?opencode$"
+        action        = "keep"
+    }
+}
+
+loki.source.docker "opencode_logs" {
+    host       = "unix:///var/run/docker.sock"
+    targets    = discovery.relabel.opencode_logs.output
+    forward_to = [loki.relabel.opencode_logs.receiver]
+}
+
+loki.relabel "opencode_logs" {
+    forward_to = [loki.write.loki_service.receiver]
+
+    rule {
+        target_label = "service_name"
+        replacement  = "opencode"
+    }
+}
+
+loki.write "loki_service" {
+    endpoint {
+        url = format("https://%s/loki/api/v1/push", env("LOKI_HOST"))
+
+        basic_auth {
+            username = env("LOKI_USERNAME")
+            password = env("LOKI_PASSWORD")
+        }
+    }
+}
