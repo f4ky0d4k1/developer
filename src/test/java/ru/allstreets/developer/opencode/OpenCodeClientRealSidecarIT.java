@@ -55,6 +55,11 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
      */
     private static final String MARKER = "E2E_ANALYSIS_OK";
 
+    /**
+     * Содержимое файла для многошагового сценария: модель узнаёт его только через tool-call.
+     */
+    private static final String TOOL_MARKER = "E2E_TOOL_STEP_OK";
+
     private static GenericContainer<?> opencode;
 
     @Autowired
@@ -77,6 +82,8 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
                         "/root/.config/opencode/opencode.jsonc")
                 .withCopyToContainer(Transferable.of(testAnalystAgent()),
                         "/work/.opencode/agents/analyst.md")
+                .withCopyToContainer(Transferable.of(TOOL_MARKER),
+                        "/work/e2e-marker.txt")
                 .waitingFor(Wait.forHttp("/global/health").forPort(4096).forStatusCode(200))
                 .withStartupTimeout(Duration.ofSeconds(120));
         opencode.start();
@@ -128,6 +135,28 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
     }
 
     /**
+     * Многошаговый прогон: агент обязан сначала вызвать инструмент {@code read} (шаг с
+     * {@code finish=tool-calls}, без text), и только затем дать финальный ответ. Регрессия
+     * на инциденты 3c7b33db/fab06fb0: раньше брался первый (пустой/промежуточный) шаг.
+     */
+    @Test
+    void runAgent_multiStepToolCall_returnsFinalAnswer() {
+        log.info("E2E многошаговый tool-call: {}/{}", PROVIDER, MODEL_ID);
+
+        var result = client().runAgent("analyst",
+                "Прочитай файл /work/e2e-marker.txt инструментом read и ответь ровно его "
+                        + "содержимым, без пояснений.",
+                "/work", "task-e2e-tools");
+
+        assertNull(result.error(), "прогон вернул ошибку: " + result.error());
+        assertEquals("success", result.status());
+        assertNotNull(result.output());
+        assertFalse(result.output().isBlank(), "финальный шаг не собрался (взяли промежуточный tool-calls?)");
+        assertTrue(result.output().toUpperCase().contains(TOOL_MARKER),
+                "в ответе нет содержимого файла — финальный шаг не дождались? Ответ: " + result.output());
+    }
+
+    /**
      * Провайдер DeepSeek (тот же, что в {@code opencode-config/opencode.jsonc}). Ключ
      * подхватывается opencode из env-переменной {@code DEEPSEEK_API_KEY}, проброшенной
      * в контейнер, — как в проде.
@@ -158,9 +187,10 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
                 mode: primary
                 model: %s/%s
                 ---
-                
-                Ты тестовый аналитик. Ответь одной короткой строкой текста — ровно тем, что
-                просит пользователь. Не вызывай инструменты и не пиши пояснений.
+
+                Ты тестовый аналитик. Следуй инструкции пользователя буквально.
+                Если просят прочитать файл — вызови инструмент read и используй его содержимое.
+                Финальный ответ — одна короткая строка текста, без пояснений.
                 """.formatted(PROVIDER, MODEL_ID);
     }
 }

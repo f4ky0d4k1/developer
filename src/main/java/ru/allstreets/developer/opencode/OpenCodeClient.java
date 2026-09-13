@@ -7,8 +7,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
 
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Оркестратор запуска OpenCode-агента поверх {@link OpenCodeApi}.
@@ -224,14 +226,22 @@ public class OpenCodeClient {
 
             run.setLastPolledAt(Instant.now());
 
-            // Ответ агента — assistant-сообщение, чей parentID равен нашему user-сообщению
-            // (messageID, который мы задали в prompt_async).
-            OpenCodeApi.MessageEnvelope assistant = messages.stream()
+            // Ответы агента. OpenCode создаёт ОТДЕЛЬНОЕ assistant-сообщение на каждый шаг,
+            // и все они имеют один parentID == нашему messageId. Шаг с finish=tool-calls —
+            // промежуточный (агент продолжит после выполнения инструментов), его нельзя
+            // принимать за результат: именно на нём мы останавливались и получали пустой или
+            // вступительный текст вместо финального решения (инциденты 3c7b33db, fab06fb0).
+            List<OpenCodeApi.MessageEnvelope> replies = messages.stream()
                     .filter(m -> m.info() != null && messageId.equals(m.info().parentID()))
-                    .findFirst().orElse(null);
+                    .filter(OpenCodeApi.MessageEnvelope::isAssistant)
+                    .sorted(Comparator.comparingLong((OpenCodeApi.MessageEnvelope m) ->
+                            m.info().time() != null ? m.info().time().created() : Long.MAX_VALUE))
+                    .toList();
 
-            if (assistant != null && assistant.hasError()) {
-                String err = extractError(assistant);
+            OpenCodeApi.MessageEnvelope errored = replies.stream()
+                    .filter(OpenCodeApi.MessageEnvelope::hasError).findFirst().orElse(null);
+            if (errored != null) {
+                String err = extractError(errored);
                 log.error("[OpenCode:{}] агент завершился с ошибкой: {}", agentName, err);
                 run.setStatus(OpenCodeRunStatus.FAILED);
                 run.setError(err);
@@ -239,26 +249,32 @@ public class OpenCodeClient {
                 return fail(taskId, agentName, err, sessionId);
             }
 
-            if (assistant != null) {
-                // Прогресс: отдаём в реестр только приращение текста (delta).
-                String full = assistant.text();
-                if (full.length() > prevText.length()) {
-                    String delta = full.substring(prevText.length());
-                    if (taskId != null) {
-                        progressRegistry.recordText(taskId, delta);
-                    }
-                    prevText = full;
-                    lastProgressAt = now;
+            // Текст всех шагов: прогресс (delta) и итоговый вывод.
+            String full = replies.stream().map(OpenCodeApi.MessageEnvelope::text)
+                    .collect(Collectors.joining());
+            if (full.length() > prevText.length()) {
+                String delta = full.substring(prevText.length());
+                if (taskId != null) {
+                    progressRegistry.recordText(taskId, delta);
                 }
+                prevText = full;
+                lastProgressAt = now;
+            }
 
-                if (assistant.isCompleted()) {
-                    log.info("Агент {} завершил работу. session={}, текст={} символов, finish={}, parts={}",
-                            agentName, sessionId, full.length(), assistant.info().finish(), assistant.partTypes());
+            // Завершение прогона — только финальный шаг (finish != tool-calls).
+            OpenCodeApi.MessageEnvelope last = replies.isEmpty() ? null : replies.getLast();
+            if (last != null && last.isCompleted()) {
+                if (isFinalFinish(last.info().finish())) {
+                    log.info("Агент {} завершил работу. session={}, шагов={}, текст={} символов, finish={}, parts={}",
+                            agentName, sessionId, replies.size(), full.length(),
+                            last.info().finish(), last.partTypes());
                     run.setStatus(OpenCodeRunStatus.DONE);
                     run.setOutput(full);
                     runRepo.save(run);
                     return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
                 }
+                log.debug("[OpenCode:{}] шаг {} завершён (finish={}) — промежуточный, продолжаю опрос",
+                        agentName, last.info().id(), last.info().finish());
             }
 
             // Детекция зависания: работающий агент держит сессию busy/retry (в т.ч. во время
@@ -275,6 +291,16 @@ public class OpenCodeClient {
 
             sleep();
         }
+    }
+
+    /**
+     * Финальный ли шаг. {@code finish=tool-calls} означает, что агент остановился ради
+     * вызова инструментов и продолжит работу следующим шагом — такой ответ нельзя считать
+     * завершением прогона (иначе берём пустой/вступительный текст промежуточного шага).
+     * {@code finish=null} считаем финальным (некоторые провайдеры его не отдают).
+     */
+    private static boolean isFinalFinish(String finish) {
+        return finish == null || !"tool-calls".equalsIgnoreCase(finish);
     }
 
     /**

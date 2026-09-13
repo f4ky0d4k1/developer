@@ -125,6 +125,18 @@ class OpenCodeClientTest extends PostgresTestBase {
     }
 
     @Test
+    void runAgent_multiStep_ignoresIntermediateToolCallsStep() {
+        transformer.multiStep = true;
+
+        var result = client().runAgent("analyst", "промпт", "/work/slot-0", "task-1");
+
+        // Промежуточный шаг (finish=tool-calls, без text) не должен становиться результатом:
+        // ждём финальный шаг (finish=stop) и отдаём его текст. Инциденты 3c7b33db/fab06fb0.
+        assertEquals("success", result.status());
+        assertEquals("финальный ответ", result.output());
+    }
+
+    @Test
     void runAgent_resumesExistingRun_withoutResendingPrompt() {
         transformer.forceMessageId("msg_existing");
         var existing = new OpenCodeRunEntity("task-1", "analyst", "ses_existing", "msg_existing",
@@ -219,6 +231,7 @@ class OpenCodeClientTest extends PostgresTestBase {
         private boolean twoPhase;
         private boolean emptyAssistant;
         private boolean partialAssistant;
+        private boolean multiStep;
         private int listCalls;
 
         void reset() {
@@ -226,6 +239,7 @@ class OpenCodeClientTest extends PostgresTestBase {
             twoPhase = false;
             emptyAssistant = false;
             partialAssistant = false;
+            multiStep = false;
             listCalls = 0;
         }
 
@@ -255,6 +269,17 @@ class OpenCodeClientTest extends PostgresTestBase {
                 if (partialAssistant) {
                     // Ассистент есть, текст копится, но сообщение никогда не завершается.
                     return jsonList(response, List.of(assistant(messageId, "частичный вывод", false)));
+                }
+                if (multiStep) {
+                    // Реальный контракт: отдельное assistant-сообщение на КАЖДЫЙ шаг, все с
+                    // parentID == messageID. Первый шаг завершён finish=tool-calls и без text,
+                    // финальный — finish=stop с текстом. Результатом должен стать финальный.
+                    return jsonList(response, List.of(
+                            step(messageId, "msg_step1", 1L, 2L, "tool-calls",
+                                    List.of(part("step-start"), part("reasoning"), part("tool"),
+                                            part("step-finish"))),
+                            step(messageId, "msg_step2", 3L, 4L, "stop",
+                                    List.of(part("text", "финальный ответ")))));
                 }
                 listCalls++;
                 boolean complete = !twoPhase || listCalls > 1;
@@ -293,6 +318,37 @@ class OpenCodeClientTest extends PostgresTestBase {
             env.put("info", info);
             env.put("parts", List.of(part));
             return env;
+        }
+
+        private static Map<String, Object> step(String parentId, String id, long created, long completed,
+                                                String finish, List<Map<String, Object>> parts) {
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("id", id);
+            info.put("role", "assistant");
+            Map<String, Object> time = new LinkedHashMap<>();
+            time.put("created", created);
+            time.put("completed", completed);
+            info.put("time", time);
+            info.put("parentID", parentId);
+            info.put("finish", finish);
+
+            Map<String, Object> env = new LinkedHashMap<>();
+            env.put("info", info);
+            env.put("parts", parts);
+            return env;
+        }
+
+        private static Map<String, Object> part(String type) {
+            return part(type, null);
+        }
+
+        private static Map<String, Object> part(String type, String text) {
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("type", type);
+            if (text != null) {
+                p.put("text", text);
+            }
+            return p;
         }
 
         private static Response jsonList(Response original, List<Map<String, Object>> envs) {
