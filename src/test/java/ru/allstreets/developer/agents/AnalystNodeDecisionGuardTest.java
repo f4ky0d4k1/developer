@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -30,15 +31,17 @@ class AnalystNodeDecisionGuardTest {
                     + "\"spec\":\"спека\",\"userStory\":\"user story\",\"acceptanceCriteria\":[\"критерий\"]}";
 
     private OpenCodeClient openCode;
+    private HumanLoopService humanLoop;
     private AnalystNode analyst;
 
     @BeforeEach
     void setUp() {
         openCode = mock(OpenCodeClient.class);
         OpenCodeSessionPool sessionPool = mock(OpenCodeSessionPool.class);
+        humanLoop = mock(HumanLoopService.class);
 
         analyst = new AnalystNode(openCode, sessionPool, mock(TelegramGateway.class),
-                mock(HumanLoopService.class), mock(TaskRepository.class), 3);
+                humanLoop, mock(TaskRepository.class), 3);
 
         when(sessionPool.acquire(600L)).thenReturn(0);
         when(sessionPool.getSlotWorkDir(0)).thenReturn("/work");
@@ -112,6 +115,22 @@ class AnalystNodeDecisionGuardTest {
         assertTrue(result.hasError(), "пустой ответ + безуспешный нудж — ошибка, а не silent-done");
         assertFalse(result.completed());
         verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void needsClarification_takesPriority_overDone() {
+        // Дилемма: модель спрашивает текстом и ставит nextStep=done — задача закрывалась без разработки.
+        // Вопрос должен иметь приоритет: needsClarification уводит задачу в HITL, nextStep не важен.
+        agentReturns("{\"nextStep\":\"done\",\"requiresDevelopment\":true,"
+                + "\"needsClarification\":true,\"clarificationQuestion\":\"Создать задачу в Tracker?\"}");
+
+        AgentResult result = analyst.execute(ctx());
+
+        assertFalse(result.hasError());
+        assertFalse(result.completed());
+        assertTrue(result.isInterrupted(), "вопрос должен уводить задачу в HITL, а не в done");
+        assertEquals("HITL_CLARIFICATION", result.interrupt().reason());
+        verify(humanLoop).askHuman(eq("task-123"), eq(12345L), eq("Создать задачу в Tracker?"));
     }
 
     @Test
