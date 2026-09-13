@@ -364,3 +364,29 @@ chat_memory(
   остановить, она попадает в graceful shutdown, а исход уведомляется теми же путями, что и обычный resume.
 
 Тесты: `CheckpointRecoveryListenerTest` (5), `TaskLauncherResumeAfterRestartTest` (2).
+
+## 28. Проектный `opencode.json` репозитория ломает createSession
+
+**Статус: DONE**
+
+Инцидент (13.09, задача `19617033`, репо `iamponamarev/allstreets-spring`):
+`OpenCode createSession HTTP 400: bad file reference "{file:./.secrets/yandex-token}"` — в целевом репозитории лежит
+**свой** `opencode.json` со ссылкой на несуществующий в слоте секрет. По докам OpenCode конфиги **мёржируются**
+(remote → global → custom → **project** → `.opencode` → inline → managed), и проектный файл перекрывает global/`OPENCODE_CONFIG`,
+а `{file:...}` резолвится на этапе загрузки — значит сессия падает до старта агента. Единственный надёжный путь —
+**убрать битый проектный конфиг из слота**, не сломав git.
+
+Исправлено (`WorktreeManager`):
+
+- после clone/update в слоте нейтрализуем `opencode.json`/`opencode.jsonc` заглушкой `{"$schema": ...}`: наш конфиг и
+  агенты и так применяются сидекаром как global (`/root/.config/opencode/opencode.jsonc` + `/work/.opencode/agents`),
+  копировать их в репо не нужно (образ developer содержит только jar и `opencode-config/` не видит);
+- **не коммитить**: tracked-файл помечаем `git update-index --skip-worktree` (переживает `git add -A` агента),
+  untracked → пишем путь в локальный `.git/info/exclude`;
+- перед `fetch/checkout/pull` нейтрализация снимается (`--no-skip-worktree` + `git checkout --`), после — накладывается заново.
+
+Тесты: `WorktreeManagerTest` — нейтрализация + чистое рабочее дерево + `git add -A` не стейджит конфиг; reuse слота;
+repo без конфига ничего не создаёт.
+
+Отмечено: `DeveloperApplicationTests.contextLoads` (голый `@SpringBootTest` без Testcontainers) требует хост `postgres`
+и падает в обычном окружении — предсуществующее, не связано с изменениями (проверено на базовой ревизии).

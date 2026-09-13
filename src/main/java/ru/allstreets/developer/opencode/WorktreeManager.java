@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 
 /**
  * Управление git слотами для параллельных задач.
@@ -20,6 +21,19 @@ import java.nio.file.Paths;
 public class WorktreeManager {
 
     private static final Logger log = LoggerFactory.getLogger(WorktreeManager.class);
+
+    /**
+     * Проектные конфиги OpenCode, которые репозиторий может тащить с собой.
+     */
+    private static final List<String> PROJECT_CONFIG_FILES = List.of("opencode.json", "opencode.jsonc");
+
+    /**
+     * Нейтральная заглушка проектного конфига. Наш конфиг и агенты и так применяются сидекаром
+     * (global {@code /root/.config/opencode/opencode.jsonc} + {@code /work/.opencode/agents}),
+     * поэтому от проектного файла репозитория нам нужно лишь убрать битые ссылки на секреты.
+     */
+    static final String SAFE_PROJECT_CONFIG =
+            "{\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n";
 
     private final String baseWorkDir;
     private final String githubToken;
@@ -72,12 +86,15 @@ public class WorktreeManager {
 
         try {
             if (isGitRepo(slotDir)) {
-                // Уже клонировано — обновляем main (с retry на случай TLS ошибок)
+                // Уже клонировано — обновляем main (с retry на случай TLS ошибок).
+                // Снимаем прошлую подмену конфига, иначе она мешает fetch/checkout/pull.
+                clearProjectConfigOverride(slotDir);
                 runCommand(slotDir, "git", "config", "http.sslVerify", "false");
                 runCommandWithRetry(slotDir, 3, "git", "fetch", "origin");
                 runCommand(slotDir, "git", "checkout", "main");
                 runCommandWithRetry(slotDir, 3, "git", "pull", "origin", "main");
                 linkOpencodeConfig(slotDir);
+                applyOpencodeProjectConfig(slotDir);
                 log.info("Слот {} обновлён на main", slotIndex);
                 return;
             }
@@ -101,6 +118,7 @@ public class WorktreeManager {
 
             log.info("Слот {} подготовлен", slotIndex);
             linkOpencodeConfig(slotDir);
+            applyOpencodeProjectConfig(slotDir);
 
         } catch (RuntimeException e) {
             log.error("Ошибка подготовки слота {}: {}", slotIndex, e.getMessage(), e);
@@ -140,6 +158,7 @@ public class WorktreeManager {
 
         try {
             if (Files.exists(slotDir)) {
+                clearProjectConfigOverride(slotDir);
                 runCommand(slotDir, "git", "checkout", "main");
                 runCommand(slotDir, "git", "clean", "-fd", "-e", ".opencode");
                 log.info("Слот {} очищен (на main)", slotIndex);
@@ -167,6 +186,86 @@ public class WorktreeManager {
             log.info("linkOpencodeConfig: симлинк .opencode создан в {} → {}", slotDir, target);
         } catch (IOException e) {
             log.warn("linkOpencodeConfig: не удалось создать симлинк .opencode в {}: {}", slotDir, e.getMessage());
+        }
+    }
+
+    /**
+     * Нейтрализовать проектный конфиг OpenCode в слоте.
+     * <p>Репозиторий может тащить свой {@code opencode.json}/{@code opencode.jsonc} со ссылкой
+     * {@code {file:./.secrets/...}} на несуществующий в слоте секрет — тогда {@code createSession}
+     * падает с HTTP 400 ещё до старта агента (проектный конфиг перекрывает global). Подменяем содержимое
+     * на {@link #SAFE_PROJECT_CONFIG}: наш конфиг применяется сидекаром как global.
+     * <p><b>Не коммитить:</b> если файл отслеживается git — помечаем {@code --skip-worktree}
+     * (локальные изменения не попадут в {@code git add}/commit); если не отслеживается — пишем путь
+     * в {@code .git/info/exclude} (локальный, не версионируется).
+     */
+    private void applyOpencodeProjectConfig(Path slotDir) {
+        for (String name : PROJECT_CONFIG_FILES) {
+            Path file = slotDir.resolve(name);
+            if (!Files.isRegularFile(file)) {
+                continue;
+            }
+            try {
+                Files.writeString(file, SAFE_PROJECT_CONFIG);
+                protectFromCommit(slotDir, name);
+                log.info("Проектный opencode-конфиг нейтрализован (репо мог тащить битые ссылки): {}", file);
+            } catch (Exception e) {
+                log.warn("Не удалось нейтрализовать проектный opencode-конфиг {}: {}", file, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Локальная подмена не должна попасть в коммит агента.
+     */
+    private void protectFromCommit(Path slotDir, String relPath) {
+        try {
+            if (isTracked(slotDir, relPath)) {
+                runCommand(slotDir, "git", "update-index", "--skip-worktree", "--", relPath);
+            } else {
+                Path exclude = slotDir.resolve(".git").resolve("info").resolve("exclude");
+                Files.createDirectories(exclude.getParent());
+                String line = "/" + relPath;
+                String existing = Files.exists(exclude) ? Files.readString(exclude) : "";
+                if (!existing.contains(line)) {
+                    Files.writeString(exclude,
+                            existing + (existing.isEmpty() || existing.endsWith("\n") ? "" : "\n") + line + "\n");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Не удалось защитить {} от коммита: {}", relPath, e.getMessage());
+        }
+    }
+
+    /**
+     * Снять прошлую подмену (skip-worktree + restore), чтобы fetch/checkout/pull не конфликтовали.
+     */
+    private void clearProjectConfigOverride(Path slotDir) {
+        for (String name : PROJECT_CONFIG_FILES) {
+            if (!Files.exists(slotDir.resolve(name))) {
+                continue;
+            }
+            try {
+                if (isTracked(slotDir, name)) {
+                    runCommand(slotDir, "git", "update-index", "--no-skip-worktree", "--", name);
+                    runCommand(slotDir, "git", "checkout", "--", name);
+                }
+            } catch (Exception e) {
+                log.warn("Не удалось снять подмену opencode-конфига {}: {}", name, e.getMessage());
+            }
+        }
+    }
+
+    private boolean isTracked(Path slotDir, String relPath) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("git", "ls-files", "--error-unmatch", "--", relPath);
+            pb.directory(slotDir.toFile());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            process.getInputStream().readAllBytes();
+            return process.waitFor() == 0;
+        } catch (Exception e) {
+            return false;
         }
     }
 
