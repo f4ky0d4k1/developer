@@ -66,11 +66,14 @@ fast-model:
 opencode:
   base-url: ${OPENCODE_BASE_URL:http://opencode:4096}
   work-dir: ${OPENCODE_WORK_DIR:/work}
-  timeout-seconds: 300
+  # Бюджет одного прогона агента. ВНИМАНИЕ: после перехода на финальный шаг (multi-step)
+  # developer/tester реально работают 10-30 мин; 300с их убивало по таймауту.
+  timeout-seconds: ${OPENCODE_TIMEOUT_SECONDS:1800}
   poll-interval-seconds: 5
   # Если sidecar сообщает idle и нет прогресса столько секунд — считаем агента зависшим
-  # и прерываем (работающие агенты держат сессию busy и не трогаются).
-  stall-timeout-seconds: 120
+  # и прерываем (работающие агенты держат сессию busy и не трогаются). 300с — запас на
+  # долгие tool-вызовы (mvn test и т.п.).
+  stall-timeout-seconds: ${OPENCODE_STALL_TIMEOUT_SECONDS:300}
   model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
   slots: 5
   max-clarifications: 10
