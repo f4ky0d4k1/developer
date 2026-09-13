@@ -27,12 +27,15 @@ public final class AgentResponses {
 
     /**
      * Ответ fast mode — быстрый классификатор.
+     * {@code repo} — целевой репозиторий (owner/name) для LAUNCH_TASK; null → берётся
+     * репозиторий по умолчанию из конфигурации (github.default-repo).
      */
     public record FastDecision(
             FastAction action,
             String taskId,
             String text,
-            String description
+            String description,
+            String repo
     ) {
     }
 

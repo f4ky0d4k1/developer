@@ -284,7 +284,15 @@ public class TelegramBotListener {
                                 }
                             }
 
-                            taskLauncher.launch(desc, chat.id());
+                            if (!hasText(decision.repo())) {
+                                // Оркестратор не определил, к какому проекту относится задача —
+                                // уточняем у пользователя, не запускаем (без репо агент работать не может).
+                                log.warn("TG poll: LAUNCH_TASK без репозитория — прошу уточнить (chatId={})", chat.id());
+                                telegram.sendMessage(chat.id(),
+                                        "Уточни, пожалуйста, в каком репозитории (owner/name) выполнять задачу?");
+                            } else {
+                                taskLauncher.launch(desc, chat.id(), decision.repo());
+                            }
                         } else {
                             telegram.sendMessage(chat.id(),
                                     "⚠️ Пользователь " + username + " не может запускать задачи.");

@@ -9,9 +9,9 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
+import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.config.AgentGraphRunner;
-import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
@@ -70,14 +70,27 @@ public class TaskLauncher {
                 + "\nЗапускаю агентов...";
         telegram.sendMessage(chatId, startMsg, taskId);
 
+        String repo = normalizeRepo(targetRepo);
         try {
-            Future<?> future = executor.submit(() -> runTask(taskId, taskDescription, chatId, title, targetRepo));
+            Future<?> future = executor.submit(() -> runTask(taskId, taskDescription, chatId, title, repo));
             runningTasks.put(taskId, future);
         } catch (java.util.concurrent.RejectedExecutionException e) {
             log.error("TaskLauncher: задача {} отклонена (backpressure): {}", taskId, e.getMessage());
             String rejectMsg = "⏳ Система перегружена — слишком много параллельных задач. Попробуйте позже.";
             telegram.sendMessage(chatId, rejectMsg, taskId);
         }
+    }
+
+    /**
+     * Нормализация целевого репозитория для дедупликации памяти чата: trim + lowercase
+     * (GitHub owner/repo регистронезависим). Пустое → {@code null}.
+     */
+    public static String normalizeRepo(String repo) {
+        if (repo == null) {
+            return null;
+        }
+        String trimmed = repo.trim();
+        return trimmed.isEmpty() ? null : trimmed.toLowerCase(java.util.Locale.ROOT);
     }
 
     private String generateTitle(String taskDescription) {
@@ -163,7 +176,7 @@ public class TaskLauncher {
                 ctx = ctx.with(TaskState.TARGET_REPO, targetRepo);
             }
 
-            taskRegistry.register(chatId, taskId, taskDescription, title);
+            taskRegistry.register(chatId, taskId, taskDescription, title, targetRepo);
 
             AgentResult result = graphRunner.run(ctx);
 
@@ -291,8 +304,8 @@ public class TaskLauncher {
         telegram.sendMessage(chatId, "🔄 Перезапуск задачи " + taskId.substring(0, 8) +
                 " из checkpoint (узел: " + checkpoint.getNodeName() + ")...", taskId);
 
-        // Перерегистрируем задачу — обновляем статус на RUNNING
-        taskRegistry.register(chatId, taskId, "Restart from checkpoint: " + checkpoint.getNodeName());
+        // Возвращаем задачу в RUNNING, не пересоздавая строку (сохраняем title/repo).
+        taskRegistry.markRunning(taskId);
 
         try {
             Future<?> future = executor.submit(() -> resumeTask(taskId, chatId, additionalContext));

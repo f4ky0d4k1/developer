@@ -2,6 +2,8 @@ package ru.allstreets.developer.telegram;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,15 +41,23 @@ public class ActiveTaskRegistry {
 
     public enum TaskStatus {RUNNING, COMPLETED, FAILED}
 
-    public void register(long chatId, String taskId, String description) {
-        register(chatId, taskId, description, null);
+    @Transactional
+    public void register(long chatId, String taskId, String description, String title, String repo) {
+        TaskEntity task = new TaskEntity(taskId, "RUNNING", description, title, chatId);
+        task.setRepo(repo);
+        taskRepo.save(task);
+        taskChatRepo.save(new TaskChatEntity(taskId, chatId));
+        log.info("TaskRegistry: регистрация task={} chat={} title={} repo={}", taskId, chatId, title, repo);
     }
 
+    /**
+     * Вернуть задачу в RUNNING (restart из checkpoint) <b>без</b> пересоздания строки,
+     * чтобы не затереть уже сохранённые {@code title}/{@code repo} (merge через
+     * {@code register} обнулял бы их).
+     */
     @Transactional
-    public void register(long chatId, String taskId, String description, String title) {
-        taskRepo.save(new TaskEntity(taskId, "RUNNING", description, title, chatId));
-        taskChatRepo.save(new TaskChatEntity(taskId, chatId));
-        log.info("TaskRegistry: регистрация task={} chat={} title={}", taskId, chatId, title);
+    public void markRunning(String taskId) {
+        setStatus(taskId, "RUNNING");
     }
 
     @Transactional
@@ -71,6 +81,15 @@ public class ActiveTaskRegistry {
 
     public Long getChatIdForTask(String taskId) {
         return taskRepo.findById(taskId).map(TaskEntity::getNotifyChatId).orElse(null);
+    }
+
+    /**
+     * Страница задач чата (не удалённых), свежие первыми. Ограничивает контекст
+     * оркестратора и убирает N+1 по {@code findById} на каждую задачу.
+     */
+    public Page<TaskEntity> getChatTasksPage(long chatId, int page, int perPage) {
+        return taskRepo.findByNotifyChatIdAndDeletedFalseOrderByCreatedAtDesc(
+                chatId, PageRequest.of(Math.max(0, page), Math.max(1, perPage)));
     }
 
     public Map<String, TaskStatus> getActiveTasks(long chatId) {

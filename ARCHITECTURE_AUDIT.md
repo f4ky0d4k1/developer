@@ -199,11 +199,13 @@ transient-флагом `isNew`, выставляемым в конструкто
 
 Все LLM-вызовы в проекте использовали `.content()` (свободный текст) с ручным JSON extraction через
 `extractJson()` + `ObjectMapper.readValue()`. Это приводило к:
+
 - "Пустой ответ LLM" когда модель возвращала plain text вместо JSON
 - Потере rich-контекста (модель возвращала развёрнутый ответ, но без JSON-обёртки)
 - Каскад retry-логики в `ConversationAgent` (~60 строк ручного парсинга)
 
 Исправлено: все `.content()` заменены на `.entity(TargetClass.class)` — Spring AI native structured output:
+
 - `ConversationAgent.processMessage` → `.entity(FastDecision.class)` с tool calling
 - `StructuredOutputHelper.callWithFallback` → fallback тоже через `.entity()` (не `.content()`)
 - `TelegramGateway.reformatForTelegram` → `.entity(ReformattedText.class)`
@@ -241,3 +243,87 @@ Spring `RestClient` не находит конвертер для десериа
 
 Исправлено: `PrCommentMonitor.monitorPullRequests` пропускает цикл если `monitorRepo` пустой.
 `GITHUB_BOT_LOGIN` в `application.yml` получил empty default (`${GITHUB_BOT_LOGIN:}`).
+
+## 22. Зависание агента: детекция и сохранение партиала
+
+**Статус: DONE**
+
+Боевой случай (задача `f4a867e7`): аналитик «работал» 300с без прогресса, затем таймаут + `abort` — вся работа
+потеряна без следа. `ZombieTaskMonitor` тут не помогает: он ловит только задачи без живого потока/лока, а **зависший
+живой поток** (сидит в цикле опроса) не видит.
+
+Решение:
+
+- `OpenCodeClient.poll` дополнительно смотрит `GET /session/status`: `busy`/`retry` → агент работает (в т.ч. во время
+  долгих tool-вызовов) — **long-running не трогаем**; явный `idle` и нет прогресса `opencode.stall-timeout-seconds`
+  (default 120) → `abort` как «завис».
+- Перед abort (и на таймауте) **сохраняем частичный вывод** в `opencode_run.output`/`error`.
+- E2E против реального сайдкара подтверждает семантику: во время работы `SessionStatus[type=busy]`.
+
+## 23. Пустой слот / отсутствие `TARGET_REPO` — fail-fast
+
+**Статус: DONE**
+
+`WorktreeManager.prepareSlot` при `repoUrl=null` молча создавал пустую директорию и запускал агента в неё (агент
+искал код, которого нет). Теперь:
+
+- пустой `repoUrl` → `IllegalStateException` (агент без кода работать не может);
+- слот существует, но не git-репозиторий → очистка и повторный клон;
+- после подготовки сверяем наличие `.git`.
+
+## 24. `question`-инструмент блокирует аналитика
+
+**Статус: DONE**
+
+`analyst.md` имел `question: allow`, но агент работает в async-режиме (`prompt_async` + опрос) — отвечать на
+`question` некому, инструмент блокирует сессию до таймаута. Заменено на `question: deny`; уточнения запрашиваются
+только через JSON `needsClarification`/`clarificationQuestion` (обрабатывает Spring → Telegram HITL).
+
+## 25. Per-chat память «проект ↔ задачи» (Фаза 1)
+
+**Статус: DONE**
+
+Классификатор не определял целевой репозиторий (в `FastDecision` не было поля `repo`, дефолта в конфиге тоже не было),
+а `TelegramBotListener` запускал задачи с `targetRepo=null` — из Telegram задачи вообще не получали репо.
+
+Реализовано:
+
+- `TaskEntity.repo` — репозиторий сохраняется на задаче;
+- `TaskMcpTools.getChatProjects(chatId)` — проекты чата (уникальные репо + число задач + последняя), **кэп top-10** по
+  свежести — защита контекста классификатора;
+- нормализация репо (trim + lowercase) при записи и группировке — дедупликация;
+- `FastDecision.repo` → `ConversationAgent.Decision.repo` → `TaskLauncher`;
+- классификатор определяет репо из сообщения или из памяти чата; **при неоднозначности — уточняет у пользователя и НЕ
+  запускает** задачу (страховка в `TelegramBotListener`); дефолт-репо осознанно отвергнут — не угадывать проект.
+
+## 26. Курируемая память чата + RAG (Фаза 2)
+
+**Статус: TODO**
+
+Фаза 1 — память «выведенная из задач» (implicit). Она детерминирована и без новых отказов, но потолок есть:
+нет инвалидации (репо переименован/удалён), нет слияния похожих (`AllStreets/Backend` vs `allstreets/backend` — частично
+решается нормализацией), нет приоритета/уверенности, не масштабируется на «факты», а не только репозитории.
+
+Фаза 2 — первоклассная **курируемая** память чата:
+
+```
+chat_memory(
+  chat_id, kind{project|fact|preference}, key, value,
+  confidence, hits, last_used_at, expires_at
+)
+```
+
+- классификатор читает память (а не задачи напрямую);
+- **rules-based кураторы** (job): dedupe/merge по схожести, TTL/инвалидация, decay confidence;
+- **опционально LLM-агент курации** (периодический ревью: мерж/чистка) — но **не в горячем пути** оркестратора,
+  чтобы не добавлять LLM-отказ и латентность;
+- Фаза 3 (только если упрёмся в объём/качество retrieval): **pgvector** (расширение Postgres) + эмбеддинги записей,
+  retrieval top-k.
+
+Отдельно (найдено при аудите тестов): таблица сырых сообщений `agent_chat_messages` **растёт бесконечно** — окно
+(`WINDOW_SIZE=30`) ограничивает только чтение в контекст, но не хранение. Нужен retention/TTL и на сырые сообщения
+(Фаза 2).
+
+Осознанно **не тащим внешний memory-сервис** (mem0/Zep/Qdrant) сейчас: мы только что стабилизировали надёжность
+(зависания/таймауты), новый сетевой сервис в горячем пути = новый класс отказов. Postgres (+pgvector позже) покрывает
+потребность без новой инфраструктуры.

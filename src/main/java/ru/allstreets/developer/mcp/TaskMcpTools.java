@@ -24,6 +24,11 @@ public class TaskMcpTools {
 
     private static final Logger log = LoggerFactory.getLogger(TaskMcpTools.class);
 
+    /**
+     * Максимум проектов в ответе getChatProjects — защита контекста классификатора.
+     */
+    private static final int MAX_PROJECTS = 10;
+
     private final ActiveTaskRegistry taskRegistry;
     private final TaskRepository taskRepo;
     private final CheckpointRepository checkpointRepo;
@@ -294,6 +299,76 @@ public class TaskMcpTools {
         }
         sb.append("created_at: ").append(last.getCreatedAt()).append("\n");
 
+        return sb.toString();
+    }
+
+    @Tool(description = "List the projects/repositories (owner/name) that tasks in this Telegram chat belong to, " +
+            "with the number of tasks for each. Use this to determine the target repository for a NEW task: " +
+            "if the chat has exactly one project — use it; if several — match the repository against the user's " +
+            "message/context and the listed tasks. If you cannot determine the repository confidently, DO NOT " +
+            "launch the task: ask the user which project (owner/name) it belongs to.")
+    public String getChatProjects(
+            @ToolParam(description = "Telegram chat ID") long chatId
+    ) {
+        log.info("MCP getChatProjects: chatId={}", chatId);
+
+        // Агрегация и LIMIT на стороне БД: на большом чате не тянем все задачи в память.
+        // Запрашиваем на 1 больше — чтобы понять, есть ли ещё проекты.
+        List<Object[]> rows = taskRepo.findChatProjects(chatId, MAX_PROJECTS + 1);
+        if (rows.isEmpty()) {
+            return "No projects recorded for chat " + chatId
+                    + ". Ask the user which repository (owner/name) this task belongs to before launching.";
+        }
+
+        boolean more = rows.size() > MAX_PROJECTS;
+        StringBuilder sb = new StringBuilder("Projects in this chat:\n");
+        for (Object[] row : rows.stream().limit(MAX_PROJECTS).toList()) {
+            String repo = (String) row[0];
+            long count = row[1] == null ? 0 : ((Number) row[1]).longValue();
+            String label = (String) row[2];
+            sb.append("- ").append(repo).append(" (").append(count).append(" task(s)");
+            if (label != null && !label.isBlank()) {
+                sb.append("; last: ").append(label.length() > 80 ? label.substring(0, 80) + "..." : label);
+            }
+            sb.append(")\n");
+        }
+        if (more) {
+            sb.append("(+more projects)\n");
+        }
+        return sb.toString();
+    }
+
+    @Tool(description = "List tasks of this Telegram chat, newest first, with pagination. Each entry: taskId, " +
+            "status, repository, title, date. Use when you need more task history than is shown in context " +
+            "(for example, to determine which project/repository a new task belongs to). page starts at 0.")
+    public String getChatTasks(
+            @ToolParam(description = "Telegram chat ID") long chatId,
+            @ToolParam(description = "Page number, starting at 0") int page,
+            @ToolParam(description = "Page size, e.g. 10") int perPage
+    ) {
+        log.info("MCP getChatTasks: chatId={}, page={}, perPage={}", chatId, page, perPage);
+
+        var taskPage = taskRegistry.getChatTasksPage(chatId, page, perPage);
+        if (taskPage.isEmpty()) {
+            return "No tasks on page " + page + " for chat " + chatId;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (TaskEntity t : taskPage.getContent()) {
+            sb.append(t.getTaskId()).append(" | ").append(t.getStatus());
+            if (t.getRepo() != null && !t.getRepo().isBlank()) {
+                sb.append(" | repo=").append(t.getRepo());
+            }
+            if (t.getTitle() != null && !t.getTitle().isBlank()) {
+                sb.append(" | ").append(t.getTitle());
+            }
+            if (t.getCreatedAt() != null) {
+                sb.append(" | ").append(t.getCreatedAt());
+            }
+            sb.append("\n");
+        }
+        sb.append("page ").append(page).append(" of ").append(Math.max(1, taskPage.getTotalPages()))
+                .append(" (total ").append(taskPage.getTotalElements()).append(" tasks)");
         return sb.toString();
     }
 }

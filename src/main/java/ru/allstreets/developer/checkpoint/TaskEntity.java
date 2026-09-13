@@ -41,6 +41,12 @@ public class TaskEntity {
     @Column(name = "git_branch")
     private String gitBranch;
 
+    /**
+     * Целевой репозиторий задачи (owner/name) — per-chat память «проект ↔ задачи».
+     */
+    @Column(name = "repo")
+    private String repo;
+
     @Column(name = "pr_number")
     private Integer prNumber;
 
