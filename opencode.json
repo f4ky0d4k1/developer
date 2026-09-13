@@ -29,6 +29,11 @@
         "GRAFANA_URL": "https://allstreeets.grafana.net",
         "GRAFANA_SERVICE_ACCOUNT_TOKEN": "{env:GRAFANA_TOKEN}"
       }
+    },
+    "idea": {
+      "type": "remote",
+      "url": "http://127.0.0.1:64390/stream",
+      "enabled": true
     }
   }
 }
