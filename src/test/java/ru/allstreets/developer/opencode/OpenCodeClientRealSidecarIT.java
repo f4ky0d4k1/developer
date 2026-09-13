@@ -1,14 +1,7 @@
 package ru.allstreets.developer.opencode;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.tomakehurst.wiremock.WireMockServer;
-import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
-import com.github.tomakehurst.wiremock.stubbing.ServeEvent;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,27 +16,45 @@ import ru.allstreets.developer.PostgresTestBase;
 import java.time.Duration;
 import java.util.List;
 
-import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * End-to-end: {@link OpenCodeClient} против <b>реального</b> opencode sidecar
- * (контейнер {@code ghcr.io/anomalyco/opencode}) + Testcontainers PostgreSQL.
+ * Полноценный e2e: {@link OpenCodeClient} против <b>реального</b> opencode sidecar
+ * ({@code ghcr.io/anomalyco/opencode}) и <b>реальной штатной модели</b> DeepSeek
+ * ({@code deepseek-v4-flash}).
  * <p>
- * LLM (DeepSeek) мокается <b>внутри</b> opencode через переопределение
- * {@code provider.deepseek.options.baseURL} на JVM-WireMock: sidecar реально
- * совершает OpenAI-совместимый вызов {@code POST /v1/chat/completions}, а мы
- * возвращаем детерминированный SSE-стрим. Одновременно проверяем, что именно
- * уходит на вход мок-LLM (model, промпт), через {@code getAllServeEvents()}.
+ * В отличие от детерминированных {@link OpenCodeApiTest} / {@link OpenCodeClientTest}
+ * (WireMock-стаб sidecar — там же остаются все негативные сценарии: timeout, empty,
+ * ошибки, невалидный ответ), здесь проверяется реальный путь «наш клиент → opencode →
+ * DeepSeek → ответ»: сессия создаётся, промпт доходит до модели, assistant-сообщение
+ * завершается и содержит непустой текст, прогон персистится как {@code DONE}.
+ * <p>
+ * Тест <b>environment-gated</b>: запускается только при заданном {@code DEEPSEEK_API_KEY},
+ * иначе JUnit его скипает — обычный {@code mvn test} не требует сети/ключа. Модель
+ * переопределяется через {@code E2E_MODEL}. Ассерты только структурные: живая модель
+ * недетерминирована, точный текст проверять нельзя.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@EnabledIfEnvironmentVariable(named = "DEEPSEEK_API_KEY", matches = ".+")
+@Tag("e2e")
 class OpenCodeClientRealSidecarIT extends PostgresTestBase {
 
     private static final Logger log = LoggerFactory.getLogger(OpenCodeClientRealSidecarIT.class);
-    private static final ObjectMapper mapper = new ObjectMapper();
 
-    private static WireMockServer llm;
+    private static final String PROVIDER = "deepseek";
+
+    /**
+     * modelID DeepSeek; дефолт — штатная flash-модель, переопределяется через E2E_MODEL.
+     */
+    private static final String MODEL_ID =
+            System.getenv().getOrDefault("E2E_MODEL", "deepseek-v4-flash");
+
+    /**
+     * Маркер, который просим вернуть модель, — доказательство, что промпт дошёл.
+     */
+    private static final String MARKER = "E2E_ANALYSIS_OK";
+
     private static GenericContainer<?> opencode;
 
     @Autowired
@@ -55,21 +66,16 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
     // Контейнер живёт весь прогон класса (stop в @AfterAll) — try-with-resources неприменим.
     @BeforeAll
     @SuppressWarnings("resource")
-    static void startContainers() {
-        // LLM-мок: биндим на 0.0.0.0, чтобы opencode-контейнер достал его по host.docker.internal
-        llm = new WireMockServer(WireMockConfiguration.options().dynamicPort().bindAddress("0.0.0.0"));
-        llm.start();
-
+    static void startContainer() {
         opencode = new GenericContainer<>("ghcr.io/anomalyco/opencode")
                 .withExposedPorts(4096)
                 .withCommand("serve", "--port", "4096", "--hostname", "0.0.0.0")
                 .withEnv("OPENCODE_EXPERIMENTAL", "1")
-                .withEnv("DEEPSEEK_API_KEY", "test-key")
-                .withExtraHost("host.docker.internal", "host-gateway")
+                .withEnv("DEEPSEEK_API_KEY", System.getenv("DEEPSEEK_API_KEY"))
                 .withWorkingDirectory("/work")
-                .withCopyToContainer(Transferable.of(opencodeConfig(llm.port())),
+                .withCopyToContainer(Transferable.of(opencodeConfig()),
                         "/root/.config/opencode/opencode.jsonc")
-                .withCopyToContainer(Transferable.of(TEST_ANALYST_AGENT),
+                .withCopyToContainer(Transferable.of(testAnalystAgent()),
                         "/work/.opencode/agents/analyst.md")
                 .waitingFor(Wait.forHttp("/global/health").forPort(4096).forStatusCode(200))
                 .withStartupTimeout(Duration.ofSeconds(120));
@@ -77,123 +83,56 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
     }
 
     @AfterAll
-    static void stopContainers() {
+    static void stopContainer() {
         if (opencode != null) {
             System.out.println("===== opencode container logs =====");
             System.out.println(opencode.getLogs());
             opencode.stop();
         }
-        if (llm != null) {
-            llm.stop();
-        }
     }
 
     @BeforeEach
     void setUp() {
-        llm.resetAll();
         api = new OpenCodeApi("http://localhost:" + opencode.getMappedPort(4096),
-                "deepseek/deepseek-v4-pro");
+                PROVIDER + "/" + MODEL_ID);
         progress = Mockito.mock(TaskProgressRegistry.class);
     }
 
     private OpenCodeClient client() {
-        return new OpenCodeClient(api, runRepo, progress, 60, 1, 120);
+        // Живая модель отвечает медленнее стаба — бюджет/сталл увеличены.
+        return new OpenCodeClient(api, runRepo, progress, 180, 2, 180);
     }
 
     @Test
-    void runAgent_completesAgainstRealSidecar() {
-        stubLlm("E2E_ANALYSIS_OK");
+    void runAgent_completesAgainstRealModel() {
+        log.info("E2E против реальной модели: {}/{}", PROVIDER, MODEL_ID);
 
-        var result = client().runAgent("analyst", "проверочный промпт", "/work", "task-e2e");
+        var result = client().runAgent("analyst",
+                "Ответь ровно этой строкой, без пояснений и без вызова инструментов: " + MARKER,
+                "/work", "task-e2e");
 
+        assertNull(result.error(), "прогон против живой модели вернул ошибку: " + result.error());
         assertEquals("success", result.status());
-        assertEquals("E2E_ANALYSIS_OK", result.output());
+        assertNotNull(result.sessionId(), "не создана/не возвращена сессия");
+        assertNotNull(result.output(), "output == null");
+        assertFalse(result.output().isBlank(), "живая модель вернула пустой текст");
+        assertTrue(result.output().toUpperCase().contains(MARKER),
+                "в ответе нет маркера — промпт не дошёл до модели? Ответ: " + result.output());
 
         var done = runRepo.findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(
                 "task-e2e", "analyst", List.of(OpenCodeRunStatus.DONE));
-        assertEquals(1, done.size());
+        assertEquals(1, done.size(), "прогон не персистнулся как DONE");
         assertTrue(done.getFirst().isPromptSent());
+        assertNotNull(done.getFirst().getOutput());
+        assertFalse(done.getFirst().getOutput().isBlank());
     }
 
-    @Test
-    void llmReceivesModelAndPrompt() {
-        stubLlm("E2E_ANALYSIS_OK");
-
-        client().runAgent("analyst", "уникальный-маркер-промпта", "/work", "task-e2e");
-
-        List<ServeEvent> events = llm.getAllServeEvents().stream()
-                .filter(e -> e.getRequest().getUrl().contains("chat/completions"))
-                .toList();
-
-        assertFalse(events.isEmpty(), "LLM-мок не получил ни одного запроса");
-
-        for (ServeEvent e : events) {
-            String body = e.getRequest().getBodyAsString();
-            log.info("=== LLM request: {} {} ===\n{}", e.getRequest().getMethod(),
-                    e.getRequest().getUrl(), body);
-
-            JsonNode root = parse(body);
-            // Модель ушла как deepseek-v4-pro (providerID/modelID из opencode.model)
-            assertTrue(root.path("model").asText().contains("deepseek-v4-pro"),
-                    "model в запросе не совпадает: " + root.path("model").asText());
-            // Промпт дошёл до LLM
-            assertTrue(body.contains("уникальный-маркер-промпта"),
-                    "текст промпта не найден в теле запроса к LLM");
-        }
-    }
-
-    @Test
-    void sessionStatus_reportsBusyWhileAgentWorks() throws Exception {
-        // LLM отвечает с задержкой, чтобы застать агента в работе.
-        stubLlmDelayed("E2E_OK", 8000);
-
-        String sid = api.createSession("/work");
-        String mid = "msg_" + java.util.UUID.randomUUID();
-        api.promptAsync(sid, "/work", mid, "analyst", "пробный промпт");
-
-        Thread.sleep(3000);
-        var status = api.sessionStatus(sid);
-        log.info("session status while working: {}", status);
-
-        assertNotNull(status, "сессия должна присутствовать в /session/status");
-        assertTrue(status.isBusy(), "во время работы сессия должна быть busy, была: " + status);
-    }
-
-    // ---------------------------------------------------------------------
-
-    @SuppressWarnings("SameParameterValue")
-    private void stubLlm(String content) {
-        llm.stubFor(post(urlPathMatching(".*/chat/completions"))
-                .willReturn(aResponse()
-                        .withStatus(200)
-                        .withHeader("Content-Type", "text/event-stream; charset=utf-8")
-                        .withBody(sseStream(content))));
-    }
-
-    @SuppressWarnings("SameParameterValue")
-    private void stubLlmDelayed(String content, int delayMs) {
-        llm.stubFor(post(urlPathMatching(".*/chat/completions"))
-                .willReturn(aResponse()
-                        .withStatus(200)
-                        .withHeader("Content-Type", "text/event-stream; charset=utf-8")
-                        .withFixedDelay(delayMs)
-                        .withBody(sseStream(content))));
-    }
-
-    private static String sseStream(String content) {
-        String chunk1 = """
-                {"id":"cmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{"role":"assistant","content":"%s"},"finish_reason":null}]}
-                """.formatted(content).trim();
-        String chunk2 = """
-                {"id":"cmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
-                """.trim();
-        return "data: " + chunk1 + "\n\n"
-                + "data: " + chunk2 + "\n\n"
-                + "data: [DONE]\n\n";
-    }
-
-    @SuppressWarnings("HttpUrlsUsage")
-    private static String opencodeConfig(int llmPort) {
+    /**
+     * Провайдер DeepSeek (тот же, что в {@code opencode-config/opencode.jsonc}). Ключ
+     * подхватывается opencode из env-переменной {@code DEEPSEEK_API_KEY}, проброшенной
+     * в контейнер, — как в проде.
+     */
+    private static String opencodeConfig() {
         return """
                 {
                   "$schema": "https://opencode.ai/config.json",
@@ -201,34 +140,27 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
                     "deepseek": {
                       "name": "DeepSeek",
                       "options": {
-                        "baseURL": "http://host.docker.internal:%d/v1",
-                        "apiKey": "test-key"
+                        "baseURL": "https://api.deepseek.com"
                       },
                       "models": {
-                        "deepseek-v4-pro": {},
-                        "deepseek-v4-flash": {}
+                        "%s": {}
                       }
                     }
                   }
                 }
-                """.formatted(llmPort);
+                """.formatted(MODEL_ID);
     }
 
-    private static JsonNode parse(String body) {
-        try {
-            return mapper.readTree(body);
-        } catch (Exception e) {
-            throw new AssertionError("LLM-запрос не является JSON: " + body, e);
-        }
+    private static String testAnalystAgent() {
+        return """
+                ---
+                description: Тестовый аналитик (e2e, реальная модель)
+                mode: primary
+                model: %s/%s
+                ---
+                
+                Ты тестовый аналитик. Ответь одной короткой строкой текста — ровно тем, что
+                просит пользователь. Не вызывай инструменты и не пиши пояснений.
+                """.formatted(PROVIDER, MODEL_ID);
     }
-
-    private static final String TEST_ANALYST_AGENT = """
-            ---
-            description: Тестовый аналитик (e2e)
-            mode: primary
-            model: deepseek/deepseek-v4-pro
-            ---
-            
-            Ты тестовый аналитик. Ответь коротким текстом, без вызова инструментов.
-            """;
 }

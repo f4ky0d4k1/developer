@@ -1,14 +1,12 @@
 package ru.allstreets.developer.agents;
 
-import io.github.asekka.springai.agents.core.Agent;
-import io.github.asekka.springai.agents.core.AgentContext;
-import io.github.asekka.springai.agents.core.AgentResult;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import io.github.asekka.springai.agents.core.Agent;
+import io.github.asekka.springai.agents.core.AgentContext;
+import io.github.asekka.springai.agents.core.AgentResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
@@ -21,6 +19,9 @@ import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * Аналитик — работает через OpenCode sidecar с MCP инструментами (GitHub, Tracker, Grafana).
  * OpenCode агент вызывает MCP tools напрямую (create_branch, issue_create, alerting_manage_rules).
@@ -31,10 +32,14 @@ public class AnalystNode implements Agent {
 
     private static final Logger log = LoggerFactory.getLogger(AnalystNode.class);
 
-    /** Сколько раз нуджим агента в той же сессии, если он не вывел JSON-решение. */
+    /**
+     * Сколько раз нуджим агента в той же сессии, если он не вывел JSON-решение.
+     */
     private static final int MAX_CONTINUE_ATTEMPTS = 1;
 
-    /** Нудж агенту: остановился без итогового решения — довести до JSON-блока. */
+    /**
+     * Нудж агенту: остановился без итогового решения — довести до JSON-блока.
+     */
     private static final String CONTINUE_ANALYSIS_PROMPT = """
             Ты остановился, не выведя итоговое JSON-решение. Продолжи и в финальном ответе ОБЯЗАТЕЛЬНО
             выведи JSON-блок с полями nextStep (developer/tester/done), requiresDevelopment,
@@ -152,17 +157,11 @@ public class AnalystNode implements Agent {
                             new RuntimeException("OpenCode error: " + ocResult.error())));
                 }
 
-                if (currentOutput.isBlank()) {
-                    log.error("Аналитик: OpenCode вернул пустой вывод");
-                    telegram.sendMessage(chatIdLong, "❌ OpenCode вернул пустой результат");
-                    return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
-                            new RuntimeException("OpenCode returned empty output")));
-                }
-
-                // Пустой/усечённый вывод (агент «задумался вслух» и остановился) — не фейлим сразу,
-                // а нуджим агента в той же сессии довести до JSON-решения. Только после N попыток
-                // без решения — провал (см. guard ниже).
-                for (int attempt = 0; attempt < MAX_CONTINUE_ATTEMPTS && !hasDecisionBlock(currentOutput); attempt++) {
+                // Пустой/усечённый вывод (агент «задумался вслух», провайдер вернул пустой ответ)
+                // — не фейлим сразу, а нуджим агента в той же сессии довести до JSON-решения.
+                // Только после N попыток без решения — провал (см. guard ниже).
+                for (int attempt = 0; attempt < MAX_CONTINUE_ATTEMPTS
+                        && (currentOutput.isBlank() || !hasDecisionBlock(currentOutput)); attempt++) {
                     log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} в сессии {}",
                             currentOutput.length(), attempt + 1, MAX_CONTINUE_ATTEMPTS, currentSessionId);
                     try {
@@ -431,7 +430,9 @@ public class AnalystNode implements Agent {
     private static final java.util.regex.Pattern DECISION_BLOCK =
             java.util.regex.Pattern.compile("(?i)\"?nextStep\"?\\s*[:=]");
 
-    /** Детерминированный разбор JSON-решения из финального ответа аналитика (без второго LLM). */
+    /**
+     * Детерминированный разбор JSON-решения из финального ответа аналитика (без второго LLM).
+     */
     private AgentResponses.AnalystResult parseDecision(String output) {
         try {
             String json = extractJsonBlock(output);
@@ -446,7 +447,9 @@ public class AnalystNode implements Agent {
         }
     }
 
-    /** Извлечь JSON-объект решения: сначала ```json-фенс, иначе сбалансированные скобки от последнего `{`. */
+    /**
+     * Извлечь JSON-объект решения: сначала ```json-фенс, иначе сбалансированные скобки от последнего `{`.
+     */
     private static String extractJsonBlock(String text) {
         if (text == null) {
             return null;

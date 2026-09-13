@@ -90,6 +90,31 @@ class AnalystNodeDecisionGuardTest {
     }
 
     @Test
+    void emptyOutput_nudgedToDecision_completes() {
+        agentReturns("");
+        nudgeReturns(DECISION);
+
+        AgentResult result = analyst.execute(ctx());
+
+        assertFalse(result.hasError(), "нудж должен вытащить решение из пустого ответа");
+        assertTrue(result.completed());
+        assertEquals("developer", result.stateUpdates().get(TaskState.NEXT_STEP));
+        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void emptyOutput_nudgeAlsoEmpty_fails() {
+        agentReturns("");
+        nudgeReturns("");
+
+        AgentResult result = analyst.execute(ctx());
+
+        assertTrue(result.hasError(), "пустой ответ + безуспешный нудж — ошибка, а не silent-done");
+        assertFalse(result.completed());
+        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void invalidDecisionValue_fails() {
         agentReturns("{\"nextStep\":\"banana\",\"requiresDevelopment\":true}");
 
