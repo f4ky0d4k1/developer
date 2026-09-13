@@ -252,8 +252,8 @@ public class OpenCodeClient {
                 }
 
                 if (assistant.isCompleted()) {
-                    log.info("Агент {} завершил работу. session={}, текст={} символов",
-                            agentName, sessionId, full.length());
+                    log.info("Агент {} завершил работу. session={}, текст={} символов, finish={}, parts={}",
+                            agentName, sessionId, full.length(), assistant.info().finish(), assistant.partTypes());
                     run.setStatus(OpenCodeRunStatus.DONE);
                     run.setOutput(full);
                     runRepo.save(run);

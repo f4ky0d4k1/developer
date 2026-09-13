@@ -162,8 +162,9 @@ public class AnalystNode implements Agent {
                 // Только после N попыток без решения — провал (см. guard ниже).
                 for (int attempt = 0; attempt < MAX_CONTINUE_ATTEMPTS
                         && (currentOutput.isBlank() || !hasDecisionBlock(currentOutput)); attempt++) {
-                    log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} в сессии {}",
-                            currentOutput.length(), attempt + 1, MAX_CONTINUE_ATTEMPTS, currentSessionId);
+                    log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} в сессии {}: {}",
+                            currentOutput.length(), attempt + 1, MAX_CONTINUE_ATTEMPTS, currentSessionId,
+                            preview(currentOutput));
                     try {
                         var contResult = openCode.runAgent("analyst", CONTINUE_ANALYSIS_PROMPT,
                                 workDir, taskId, currentSessionId);
@@ -176,6 +177,7 @@ public class AnalystNode implements Agent {
                             log.warn("Аналитик: нудж вернул пустой вывод");
                             continue;
                         }
+                        log.info("Аналитик: ответ на нудж ({} символов): {}", contOut.length(), preview(contOut));
                         currentOutput = contOut;
                         if (contResult.sessionId() != null) {
                             currentSessionId = contResult.sessionId();
@@ -239,8 +241,9 @@ public class AnalystNode implements Agent {
         // (инцидент 3c7b33db: аналитик выдал вводную фразу без решения, задача «завершилась»).
         // Контракт (analyst.md) требует JSON-блок с nextStep; без него это технический сбой.
         if (!hasDecisionBlock(currentOutput) || result == null || result.nextStep() == null) {
-            log.error("Аналитик: решение не получено (decisionBlock={}, result={}, {} символов вывода) — провал",
-                    hasDecisionBlock(currentOutput), result == null ? "null" : "no-nextStep", currentOutput.length());
+            log.error("Аналитик: решение не получено (decisionBlock={}, result={}, {} символов вывода) — провал. Вывод: {}",
+                    hasDecisionBlock(currentOutput), result == null ? "null" : "no-nextStep", currentOutput.length(),
+                    preview(currentOutput));
             telegram.sendMessage(chatIdLong,
                     "❌ Аналитик не вернул решение (пустой/нераспарсенный ответ) — задача не завершена");
             return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
@@ -416,6 +419,18 @@ public class AnalystNode implements Agent {
 
     private String truncate(String text, int maxLen) {
         return text.length() > maxLen ? text.substring(0, maxLen) + "..." : text;
+    }
+
+    /**
+     * Однострочный превью вывода агента для логов — чтобы при провале решения в логе был
+     * виден реальный ответ модели (в т.ч. reasoning-only/обрыв), а не только длина.
+     */
+    private static String preview(String text) {
+        if (text == null) {
+            return "null";
+        }
+        String oneLine = text.replaceAll("\\s+", " ").trim();
+        return oneLine.length() > 1000 ? oneLine.substring(0, 1000) + "…" : oneLine;
     }
 
     /**

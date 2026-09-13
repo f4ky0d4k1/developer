@@ -366,6 +366,20 @@ public class OpenCodeApi {
             }
             return sb.toString();
         }
+
+        /**
+         * Типы партов сообщения — для диагностики: видно, был ли ответ reasoning-only,
+         * обошёлся ли без text-парта и т.п. (см. инциденты с «пустым» решением аналитика).
+         */
+        public String partTypes() {
+            if (parts == null || parts.isEmpty()) return "[]";
+            StringBuilder sb = new StringBuilder("[");
+            for (Part p : parts) {
+                if (sb.length() > 1) sb.append(',');
+                sb.append(p.type());
+            }
+            return sb.append(']').toString();
+        }
     }
 
     /**
