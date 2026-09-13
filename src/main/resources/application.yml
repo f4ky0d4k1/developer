@@ -115,7 +115,10 @@ logging:
     io.github.asekka: trace
     org.springframework.ai: debug
     io.modelcontextprotocol: debug
-    org.springframework.web.client: trace
+    # Wire/headers debug дампы байтов (русский в UTF-8 превращается в [0xffffffd0]... простыни) — глушим.
+    org.apache.hc.client5.http.wire: info
+    org.apache.hc.client5.http.headers: info
+    org.springframework.web.client: info
     org.springframework.web.reactive.function.client: trace
   charset:
     file: utf-8

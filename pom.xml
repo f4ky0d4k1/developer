@@ -10,7 +10,7 @@
     </parent>
     <groupId>ru.allstreets</groupId>
     <artifactId>developer</artifactId>
-    <version>0.0.14-SNAPSHOT</version>
+    <version>0.0.15-SNAPSHOT</version>
     <name>developer</name>
     <description>developer</description>
     <url/>
