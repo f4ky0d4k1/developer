@@ -447,32 +447,53 @@ public class AnalystNode implements Agent {
 
     /**
      * Детерминированный разбор JSON-решения из финального ответа аналитика (без второго LLM).
+     * <p>
+     * Модель оборачивает анализ в несколько code-фенсов (```yaml, ```java и т.п.) и добавляет
+     * JSON-решение в конце. Брать первый фенс нельзя — это не JSON (инцидент b9c0e7ae: парсился
+     * ```yaml). Перебираем все фенсы и сбалансированные `{...}` и берём первый, который парсится
+     * как решение с {@code nextStep}.
      */
     private AgentResponses.AnalystResult parseDecision(String output) {
-        try {
-            String json = extractJsonBlock(output);
-            if (json == null) {
-                log.warn("Аналитик: JSON-блок решения не найден в выводе");
-                return null;
+        for (String candidate : jsonCandidates(output)) {
+            try {
+                AgentResponses.AnalystResult parsed =
+                        JSON_MAPPER.readValue(candidate, AgentResponses.AnalystResult.class);
+                if (parsed.nextStep() != null) {
+                    return parsed;
+                }
+            } catch (Exception e) {
+                log.debug("Аналитик: кандидат JSON не распарсен: {}", e.getMessage());
             }
-            return JSON_MAPPER.readValue(json, AgentResponses.AnalystResult.class);
-        } catch (Exception e) {
-            log.warn("Аналитик: не удалось разобрать JSON-решение: {}", e.getMessage());
-            return null;
         }
+        log.warn("Аналитик: JSON-блок решения не найден в выводе");
+        return null;
     }
 
     /**
-     * Извлечь JSON-объект решения: сначала ```json-фенс, иначе сбалансированные скобки от последнего `{`.
+     * Кандидаты на JSON-решение: тела всех fenced-блоков, начинающиеся с `{`, затем последний
+     * сбалансированный `{...}` (решение обычно в конце ответа).
      */
-    private static String extractJsonBlock(String text) {
+    private static java.util.List<String> jsonCandidates(String text) {
         if (text == null) {
-            return null;
+            return java.util.List.of();
         }
+        var candidates = new java.util.ArrayList<String>();
         Matcher fence = JSON_FENCE.matcher(text);
-        if (fence.find()) {
-            return fence.group(1).trim();
+        while (fence.find()) {
+            String body = fence.group(1).trim();
+            if (body.startsWith("{")) {
+                candidates.add(body);
+            }
         }
+        String balanced = lastBalancedObject(text);
+        if (balanced != null) {
+            candidates.add(balanced);
+        }
+        return candidates;
+    }
+
+    /** Последний сбалансированный JSON-объект в тексте (учёт строк и экранирования). */
+    private static String lastBalancedObject(String text) {
         int start = text.lastIndexOf('{');
         if (start < 0) {
             return null;

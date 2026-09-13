@@ -178,6 +178,35 @@ class AnalystNodeDecisionGuardTest {
     }
 
     @Test
+    void jsonDecisionAfterOtherFences_completes() {
+        // Инцидент b9c0e7ae: анализ обёрнут в ```yaml, решение — в финальном ```json.
+        // Раньше брался первый фенс (yaml) и Jackson падал → result=null.
+        String output = """
+                Сначала конфиг:
+                ```yaml
+                spring:
+                  profiles:
+                    active: test
+                ```
+                Ещё один блок:
+                ```yaml
+                foo: bar
+                ```
+                И решение:
+                ```json
+                %s
+                ```
+                """.formatted(DECISION);
+
+        agentReturns(output);
+
+        AgentResult result = analyst.execute(ctx());
+
+        assertFalse(result.hasError(), "JSON-решение после yaml-фенсов должно парситься");
+        assertEquals("developer", result.stateUpdates().get(TaskState.NEXT_STEP));
+    }
+
+    @Test
     void unknownFieldsAreIgnored() {
         agentReturns("{\"nextStep\":\"developer\",\"requiresDevelopment\":true,"
                 + "\"taskType\":\"task\",\"spec\":\"спека\",\"foo\":123}");
