@@ -46,7 +46,7 @@ class TaskLauncherResumeAfterRestartTest {
         executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
         launcher = new TaskLauncher(graphRunner, telegram, taskRegistry,
                 mock(HumanInputRegistry.class), checkpointService, mock(OpenCodeSessionPool.class),
-                executor, mock(ChatClient.class));
+                executor, mock(ChatClient.class), mock(PriorTaskContextBuilder.class));
     }
 
     @AfterEach

@@ -35,6 +35,7 @@ public class TaskLauncher {
     private final OpenCodeSessionPool sessionPool;
     private final ThreadPoolExecutor executor;
     private final ChatClient fallbackChatClient;
+    private final PriorTaskContextBuilder priorTaskContextBuilder;
 
     // taskId → running future (для interrupt)
     private final Map<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
@@ -45,7 +46,8 @@ public class TaskLauncher {
                         CheckpointService checkpointService,
                         OpenCodeSessionPool sessionPool,
                         @Qualifier("taskExecutor") ThreadPoolExecutor executor,
-                        @Qualifier("fallbackChatClient") ChatClient fallbackChatClient) {
+                        @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
+                        PriorTaskContextBuilder priorTaskContextBuilder) {
         this.graphRunner = graphRunner;
         this.telegram = telegram;
         this.taskRegistry = taskRegistry;
@@ -54,9 +56,18 @@ public class TaskLauncher {
         this.sessionPool = sessionPool;
         this.executor = executor;
         this.fallbackChatClient = fallbackChatClient;
+        this.priorTaskContextBuilder = priorTaskContextBuilder;
     }
 
     public void launch(String taskDescription, long chatId, String targetRepo) {
+        launch(taskDescription, chatId, targetRepo, null);
+    }
+
+    /**
+     * @param priorTaskId id предыдущего прогона при ретрае через НОВУЮ задачу (чекпоинта нет);
+     *                    его описание/Tracker/переписка переносятся в контекст новой задачи.
+     */
+    public void launch(String taskDescription, long chatId, String targetRepo, String priorTaskId) {
         String taskId = UUID.randomUUID().toString();
         String title = generateTitle(taskDescription);
 
@@ -67,8 +78,10 @@ public class TaskLauncher {
         telegram.sendMessage(chatId, startMsg, taskId);
 
         String repo = normalizeRepo(targetRepo);
+        String priorContext = priorTaskContextBuilder.build(priorTaskId);
         try {
-            Future<?> future = executor.submit(() -> runTask(taskId, taskDescription, chatId, title, repo));
+            Future<?> future = executor.submit(() ->
+                    runTask(taskId, taskDescription, chatId, title, repo, priorTaskId, priorContext));
             runningTasks.put(taskId, future);
         } catch (java.util.concurrent.RejectedExecutionException e) {
             log.error("TaskLauncher: задача {} отклонена (backpressure): {}", taskId, e.getMessage());
@@ -161,7 +174,8 @@ public class TaskLauncher {
         }
     }
 
-    private void runTask(String taskId, String taskDescription, long chatId, String title, String targetRepo) {
+    private void runTask(String taskId, String taskDescription, long chatId, String title, String targetRepo,
+                         String priorTaskId, String priorContext) {
         try {
             var ctx = AgentContext.of(taskDescription)
                     .with(TaskState.TASK_ID, taskId)
@@ -170,6 +184,10 @@ public class TaskLauncher {
                     .with(TaskState.REWORK_COUNT, 0);
             if (targetRepo != null && !targetRepo.isBlank()) {
                 ctx = ctx.with(TaskState.TARGET_REPO, targetRepo);
+            }
+            if (priorContext != null && !priorContext.isBlank()) {
+                ctx = ctx.with(TaskState.PRIOR_TASK_ID, priorTaskId)
+                        .with(TaskState.PRIOR_CONTEXT, priorContext);
             }
 
             taskRegistry.register(chatId, taskId, taskDescription, title, targetRepo);

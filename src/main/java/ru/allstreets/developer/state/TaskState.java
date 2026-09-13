@@ -48,6 +48,10 @@ public final class TaskState {
     // ─── Роль агента для логирования ───
     public static final StateKey<String> AGENT_ROLE = StateKey.of("agentRole", String.class);
 
+    // ─── Контекст предыдущей задачи при ретрае через новую задачу ───
+    public static final StateKey<String> PRIOR_TASK_ID = StateKey.of("priorTaskId", String.class);
+    public static final StateKey<String> PRIOR_CONTEXT = StateKey.of("priorContext", String.class);
+
     // ─── HITL-пауза: слот/сессия OpenCode, которые нужно продолжить при resume ───
     public static final StateKey<Integer> OPENCODE_SLOT = StateKey.of("opencodeSlot", Integer.class);
     public static final StateKey<String> OPENCODE_SESSION_ID = StateKey.of("opencodeSessionId", String.class);

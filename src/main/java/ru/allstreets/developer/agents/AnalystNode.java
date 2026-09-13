@@ -351,6 +351,14 @@ public class AnalystNode implements Agent {
             ctxSb.append("\n## Контекст итерации #").append(reworkCount + 1).append("\n");
         }
 
+        // Перенос контекста предыдущей задачи при ретрае через новую задачу (чекпоинта нет).
+        String priorContext = ctx.get(TaskState.PRIOR_CONTEXT);
+        if (priorContext != null && !priorContext.isBlank()) {
+            ctxSb.append("\n### Контекст предыдущей задачи (повторный запуск — НЕ начинай с нуля, ")
+                    .append("не создавай дубль Tracker):\n")
+                    .append(truncate(priorContext, 4000)).append("\n");
+        }
+
         if (spec != null && !spec.isBlank()) {
             ctxSb.append("\n### Предыдущий ТЗ/анализ:\n").append(truncate(spec, 2000)).append("\n");
         }

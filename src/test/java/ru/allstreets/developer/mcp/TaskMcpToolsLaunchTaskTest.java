@@ -3,6 +3,7 @@ package ru.allstreets.developer.mcp;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ToolContext;
+import ru.allstreets.developer.checkpoint.ChatMessageRepository;
 import ru.allstreets.developer.checkpoint.CheckpointRepository;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskLockService;
@@ -50,6 +51,7 @@ class TaskMcpToolsLaunchTaskTest {
                 taskLauncher,
                 mock(HumanInputRegistry.class),
                 mock(TaskProgressRegistry.class),
+                mock(ChatMessageRepository.class),
                 "dima");
     }
 
@@ -59,32 +61,32 @@ class TaskMcpToolsLaunchTaskTest {
 
     @Test
     void launchTask_blankRepo_returnsErrorAndDoesNotLaunch() {
-        String result = tools.launchTask(1L, "   ", "сделай X", ctx("dima"));
+        String result = tools.launchTask(1L, "   ", "сделай X", null, ctx("dima"));
 
         assertTrue(result.contains("ERROR"), result);
-        verify(taskLauncher, never()).launch(anyString(), anyLong(), any());
+        verify(taskLauncher, never()).launch(anyString(), anyLong(), any(), any());
     }
 
     @Test
     void launchTask_blankDescription_returnsErrorAndDoesNotLaunch() {
-        String result = tools.launchTask(1L, "allstreets/backend", "  ", ctx("dima"));
+        String result = tools.launchTask(1L, "allstreets/backend", "  ", null, ctx("dima"));
 
         assertTrue(result.contains("ERROR"), result);
-        verify(taskLauncher, never()).launch(anyString(), anyLong(), any());
+        verify(taskLauncher, never()).launch(anyString(), anyLong(), any(), any());
     }
 
     @Test
     void launchTask_nonTriggerUser_isDenied() {
-        String result = tools.launchTask(1L, "allstreets/backend", "сделай X", ctx("stranger"));
+        String result = tools.launchTask(1L, "allstreets/backend", "сделай X", null, ctx("stranger"));
 
         assertTrue(result.contains("not allowed"), result);
-        verify(taskLauncher, never()).launch(anyString(), anyLong(), any());
+        verify(taskLauncher, never()).launch(anyString(), anyLong(), any(), any());
     }
 
     @Test
     void launchTask_triggerUser_normalizesRepoAndLaunches() {
-        tools.launchTask(1L, "  AllStreets/Backend ", "сделай X", ctx("DiMa"));
+        tools.launchTask(1L, "  AllStreets/Backend ", "сделай X", null, ctx("DiMa"));
 
-        verify(taskLauncher).launch(eq("сделай X"), eq(1L), eq("allstreets/backend"));
+        verify(taskLauncher).launch(eq("сделай X"), eq(1L), eq("allstreets/backend"), org.mockito.ArgumentMatchers.isNull());
     }
 }

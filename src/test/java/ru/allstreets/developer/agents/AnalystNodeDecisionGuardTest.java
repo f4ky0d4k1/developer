@@ -226,6 +226,20 @@ class AnalystNodeDecisionGuardTest {
     }
 
     @Test
+    void priorContext_isIncludedInAnalystPrompt() {
+        agentReturns(DECISION);
+        AgentContext withPrior = ctx().with(TaskState.PRIOR_CONTEXT,
+                "Предыдущая задача aaaaaaaa: Tracker BACKEND-432, НЕ создавай дубль");
+
+        analyst.execute(withPrior);
+
+        var promptCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(openCode).runAgent(eq("analyst"), promptCaptor.capture(), eq("/work"), anyString());
+        assertTrue(promptCaptor.getValue().contains("НЕ создавай дубль"),
+                "prior-контекст должен попасть в промпт аналитика: " + promptCaptor.getValue());
+    }
+
+    @Test
     void unknownFieldsAreIgnored() {
         agentReturns("{\"nextStep\":\"developer\",\"requiresDevelopment\":true,"
                 + "\"taskType\":\"task\",\"spec\":\"спека\",\"foo\":123}");

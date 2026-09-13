@@ -42,6 +42,7 @@ public class TaskMcpTools {
     private final TaskLauncher taskLauncher;
     private final HumanInputRegistry humanInputRegistry;
     private final TaskProgressRegistry progressRegistry;
+    private final ChatMessageRepository chatMessageRepo;
     /** Кто имеет право запускать задачи (deny-by-default, если список пуст). */
     private final Set<String> triggerUsers;
 
@@ -54,6 +55,7 @@ public class TaskMcpTools {
             TaskLauncher taskLauncher,
             HumanInputRegistry humanInputRegistry,
             TaskProgressRegistry progressRegistry,
+            ChatMessageRepository chatMessageRepo,
             @Value("${telegram.trigger-users:}") String triggerUsersRaw
     ) {
         this.taskRegistry = taskRegistry;
@@ -64,6 +66,7 @@ public class TaskMcpTools {
         this.taskLauncher = taskLauncher;
         this.humanInputRegistry = humanInputRegistry;
         this.progressRegistry = progressRegistry;
+        this.chatMessageRepo = chatMessageRepo;
         this.triggerUsers = triggerUsersRaw == null || triggerUsersRaw.isBlank()
                 ? Set.of()
                 : Arrays.stream(triggerUsersRaw.split(","))
@@ -387,6 +390,34 @@ public class TaskMcpTools {
         return sb.toString();
     }
 
+    @Tool(description = "Read the chat history to dig into earlier context, previous tasks, clarifications and " +
+            "answers — beyond the short window already in context. Returns newest first with role, taskId (if any) " +
+            "and timestamp. Use when the user refers to an earlier task/discussion, or to reconstruct the chain of " +
+            "a previous retry. Prefer this over guessing.")
+    public String getChatHistory(
+            @ToolParam(description = "Telegram chat ID") long chatId,
+            @ToolParam(description = "How many recent messages to return (1..50)") int limit
+    ) {
+        int n = Math.max(1, Math.min(limit, 50));
+        log.info("MCP getChatHistory: chatId={}, limit={}", chatId, n);
+
+        var messages = chatMessageRepo.findByChatIdOrderByCreatedAtDesc(chatId, org.springframework.data.domain.PageRequest.of(0, n));
+        if (messages.isEmpty()) {
+            return "No messages found for chat " + chatId;
+        }
+        StringBuilder sb = new StringBuilder("Chat history (newest first, ")
+                .append(messages.size()).append("):\n");
+        for (ChatMessageEntity m : messages) {
+            sb.append("[").append(m.getCreatedAt()).append("] ").append(m.getRole());
+            if (m.getTaskId() != null) {
+                sb.append(" [task:").append(m.getTaskId(), 0, Math.min(8, m.getTaskId().length())).append("]");
+            }
+            String text = m.getText() != null ? m.getText() : "";
+            sb.append(": ").append(text.length() > 300 ? text.substring(0, 300) + "..." : text).append("\n");
+        }
+        return sb.toString();
+    }
+
     @Tool(description = "Start a development task in this Telegram chat for the given repository. " +
             "repo is REQUIRED (owner/name): if you do NOT know the target repository — do NOT call this tool, " +
             "ask the user which repository to use first (never guess). Interrupts a running task in the chat, " +
@@ -395,6 +426,10 @@ public class TaskMcpTools {
             @ToolParam(description = "Telegram chat ID") long chatId,
             @ToolParam(description = "Target repository, owner/name (required)") String repo,
             @ToolParam(description = "Task description") String description,
+            @ToolParam(description = "Optional: id (or first 8 chars) of the PREVIOUS task this is a retry/follow-up " +
+                    "of. When set, its description/Tracker-issue/chat history are carried into the new task so agents " +
+                    "don't start from scratch. Set it when the user asks to retry/redo an earlier task and there is no " +
+                    "checkpoint to resume.", required = false) String priorTaskId,
             ToolContext context
     ) {
         // Граница доступа: запускать может только trigger-user (username приходит из
@@ -415,7 +450,11 @@ public class TaskMcpTools {
             return "ERROR: task description is required.";
         }
 
-        log.info("MCP launchTask: chatId={}, repo={}", chatId, normalized);
+        String resolvedPrior = (priorTaskId != null && !priorTaskId.isBlank())
+                ? resolveTaskId(priorTaskId) : null;
+
+        log.info("MCP launchTask: chatId={}, repo={}, priorTask={}", chatId, normalized,
+                resolvedPrior != null ? resolvedPrior.substring(0, 8) : "none");
 
         // Прерываем running-задачу в чате (reroute).
         for (var entry : taskRegistry.getActiveTasks(chatId).entrySet()) {
@@ -426,7 +465,7 @@ public class TaskMcpTools {
             }
         }
 
-        taskLauncher.launch(description, chatId, normalized);
+        taskLauncher.launch(description, chatId, normalized, resolvedPrior);
         return "Task started for repository " + normalized + ". Tell the user it is running.";
     }
 

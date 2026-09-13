@@ -40,6 +40,7 @@ class TaskMcpToolsTasksTest extends PostgresTestBase {
                 mock(TaskLauncher.class),
                 mock(HumanInputRegistry.class),
                 mock(TaskProgressRegistry.class),
+                mock(ChatMessageRepository.class),
                 "");
     }
 
