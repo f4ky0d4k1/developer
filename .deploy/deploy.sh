@@ -9,6 +9,10 @@ WORK_DIR="${WORK_DIR:-/opt/developer}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-15}"
 ATTEMPT_INTERVAL="${ATTEMPT_INTERVAL:-10}"
 
+# Иммутабельный тег образа (git SHA) передаётся из CI. Без него — fallback на master.
+IMAGE_TAG="${IMAGE_TAG:-master}"
+export IMAGE_TAG
+
 if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PASSWORD" ]; then
   echo "❌ Ошибка: не заданы DOCKER_USERNAME, DOCKER_PASSWORD"
   exit 1

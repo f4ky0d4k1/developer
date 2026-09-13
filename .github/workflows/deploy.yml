@@ -54,7 +54,9 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ env.DOCKER_IMAGE_DEV }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.DOCKER_IMAGE_DEV }}:${{ github.ref_name }}
+            ${{ env.DOCKER_IMAGE_DEV }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -64,7 +66,9 @@ jobs:
           context: .
           file: ./opencode.Dockerfile
           push: true
-          tags: ${{ env.DOCKER_IMAGE_OC }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.DOCKER_IMAGE_OC }}:${{ github.ref_name }}
+            ${{ env.DOCKER_IMAGE_OC }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -74,7 +78,9 @@ jobs:
           context: ./grafana-alloy
           file: ./grafana-alloy/Dockerfile
           push: true
-          tags: ${{ env.DOCKER_IMAGE_ALLOY }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.DOCKER_IMAGE_ALLOY }}:${{ github.ref_name }}
+            ${{ env.DOCKER_IMAGE_ALLOY }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -135,11 +141,12 @@ jobs:
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          IMAGE_TAG: ${{ github.sha }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: DOCKER_USERNAME,DOCKER_PASSWORD
+          envs: DOCKER_USERNAME,DOCKER_PASSWORD,IMAGE_TAG
           command_timeout: 30m
           script: |
             cd /opt/developer

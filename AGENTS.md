@@ -81,6 +81,8 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 - Push to `master` → `.github/workflows/deploy.yml` builds 3 images (`developer`, `opencode-with-mcp`, `grafana-alloy`)
   and deploys to a VPS via SSH. CI runs `./mvnw package -DskipTests`.
 - Dev compose = `docker-compose.yml`; prod = `.deploy/docker-compose.prod.yml`.
+- Прод тянет образы по **иммутабельному тегу** `${IMAGE_TAG}` (git SHA, передаёт CI): мутабельный `master` кешируется
+  pull-through-зеркалом `dockerhub.timeweb.cloud` и не подхватывает новые сборки (контейнер остаётся старым).
 - **Каждый коммит в `master` поднимает версию проекта.** В том же коммите обнови `<version>` в `pom.xml` (semver
   `MAJOR.MINOR.PATCH`); не пушь в `master` без bump'а версии. Коммит без изменения версии — ошибка.
 - Commit messages are written in Russian (match existing history).
