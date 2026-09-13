@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 
 import java.time.Instant;
 import java.util.Comparator;
@@ -182,7 +183,7 @@ public class OpenCodeClient {
     private Boolean messageExists(OpenCodeRunEntity run) {
         try {
             return api.getMessage(run.getSessionId(), run.getCwd(), run.getMessageId()) != null;
-        } catch (OpenCodeApi.OpenCodeApiException | ResourceAccessException e) {
+        } catch (OpenCodeApi.OpenCodeApiException | RestClientException e) {
             return null;
         }
     }
@@ -219,6 +220,18 @@ public class OpenCodeClient {
                 log.warn("[OpenCode:{}] сетевая ошибка опроса, жду следующего цикла: {}", agentName, e.getMessage());
                 if (taskId != null) {
                     progressRegistry.recordError(taskId, "network: " + e.getMessage());
+                }
+                sleep();
+                continue;
+            } catch (RestClientException e) {
+                // Ошибка чтения тела ответа (read timeout/reset при большом JSON) — не 5xx и не
+                // сетевой отказ соединения, а сбой извлечения: «Error while extracting response for
+                // type [java.lang.String] ... application/json». GET идемпотентен — продолжаем опрос,
+                // а не валим задачу (инцидент: developer падал сразу после старта).
+                log.warn("[OpenCode:{}] ошибка чтения ответа опроса ({}), жду следующего цикла: {}",
+                        agentName, e.getClass().getSimpleName(), e.getMessage());
+                if (taskId != null) {
+                    progressRegistry.recordError(taskId, "read: " + e.getMessage());
                 }
                 sleep();
                 continue;

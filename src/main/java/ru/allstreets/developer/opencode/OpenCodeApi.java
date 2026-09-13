@@ -82,7 +82,9 @@ public class OpenCodeApi {
 
         HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
         requestFactory.setConnectTimeout(Duration.ofSeconds(5));
-        requestFactory.setReadTimeout(Duration.ofSeconds(15));
+        // 60с, а не 15с: listMessages длинного multi-step прогона отдаёт большой JSON,
+        // быстрый read timeout рвал чтение тела → RestClientException «Error while extracting response».
+        requestFactory.setReadTimeout(Duration.ofSeconds(60));
 
         this.api = RestClient.builder()
                 .baseUrl(baseUrl)
