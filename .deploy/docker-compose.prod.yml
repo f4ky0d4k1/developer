@@ -1,16 +1,17 @@
 # Production override — использует готовые образы из Docker Hub вместо локальной сборки
 # Запуск: docker compose -f docker-compose.yml -f .deploy/docker-compose.prod.yml up -d
 #
-# IMAGE_TAG — иммутабельный тег образа (git SHA), передаётся deploy.sh из CI. Мутабельный
-# `master` кешируется pull-through-зеркалом Timeweb и не подхватывает новые сборки, поэтому
-# по умолчанию используется переданный тег, а `master` — только как fallback для ручного запуска.
+# Тег каждого сервиса — иммутабельный и меняется только при изменении ЕГО входов
+# (DEVELOPER_TAG/OPENCODE_TAG/ALLOY_TAG передаёт deploy.sh из CI). Так compose пересоздаёт
+# лишь изменившийся сервис. Мутабельный `master` кешируется pull-through-зеркалом Timeweb,
+# поэтому он только fallback для ручного запуска.
 services:
   developer:
-    image: dockerhub.timeweb.cloud/f4ky0d4k/developer:${IMAGE_TAG:-master}
+    image: dockerhub.timeweb.cloud/f4ky0d4k/developer:${DEVELOPER_TAG:-master}
     restart: always
 
   opencode:
-    image: dockerhub.timeweb.cloud/f4ky0d4k/opencode-with-mcp:${IMAGE_TAG:-master}
+    image: dockerhub.timeweb.cloud/f4ky0d4k/opencode-with-mcp:${OPENCODE_TAG:-master}
     restart: always
 
   postgres:
@@ -18,5 +19,5 @@ services:
     restart: always
 
   grafana-alloy:
-    image: dockerhub.timeweb.cloud/f4ky0d4k/grafana-alloy:${IMAGE_TAG:-master}
+    image: dockerhub.timeweb.cloud/f4ky0d4k/grafana-alloy:${ALLOY_TAG:-master}
     restart: always

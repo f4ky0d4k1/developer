@@ -14,9 +14,22 @@ jobs:
   build:
     name: Build and Push Docker Images
     runs-on: ubuntu-latest
+    outputs:
+      developer_tag: ${{ steps.tags.outputs.developer }}
+      opencode_tag: ${{ steps.tags.outputs.opencode }}
+      alloy_tag: ${{ steps.tags.outputs.alloy }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Compute per-service image tags
+        id: tags
+        # Тег каждого образа меняется только когда меняются ЕГО входы, поэтому compose
+        # пересоздаёт лишь изменившийся сервис (остальные не трогает).
+        run: |
+          echo "developer=dev-$(git log -1 --format=%h -- src/main pom.xml Dockerfile)" >> "$GITHUB_OUTPUT"
+          echo "opencode=oc-$(git log -1 --format=%h -- opencode.Dockerfile opencode-config)" >> "$GITHUB_OUTPUT"
+          echo "alloy=alloy-$(git log -1 --format=%h -- grafana-alloy)" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -56,7 +69,7 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKER_IMAGE_DEV }}:${{ github.ref_name }}
-            ${{ env.DOCKER_IMAGE_DEV }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE_DEV }}:${{ steps.tags.outputs.developer }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -68,7 +81,7 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKER_IMAGE_OC }}:${{ github.ref_name }}
-            ${{ env.DOCKER_IMAGE_OC }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE_OC }}:${{ steps.tags.outputs.opencode }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -80,7 +93,7 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKER_IMAGE_ALLOY }}:${{ github.ref_name }}
-            ${{ env.DOCKER_IMAGE_ALLOY }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE_ALLOY }}:${{ steps.tags.outputs.alloy }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -141,12 +154,14 @@ jobs:
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          IMAGE_TAG: ${{ github.sha }}
+          DEVELOPER_TAG: ${{ needs.build.outputs.developer_tag }}
+          OPENCODE_TAG: ${{ needs.build.outputs.opencode_tag }}
+          ALLOY_TAG: ${{ needs.build.outputs.alloy_tag }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: DOCKER_USERNAME,DOCKER_PASSWORD,IMAGE_TAG
+          envs: DOCKER_USERNAME,DOCKER_PASSWORD,DEVELOPER_TAG,OPENCODE_TAG,ALLOY_TAG
           command_timeout: 30m
           script: |
             cd /opt/developer

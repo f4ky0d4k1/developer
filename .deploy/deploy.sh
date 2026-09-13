@@ -9,9 +9,12 @@ WORK_DIR="${WORK_DIR:-/opt/developer}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-15}"
 ATTEMPT_INTERVAL="${ATTEMPT_INTERVAL:-10}"
 
-# Иммутабельный тег образа (git SHA) передаётся из CI. Без него — fallback на master.
-IMAGE_TAG="${IMAGE_TAG:-master}"
-export IMAGE_TAG
+# Иммутабельные теги образов (каждый меняется только при изменении входов сервиса) — из CI.
+# Без них — fallback на master (ручной запуск).
+DEVELOPER_TAG="${DEVELOPER_TAG:-master}"
+OPENCODE_TAG="${OPENCODE_TAG:-master}"
+ALLOY_TAG="${ALLOY_TAG:-master}"
+export DEVELOPER_TAG OPENCODE_TAG ALLOY_TAG
 
 if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PASSWORD" ]; then
   echo "❌ Ошибка: не заданы DOCKER_USERNAME, DOCKER_PASSWORD"
@@ -52,16 +55,17 @@ if [ "$pull_ok" -eq 0 ]; then
   echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin || \
     echo "⚠️ Docker Hub login не удался — пробую pull анонимно"
 
-  for img in developer opencode-with-mcp grafana-alloy; do
-    src="docker.io/f4ky0d4k/${img}:${IMAGE_TAG}"
-    dst="dockerhub.timeweb.cloud/f4ky0d4k/${img}:${IMAGE_TAG}"
+  pull_direct() {
+    local img="$1" tag="$2"
+    local src="docker.io/f4ky0d4k/${img}:${tag}"
+    local dst="dockerhub.timeweb.cloud/f4ky0d4k/${img}:${tag}"
     echo "--- pull ${src}"
-    if ! docker pull "${src}"; then
-      echo "❌ Не удалось pull ${src}"
-      exit 1
-    fi
-    docker tag "${src}" "${dst}"
-  done
+    docker pull "${src}" && docker tag "${src}" "${dst}"
+  }
+
+  pull_direct developer "${DEVELOPER_TAG}" || { echo "❌ Не удалось pull developer"; exit 1; }
+  pull_direct opencode-with-mcp "${OPENCODE_TAG}" || { echo "❌ Не удалось pull opencode-with-mcp"; exit 1; }
+  pull_direct grafana-alloy "${ALLOY_TAG}" || { echo "❌ Не удалось pull grafana-alloy"; exit 1; }
 fi
 
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
