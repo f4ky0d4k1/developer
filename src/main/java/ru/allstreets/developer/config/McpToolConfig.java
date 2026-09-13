@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import ru.allstreets.developer.mcp.GithubMcpTools;
+import ru.allstreets.developer.mcp.SystemMcpTools;
 import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
@@ -118,8 +119,9 @@ public class McpToolConfig {
                                      @Value("${fast-model.api-key:}") String apiKey,
                                      @Value("${fast-model.base-url:https://api.deepseek.com}") String baseUrl,
                                      GithubMcpTools githubTools,
-                                     TaskMcpTools taskTools) {
-        log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task (no sendMessage)", fastModel, baseUrl);
+                                     TaskMcpTools taskTools,
+                                     SystemMcpTools systemTools) {
+        log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task+system (no sendMessage)", fastModel, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -140,7 +142,7 @@ public class McpToolConfig {
         );
         return ChatClient.builder(chatModel)
                 .defaultSystem(loadPrompt("prompts/conversation-fast.md"))
-                .defaultTools(githubTools, taskTools)
+                .defaultTools(githubTools, taskTools, systemTools)
                 .build();
     }
 

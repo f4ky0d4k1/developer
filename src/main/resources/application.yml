@@ -2,6 +2,12 @@
 server:
   port: ${SERVER_PORT:8080}
 
+# Версия/имя системы — отдаётся оркестратором через инструмент getSystemInfo
+info:
+  app:
+    name: developer
+    version: @project.version@
+
 spring:
   application:
     name: developer

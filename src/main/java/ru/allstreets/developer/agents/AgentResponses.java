@@ -11,8 +11,12 @@ public final class AgentResponses {
     private AgentResponses() {
     }
 
+    /**
+     * Действия оркестратора. Запуска задачи среди них нет: запуск — это вызов инструмента
+     * {@code launch_task} (с обязательным {@code repo} на уровне схемы тула), а не action.
+     */
     public enum FastAction {
-        LAUNCH_TASK, HITL_ANSWER, ANSWER, STATUS, ERROR
+        HITL_ANSWER, ANSWER, STATUS, ERROR
     }
 
     public enum NextStep {
@@ -26,16 +30,15 @@ public final class AgentResponses {
     }
 
     /**
-     * Ответ fast mode — быстрый классификатор.
-     * {@code repo} — целевой репозиторий (owner/name) для LAUNCH_TASK; null → берётся
-     * репозиторий по умолчанию из конфигурации (github.default-repo).
+     * Ответ fast mode — быстрый классификатор. Запуск задачи выполняется инструментом
+     * {@code launch_task} (repo обязателен), поэтому здесь нет ни {@code repo}, ни action
+     * запуска — только решение о диалоге/статусе.
      */
     public record FastDecision(
             FastAction action,
             String taskId,
             String text,
-            String description,
-            String repo
+            String description
     ) {
     }
 

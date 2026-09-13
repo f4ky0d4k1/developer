@@ -16,11 +16,13 @@ import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 /**
  * Conversation Agent — оркестратор группового чата Telegram.
  * <p>
- * Fast mode: deepseek-v4-flash (дешёвая), умный промпт → LAUNCH_TASK / HITL_ANSWER / ANSWER / STATUS.
+ * Fast mode: deepseek-v4-flash (дешёвая), умный промпт → HITL_ANSWER / ANSWER / STATUS.
+ * Запуск задачи — инструмент {@code launch_task} (repo обязателен в схеме тула), не action.
  * <p>
  * Видит sliding window истории чата и активные задачи с pending-вопросами.
  */
@@ -114,6 +116,7 @@ public class ConversationAgent {
             try {
                 fastResult = fastChatClient.prompt()
                         .user(contextPrompt)
+                        .toolContext(Map.of("username", username != null ? username.toLowerCase() : ""))
                         .call()
                         .entity(AgentResponses.FastDecision.class);
             } catch (Exception e) {
@@ -133,7 +136,7 @@ public class ConversationAgent {
 
             if (fastResult == null) {
                 log.warn("ConversationAgent [fast]: пустой ответ после fallback");
-                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM", null);
+                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM");
             }
 
             log.info("ConversationAgent [fast]: action={} taskId={} description='{}'",
@@ -143,12 +146,11 @@ public class ConversationAgent {
             return new Decision(fastResult.action(),
                     fastResult.taskId() != null ? fastResult.taskId() : "",
                     fastResult.text() != null ? fastResult.text() : "",
-                    fastResult.description() != null ? fastResult.description() : "",
-                    fastResult.repo() != null ? fastResult.repo() : "");
+                    fastResult.description() != null ? fastResult.description() : "");
 
         } catch (Exception e) {
             log.error("ConversationAgent [fast]: ошибка: {}", e.getMessage(), e);
-            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage(), null);
+            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage());
         }
     }
 
@@ -159,13 +161,12 @@ public class ConversationAgent {
                 fallbackChatClient, fallbackChatClient, fullPrompt, AgentResponses.FastDecision.class);
         if (result == null) {
             log.error("ConversationAgent [fast]: callWithFallback вернул null — обе модели не смогли дать JSON");
-            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)", null);
+            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)");
         }
         return new Decision(result.action(),
                 result.taskId() != null ? result.taskId() : "",
                 result.text() != null ? result.text() : "",
-                result.description() != null ? result.description() : "",
-                result.repo() != null ? result.repo() : "");
+                result.description() != null ? result.description() : "");
     }
 
     private static final java.util.regex.Pattern TASK_ID_PATTERN =
@@ -228,7 +229,6 @@ public class ConversationAgent {
         return id != null && id.length() > 8 ? id.substring(0, 8) : id;
     }
 
-    public record Decision(AgentResponses.FastAction action, String taskId, String text, String description,
-                           String repo) {
+    public record Decision(AgentResponses.FastAction action, String taskId, String text, String description) {
     }
 }

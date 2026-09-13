@@ -2,8 +2,10 @@ package ru.allstreets.developer.mcp;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.*;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
@@ -12,7 +14,10 @@ import ru.allstreets.developer.opencode.TaskProgressRegistry;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
 import ru.allstreets.developer.telegram.TaskLauncher;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Локальные task tools для ConversationAgent (оркестратора).
@@ -37,6 +42,8 @@ public class TaskMcpTools {
     private final TaskLauncher taskLauncher;
     private final HumanInputRegistry humanInputRegistry;
     private final TaskProgressRegistry progressRegistry;
+    /** Кто имеет право запускать задачи (deny-by-default, если список пуст). */
+    private final Set<String> triggerUsers;
 
     public TaskMcpTools(
             ActiveTaskRegistry taskRegistry,
@@ -46,7 +53,8 @@ public class TaskMcpTools {
             TaskLockService taskLockService,
             TaskLauncher taskLauncher,
             HumanInputRegistry humanInputRegistry,
-            TaskProgressRegistry progressRegistry
+            TaskProgressRegistry progressRegistry,
+            @Value("${telegram.trigger-users:}") String triggerUsersRaw
     ) {
         this.taskRegistry = taskRegistry;
         this.taskRepo = taskRepo;
@@ -56,6 +64,13 @@ public class TaskMcpTools {
         this.taskLauncher = taskLauncher;
         this.humanInputRegistry = humanInputRegistry;
         this.progressRegistry = progressRegistry;
+        this.triggerUsers = triggerUsersRaw == null || triggerUsersRaw.isBlank()
+                ? Set.of()
+                : Arrays.stream(triggerUsersRaw.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(String::toLowerCase)
+                .collect(Collectors.toSet());
     }
 
     @Tool(description = "Get detailed status of a task: description, current agent node, git branch, PR number, " +
@@ -370,5 +385,52 @@ public class TaskMcpTools {
         sb.append("page ").append(page).append(" of ").append(Math.max(1, taskPage.getTotalPages()))
                 .append(" (total ").append(taskPage.getTotalElements()).append(" tasks)");
         return sb.toString();
+    }
+
+    @Tool(description = "Start a development task in this Telegram chat for the given repository. " +
+            "repo is REQUIRED (owner/name): if you do NOT know the target repository — do NOT call this tool, " +
+            "ask the user which repository to use first (never guess). Interrupts a running task in the chat, " +
+            "if any. Returns a confirmation to relay to the user.")
+    public String launchTask(
+            @ToolParam(description = "Telegram chat ID") long chatId,
+            @ToolParam(description = "Target repository, owner/name (required)") String repo,
+            @ToolParam(description = "Task description") String description,
+            ToolContext context
+    ) {
+        // Граница доступа: запускать может только trigger-user (username приходит из
+        // ToolContext — его задаёт приложение, модель не может его подделать).
+        String username = context != null ? (String) context.getContext().get("username") : null;
+        if (!isTriggerUser(username)) {
+            log.warn("MCP launchTask: пользователь '{}' не имеет права запускать задачи", username);
+            return "ERROR: user is not allowed to launch tasks.";
+        }
+
+        String normalized = TaskLauncher.normalizeRepo(repo);
+        if (normalized == null) {
+            // Схема тула требует repo, но защищаемся от пустой строки: возвращаем ошибку,
+            // которую модель увидит и уточнит у пользователя (никакого запуска без репо).
+            return "ERROR: repository (owner/name) is required. Ask the user which repository to use.";
+        }
+        if (description == null || description.isBlank()) {
+            return "ERROR: task description is required.";
+        }
+
+        log.info("MCP launchTask: chatId={}, repo={}", chatId, normalized);
+
+        // Прерываем running-задачу в чате (reroute).
+        for (var entry : taskRegistry.getActiveTasks(chatId).entrySet()) {
+            if (entry.getValue() == ActiveTaskRegistry.TaskStatus.RUNNING
+                    && taskLauncher.isRunning(entry.getKey())) {
+                taskLauncher.interruptRunningTask(entry.getKey(), chatId);
+                break;
+            }
+        }
+
+        taskLauncher.launch(description, chatId, normalized);
+        return "Task started for repository " + normalized + ". Tell the user it is running.";
+    }
+
+    private boolean isTriggerUser(String username) {
+        return !triggerUsers.isEmpty() && username != null && triggerUsers.contains(username.toLowerCase());
     }
 }

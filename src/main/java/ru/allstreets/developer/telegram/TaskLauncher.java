@@ -117,7 +117,7 @@ public class TaskLauncher {
 
     /**
      * Прервать running задачу: cancel future, очистить checkpoints, пометить FAILED.
-     * Запуск новой задачи делает caller (LAUNCH_TASK handler).
+     * Запуск новой задачи делает caller (инструмент launch_task).
      */
     public void interruptRunningTask(String taskId, long chatId) {
         Future<?> future = runningTasks.get(taskId);

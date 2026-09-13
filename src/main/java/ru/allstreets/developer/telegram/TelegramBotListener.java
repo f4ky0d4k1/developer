@@ -34,14 +34,10 @@ public class TelegramBotListener {
     @Value("${telegram.allowed-chat-ids:}")
     private String allowedChatIdsRaw;
 
-    @Value("${telegram.trigger-users:}")
-    private String triggerUsersRaw;
-
     @Value("${telegram.bot-username:}")
     private String botUsername;
 
     private Set<Long> allowedChatIds;
-    private Set<String> triggerUsers;
 
     public TelegramBotListener(TelegramGateway telegram, TaskLauncher taskLauncher,
                                ConversationAgent conversationAgent, ChatMemoryService chatMemory,
@@ -70,27 +66,10 @@ public class TelegramBotListener {
                     .collect(Collectors.toSet());
             log.info("Telegram whitelist активирован — разрешённые chatIds: {}", allowedChatIds);
         }
-
-        if (triggerUsersRaw == null || triggerUsersRaw.isBlank()) {
-            triggerUsers = Set.of();
-            log.warn("Telegram trigger-users (telegram.trigger-users) не задан — запуск агентов НЕ будет разрешён " +
-                    "ни одному пользователю (deny-by-default). Задайте telegram.trigger-users для включения.");
-        } else {
-            triggerUsers = Arrays.stream(triggerUsersRaw.split(","))
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .map(String::toLowerCase)
-                    .collect(Collectors.toSet());
-            log.info("Telegram trigger-users активирован — запуск агентов разрешён для: {}", triggerUsers);
-        }
     }
 
     private boolean isChatAllowed(long chatId) {
         return !allowedChatIds.isEmpty() && allowedChatIds.contains(chatId);
-    }
-
-    private boolean isTriggerUser(String username) {
-        return !triggerUsers.isEmpty() && username != null && triggerUsers.contains(username.toLowerCase());
     }
 
     /**
@@ -266,38 +245,6 @@ public class TelegramBotListener {
                         decision.action(), decision.taskId(), chat.id());
 
                 switch (decision.action()) {
-                    case LAUNCH_TASK -> {
-                        if (isTriggerUser(username)) {
-                            String desc = hasText(decision.description()) ? decision.description() : text;
-
-                            if (hasText(decision.text())) {
-                                telegram.sendMessage(chat.id(), decision.text());
-                            }
-
-                            // Если есть running задача в чате — interrupt + reroute
-                            var activeTasks = taskRegistry.getActiveTasks(chat.id());
-                            for (var entry : activeTasks.entrySet()) {
-                                if (entry.getValue() == ActiveTaskRegistry.TaskStatus.RUNNING
-                                        && taskLauncher.isRunning(entry.getKey())) {
-                                    taskLauncher.interruptRunningTask(entry.getKey(), chat.id());
-                                    break;
-                                }
-                            }
-
-                            if (!hasText(decision.repo())) {
-                                // Оркестратор не определил, к какому проекту относится задача —
-                                // уточняем у пользователя, не запускаем (без репо агент работать не может).
-                                log.warn("TG poll: LAUNCH_TASK без репозитория — прошу уточнить (chatId={})", chat.id());
-                                telegram.sendMessage(chat.id(),
-                                        "Уточни, пожалуйста, в каком репозитории (owner/name) выполнять задачу?");
-                            } else {
-                                taskLauncher.launch(desc, chat.id(), decision.repo());
-                            }
-                        } else {
-                            telegram.sendMessage(chat.id(),
-                                    "⚠️ Пользователь " + username + " не может запускать задачи.");
-                        }
-                    }
                     case HITL_ANSWER -> {
                         if (decision.taskId() != null && decision.text() != null) {
                             log.info("TG poll: HITL ответ для задачи {} — resume", decision.taskId());

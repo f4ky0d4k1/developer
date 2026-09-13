@@ -14,7 +14,6 @@ import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -22,42 +21,33 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Классификатор {@link ConversationAgent} должен прокидывать целевой репозиторий
- * ({@code owner/name}) из structured-output в {@link ConversationAgent.Decision#repo()},
- * чтобы {@code TelegramBotListener} передал его в {@code TaskLauncher} (иначе задача
- * падает fail-fast на подготовке слота).
+ * Классификатор: маппинг decision и ограничение контекста по задачам чата.
+ * Логики запуска здесь нет — запуск вынесен в инструмент {@code launch_task}.
  */
 class ConversationAgentTest {
 
     @Test
-    void processMessage_mapsRepoFromFastDecision() {
+    void processMessage_mapsDecisionFields() {
         ChatClient fast = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
         ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
         when(fast.prompt()).thenReturn(request);
         when(request.user(anyString())).thenReturn(request);
+        when(request.toolContext(anyMap())).thenReturn(request);
         when(request.call()).thenReturn(response);
         when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(
-                        AgentResponses.FastAction.LAUNCH_TASK, null, "Принял", "описание задачи",
-                        "allstreets/backend"));
+                new AgentResponses.FastDecision(AgentResponses.FastAction.STATUS, "abc12345", "статус", null));
 
-        ChatMemoryService chatMemory = mock(ChatMemoryService.class);
-        when(chatMemory.getHistoryText(anyLong())).thenReturn("");
-        when(chatMemory.getHistory(anyLong())).thenReturn(List.of());
-        ActiveTaskRegistry taskRegistry = mock(ActiveTaskRegistry.class);
-        when(taskRegistry.getChatTasksPage(anyLong(), anyInt(), anyInt())).thenReturn(Page.empty());
-        HumanInputRegistry humanInputRegistry = mock(HumanInputRegistry.class);
-        when(humanInputRegistry.getPendingQuestionsForChat(anyLong())).thenReturn(Map.of());
-
-        var agent = new ConversationAgent(fast, mock(ChatClient.class), chatMemory, taskRegistry,
-                humanInputRegistry, mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+                chatMemoryMock(), taskRegistryMock(Page.empty()),
+                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
                 mock(TaskMcpTools.class));
 
-        var decision = agent.processMessage(1L, "user", "сделай фичу в бэкенде");
+        var decision = agent.processMessage(1L, "user", "статус?");
 
-        assertEquals(AgentResponses.FastAction.LAUNCH_TASK, decision.action());
-        assertEquals("allstreets/backend", decision.repo());
+        assertEquals(AgentResponses.FastAction.STATUS, decision.action());
+        assertEquals("abc12345", decision.taskId());
+        assertEquals("статус", decision.text());
     }
 
     @Test
@@ -74,19 +64,14 @@ class ConversationAgentTest {
         ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
         when(fast.prompt()).thenReturn(request);
         when(request.user(anyString())).thenReturn(request);
+        when(request.toolContext(anyMap())).thenReturn(request);
         when(request.call()).thenReturn(response);
         when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null));
 
-        ChatMemoryService chatMemory = mock(ChatMemoryService.class);
-        when(chatMemory.getHistoryText(anyLong())).thenReturn("");
-        ActiveTaskRegistry taskRegistry = mock(ActiveTaskRegistry.class);
-        when(taskRegistry.getChatTasksPage(anyLong(), anyInt(), anyInt())).thenReturn(page);
-        HumanInputRegistry humanInputRegistry = mock(HumanInputRegistry.class);
-        when(humanInputRegistry.getPendingQuestionsForChat(anyLong())).thenReturn(Map.of());
-
-        var agent = new ConversationAgent(fast, mock(ChatClient.class), chatMemory, taskRegistry,
-                humanInputRegistry, mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+                chatMemoryMock(), taskRegistryMock(page),
+                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
                 mock(TaskMcpTools.class));
 
         agent.processMessage(1L, "user", "статус");
@@ -98,5 +83,23 @@ class ConversationAgentTest {
         assertTrue(prompt.contains("title 9"), "первая страница задач в контексте: " + prompt);
         assertTrue(prompt.contains("(+40 more"), "должно быть указано, что есть ещё задачи: " + prompt);
         assertFalse(prompt.contains("title 10"), "задачи за пределами страницы не должны попадать: " + prompt);
+    }
+
+    private static ChatMemoryService chatMemoryMock() {
+        ChatMemoryService chatMemory = mock(ChatMemoryService.class);
+        when(chatMemory.getHistoryText(anyLong())).thenReturn("");
+        return chatMemory;
+    }
+
+    private static ActiveTaskRegistry taskRegistryMock(Page<TaskEntity> page) {
+        ActiveTaskRegistry taskRegistry = mock(ActiveTaskRegistry.class);
+        when(taskRegistry.getChatTasksPage(anyLong(), anyInt(), anyInt())).thenReturn(page);
+        return taskRegistry;
+    }
+
+    private static HumanInputRegistry humanInputRegistryMock() {
+        HumanInputRegistry humanInputRegistry = mock(HumanInputRegistry.class);
+        when(humanInputRegistry.getPendingQuestionsForChat(anyLong())).thenReturn(Map.of());
+        return humanInputRegistry;
     }
 }
