@@ -1,0 +1,34 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "yandex-tracker": {
+      "enabled": true,
+      "type": "local",
+      "command": ["uvx", "yandex-tracker-mcp@latest"],
+      "environment": {
+        "TRACKER_TOKEN": "{file:./.secrets/yandex-token}",
+        "TRACKER_CLOUD_ORG_ID": "{file:./.secrets/yandex-org-id}",
+        "TRANSPORT": "stdio"
+      }
+    },
+    "yandex-wiki": {
+      "enabled": true,
+      "type": "local",
+      "command": ["uvx", "yandex-wiki-search-mcp@latest"],
+      "environment": {
+        "WIKI_TOKEN": "{file:./.secrets/yandex-token}",
+        "WIKI_CLOUD_ORG_ID": "{file:./.secrets/yandex-org-id}",
+        "TRANSPORT": "stdio"
+      }
+    },
+    "grafana": {
+      "enabled": true,
+      "type": "local",
+      "command": ["uvx", "mcp-grafana"],
+      "environment": {
+        "GRAFANA_URL": "https://allstreeets.grafana.net",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "{env:GRAFANA_TOKEN}"
+      }
+    }
+  }
+}
