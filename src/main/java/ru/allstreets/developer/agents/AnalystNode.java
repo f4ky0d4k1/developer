@@ -3,11 +3,15 @@ package ru.allstreets.developer.agents;
 import io.github.asekka.springai.agents.core.Agent;
 import io.github.asekka.springai.agents.core.AgentContext;
 import io.github.asekka.springai.agents.core.AgentResult;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.TaskRepository;
@@ -27,30 +31,31 @@ public class AnalystNode implements Agent {
 
     private static final Logger log = LoggerFactory.getLogger(AnalystNode.class);
 
+    /** Сколько раз нуджим агента в той же сессии, если он не вывел JSON-решение. */
+    private static final int MAX_CONTINUE_ATTEMPTS = 1;
+
+    /** Нудж агенту: остановился без итогового решения — довести до JSON-блока. */
+    private static final String CONTINUE_ANALYSIS_PROMPT = """
+            Ты остановился, не выведя итоговое JSON-решение. Продолжи и в финальном ответе ОБЯЗАТЕЛЬНО
+            выведи JSON-блок с полями nextStep (developer/tester/done), requiresDevelopment,
+            requiresTesting и spec. Не выводи только план — доведи анализ до решения.
+            """;
+
     private final OpenCodeClient openCode;
     private final OpenCodeSessionPool sessionPool;
-    private final ChatClient chatClient;
-    private final ChatClient fallbackChatClient;
     private final TelegramGateway telegram;
     private final HumanLoopService humanLoop;
-    private final StructuredOutputHelper structuredOutput;
     private final TaskRepository taskRepo;
     private final int maxClarifications;
 
     public AnalystNode(OpenCodeClient openCode, OpenCodeSessionPool sessionPool,
-                       @Qualifier("analystChatClient") ChatClient chatClient,
-                       @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                        TelegramGateway telegram, HumanLoopService humanLoop,
-                       StructuredOutputHelper structuredOutput,
                        TaskRepository taskRepo,
                        @Value("${opencode.max-clarifications:3}") int maxClarifications) {
         this.openCode = openCode;
         this.sessionPool = sessionPool;
-        this.chatClient = chatClient;
-        this.fallbackChatClient = fallbackChatClient;
         this.telegram = telegram;
         this.humanLoop = humanLoop;
-        this.structuredOutput = structuredOutput;
         this.taskRepo = taskRepo;
         this.maxClarifications = maxClarifications;
     }
@@ -154,6 +159,34 @@ public class AnalystNode implements Agent {
                             new RuntimeException("OpenCode returned empty output")));
                 }
 
+                // Пустой/усечённый вывод (агент «задумался вслух» и остановился) — не фейлим сразу,
+                // а нуджим агента в той же сессии довести до JSON-решения. Только после N попыток
+                // без решения — провал (см. guard ниже).
+                for (int attempt = 0; attempt < MAX_CONTINUE_ATTEMPTS && !hasDecisionBlock(currentOutput); attempt++) {
+                    log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} в сессии {}",
+                            currentOutput.length(), attempt + 1, MAX_CONTINUE_ATTEMPTS, currentSessionId);
+                    try {
+                        var contResult = openCode.runAgent("analyst", CONTINUE_ANALYSIS_PROMPT,
+                                workDir, taskId, currentSessionId);
+                        if (contResult.error() != null && !contResult.error().isEmpty()) {
+                            log.warn("Аналитик: нудж завершился ошибкой: {}", contResult.error());
+                            break;
+                        }
+                        String contOut = contResult.output() != null ? contResult.output() : "";
+                        if (contOut.isBlank()) {
+                            log.warn("Аналитик: нудж вернул пустой вывод");
+                            continue;
+                        }
+                        currentOutput = contOut;
+                        if (contResult.sessionId() != null) {
+                            currentSessionId = contResult.sessionId();
+                        }
+                    } catch (Exception e) {
+                        log.warn("Аналитик: ошибка нуджа: {}", e.getMessage());
+                        break;
+                    }
+                }
+
                 log.info("Аналитик: OpenCode завершён. output: {} символов, session={}",
                         currentOutput.length(), currentSessionId);
                 releaseSlotOnExit = false;
@@ -169,23 +202,10 @@ public class AnalystNode implements Agent {
             }
         }
 
-        // === Parse output via structured output ===
-        AgentResponses.AnalystResult result;
-        try {
-            String parsePrompt = """
-                    Извлеки JSON из ответа аналитика и верни как structured output.
-                    Если поле отсутствует — верни null. nextStep по умолчанию "done".
-                    
-                    Ответ аналитика:
-                    %s
-                    """.formatted(currentOutput);
-
-            result = structuredOutput.callWithFallback(
-                    chatClient, fallbackChatClient, parsePrompt, AgentResponses.AnalystResult.class);
-        } catch (Exception e) {
-            log.error("Аналитик: ошибка парсинга structured output: {}", e.getMessage());
-            result = null;
-        }
+        // === Детерминированный разбор JSON-решения (без второго LLM) ===
+        // Решение берётся из JSON-блока в финальном ответе аналитика (см. analyst.md).
+        // Невалидный/отсутствующий блок → null, дальше guard вернёт ошибку.
+        AgentResponses.AnalystResult result = parseDecision(currentOutput);
 
         // === Check if it needs clarification → interrupt (non-blocking) ===
         if (result != null && result.needsClarification() && result.clarificationQuestion() != null
@@ -216,25 +236,23 @@ public class AnalystNode implements Agent {
         sessionPool.cleanupSlot(slot);
         sessionPool.release(slot);
 
-        String spec;
-        String trackerIssueId;
-        String nextStep;
-        boolean requiresDev;
-        boolean requiresTest;
-
-        if (result != null) {
-            spec = (result.spec() != null && !result.spec().isBlank()) ? result.spec() : currentOutput;
-            trackerIssueId = "N/A".equalsIgnoreCase(result.trackerIssue()) ? null : result.trackerIssue();
-            nextStep = result.nextStep() != null ? result.nextStep().name().toLowerCase() : "done";
-            requiresDev = result.requiresDevelopment();
-            requiresTest = result.requiresTesting();
-        } else {
-            spec = currentOutput;
-            trackerIssueId = null;
-            nextStep = "done";
-            requiresDev = false;
-            requiresTest = false;
+        // Не даём пустому/нераспарсенному ответу молча закрыть задачу как «готово»
+        // (инцидент 3c7b33db: аналитик выдал вводную фразу без решения, задача «завершилась»).
+        // Контракт (analyst.md) требует JSON-блок с nextStep; без него это технический сбой.
+        if (!hasDecisionBlock(currentOutput) || result == null || result.nextStep() == null) {
+            log.error("Аналитик: решение не получено (decisionBlock={}, result={}, {} символов вывода) — провал",
+                    hasDecisionBlock(currentOutput), result == null ? "null" : "no-nextStep", currentOutput.length());
+            telegram.sendMessage(chatIdLong,
+                    "❌ Аналитик не вернул решение (пустой/нераспарсенный ответ) — задача не завершена");
+            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
+                    new IllegalStateException("Analyst produced no decision (missing nextStep)")));
         }
+
+        String spec = (result.spec() != null && !result.spec().isBlank()) ? result.spec() : currentOutput;
+        String trackerIssueId = "N/A".equalsIgnoreCase(result.trackerIssue()) ? null : result.trackerIssue();
+        String nextStep = result.nextStep().name().toLowerCase();
+        boolean requiresDev = result.requiresDevelopment();
+        boolean requiresTest = result.requiresTesting();
 
         log.info("Аналитик: tracker={}, nextStep={}, requiresDev={}, requiresTest={}, session={}",
                 trackerIssueId, nextStep, requiresDev, requiresTest, currentSessionId);
@@ -258,26 +276,24 @@ public class AnalystNode implements Agent {
         stateMap.put(TaskState.REQUIRES_DEVELOPMENT, requiresDev);
         stateMap.put(TaskState.REQUIRES_TESTING, requiresTest);
 
-        // SDD-поля для передачи разработчику
-        if (result != null) {
-            if (result.userStory() != null) {
-                stateMap.put(TaskState.USER_STORY, result.userStory());
-            }
-            if (result.acceptanceCriteria() != null && !result.acceptanceCriteria().isEmpty()) {
-                stateMap.put(TaskState.ACCEPTANCE_CRITERIA, result.acceptanceCriteria());
-            }
-            if (result.outOfScope() != null && !result.outOfScope().isEmpty()) {
-                stateMap.put(TaskState.OUT_OF_SCOPE, result.outOfScope());
-            }
-            if (result.constraints() != null && !result.constraints().isEmpty()) {
-                stateMap.put(TaskState.CONSTRAINTS, result.constraints());
-            }
-            if (result.contextLinks() != null && !result.contextLinks().isEmpty()) {
-                stateMap.put(TaskState.CONTEXT_LINKS, result.contextLinks());
-            }
-            if (result.taskBreakdown() != null && !result.taskBreakdown().isEmpty()) {
-                stateMap.put(TaskState.TASK_BREAKDOWN, result.taskBreakdown());
-            }
+        // SDD-поля для передачи разработчику (result гарантированно не null — см. guard выше)
+        if (result.userStory() != null) {
+            stateMap.put(TaskState.USER_STORY, result.userStory());
+        }
+        if (result.acceptanceCriteria() != null && !result.acceptanceCriteria().isEmpty()) {
+            stateMap.put(TaskState.ACCEPTANCE_CRITERIA, result.acceptanceCriteria());
+        }
+        if (result.outOfScope() != null && !result.outOfScope().isEmpty()) {
+            stateMap.put(TaskState.OUT_OF_SCOPE, result.outOfScope());
+        }
+        if (result.constraints() != null && !result.constraints().isEmpty()) {
+            stateMap.put(TaskState.CONSTRAINTS, result.constraints());
+        }
+        if (result.contextLinks() != null && !result.contextLinks().isEmpty()) {
+            stateMap.put(TaskState.CONTEXT_LINKS, result.contextLinks());
+        }
+        if (result.taskBreakdown() != null && !result.taskBreakdown().isEmpty()) {
+            stateMap.put(TaskState.TASK_BREAKDOWN, result.taskBreakdown());
         }
 
         taskRepo.findById(taskId).ifPresent(task -> {
@@ -402,6 +418,82 @@ public class AnalystNode implements Agent {
     private String truncate(String text, int maxLen) {
         return text.length() > maxLen ? text.substring(0, maxLen) + "..." : text;
     }
+
+    /**
+     * Контракт аналитика: в ответе обязателен JSON-блок с полем {@code nextStep}
+     * (см. {@code opencode-config/agents/analyst.md}). Детерминированная проверка —
+     * чтобы пустой/усечённый ответ не мог молча закрыть задачу как «готово».
+     */
+    private static boolean hasDecisionBlock(String output) {
+        return output != null && DECISION_BLOCK.matcher(output).find();
+    }
+
+    private static final java.util.regex.Pattern DECISION_BLOCK =
+            java.util.regex.Pattern.compile("(?i)\"?nextStep\"?\\s*[:=]");
+
+    /** Детерминированный разбор JSON-решения из финального ответа аналитика (без второго LLM). */
+    private AgentResponses.AnalystResult parseDecision(String output) {
+        try {
+            String json = extractJsonBlock(output);
+            if (json == null) {
+                log.warn("Аналитик: JSON-блок решения не найден в выводе");
+                return null;
+            }
+            return JSON_MAPPER.readValue(json, AgentResponses.AnalystResult.class);
+        } catch (Exception e) {
+            log.warn("Аналитик: не удалось разобрать JSON-решение: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Извлечь JSON-объект решения: сначала ```json-фенс, иначе сбалансированные скобки от последнего `{`. */
+    private static String extractJsonBlock(String text) {
+        if (text == null) {
+            return null;
+        }
+        Matcher fence = JSON_FENCE.matcher(text);
+        if (fence.find()) {
+            return fence.group(1).trim();
+        }
+        int start = text.lastIndexOf('{');
+        if (start < 0) {
+            return null;
+        }
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return text.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static final Pattern JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
+
+    private static final ObjectMapper JSON_MAPPER = JsonMapper.builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
+            .build();
 
     private static String toRepoUrl(String repo) {
         if (repo == null || repo.isBlank()) return null;

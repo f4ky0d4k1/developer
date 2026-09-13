@@ -372,7 +372,8 @@ chat_memory(
 Инцидент (13.09, задача `19617033`, репо `iamponamarev/allstreets-spring`):
 `OpenCode createSession HTTP 400: bad file reference "{file:./.secrets/yandex-token}"` — в целевом репозитории лежит
 **свой** `opencode.json` со ссылкой на несуществующий в слоте секрет. По докам OpenCode конфиги **мёржируются**
-(remote → global → custom → **project** → `.opencode` → inline → managed), и проектный файл перекрывает global/`OPENCODE_CONFIG`,
+(remote → global → custom → **project** → `.opencode` → inline → managed), и проектный файл перекрывает global/
+`OPENCODE_CONFIG`,
 а `{file:...}` резолвится на этапе загрузки — значит сессия падает до старта агента. Единственный надёжный путь —
 **убрать битый проектный конфиг из слота**, не сломав git.
 
@@ -383,10 +384,39 @@ chat_memory(
   копировать их в репо не нужно (образ developer содержит только jar и `opencode-config/` не видит);
 - **не коммитить**: tracked-файл помечаем `git update-index --skip-worktree` (переживает `git add -A` агента),
   untracked → пишем путь в локальный `.git/info/exclude`;
-- перед `fetch/checkout/pull` нейтрализация снимается (`--no-skip-worktree` + `git checkout --`), после — накладывается заново.
+- перед `fetch/checkout/pull` нейтрализация снимается (`--no-skip-worktree` + `git checkout --`), после — накладывается
+  заново.
 
 Тесты: `WorktreeManagerTest` — нейтрализация + чистое рабочее дерево + `git add -A` не стейджит конфиг; reuse слота;
 repo без конфига ничего не создаёт.
 
 Отмечено: `DeveloperApplicationTests.contextLoads` (голый `@SpringBootTest` без Testcontainers) требует хост `postgres`
 и падает в обычном окружении — предсуществующее, не связано с изменениями (проверено на базовой ревизии).
+
+## 29. Пустой ответ аналитика молча закрывал задачу как «готово»
+
+**Статус: DONE**
+
+Инцидент (13.09, задача `3c7b33db`): аналитик вернул одну вводную фразу «Начну с анализа задачи…», без единого
+tool-call (`steps=0, tokens=0`), без JSON-решения. Пайплайн выставил `analysis_done=true`, `requires_development=false`
+и закрыл задачу как **✅ завершённую** — код не писался, PR не создавался. Пользователь: «Всмысле завершена?».
+
+Причина — два места, оба «молчаливые»:
+
+1. **Промпт structured-output-разбора** прямо велел: *«nextStep по умолчанию done»* — то есть на ответе без решения
+   LLM-экстрактор подставлял `done`, и это принималось за осознанный вердикт «разработка не нужна».
+2. **`AnalystNode` при `result == null`** (не распарсили) молча уходил в ветку `else`: `spec = сырой текст`,
+   `nextStep = "done"`, `requiresDevelopment = false`, `analysis_done = true`.
+
+Исправлено (контракт аналитика — JSON-блок с `nextStep`, см. `analyst.md`, стр. «обязательно укажи nextStep»):
+
+- **решение разбирается детерминированно**: Jackson (`JsonMapper`, case-insensitive enums, игнор неизвестных полей)
+  из JSON-блока финального ответа — **второй LLM (`StructuredOutputHelper`) из пути решения убран**; невалидный блок → null;
+- **детерминированный guard**: `hasDecisionBlock(output)` — ответ без `nextStep` не считается решением;
+- **retry вместо мгновенного fail**: вывод без решения → агента нуджим в той же сессии
+  (`runAgent(..., sessionId)` с `CONTINUE_ANALYSIS_PROMPT`, до `MAX_CONTINUE_ATTEMPTS`); решение так и не получено →
+  `AgentResult.failed` + понятное «❌ Аналитик не вернул решение»; ветка `result == null` удалена как недостижимая.
+
+Тесты: `AnalystNodeDecisionGuardTest` (4) — пустой ответ + безуспешный нудж → ошибка; нудж довёл до решения → успех;
+решение есть, но разбор упал → ошибка; решение есть и распарсено → успех. (Старый `AnalystNodeFallbackTest` фиксировал
+как раз багованное «нет JSON → done».)
