@@ -77,9 +77,12 @@ public class OpenCodeApi {
     static final int MESSAGE_PAGE_SIZE = 20;
 
     /**
-     * Таймаут неактивности SSE-соединения. Heartbeat sidecar'а — 10с, поэтому 30с безопасно.
+     * Таймаут неактивности SSE-соединения = каденция опроса. {@code next()} возвращает null
+     * после этого времени без событий, и цикл опроса переспрашивает состояние по таймеру.
+     * Большое значение (было 30с) заставляло цикл поллить по heartbeat sidecar'а (≈30с) и
+     * «замирало» между heartbeat'ами — прогресс не обновлялся, deadline/stall не срабатывали.
      */
-    private static final int SSE_SOCKET_TIMEOUT_SECONDS = 30;
+    private static final int SSE_SOCKET_TIMEOUT_SECONDS = 5;
 
     private final RestClient api;
     private final ObjectMapper mapper;
