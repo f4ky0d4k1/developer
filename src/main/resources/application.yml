@@ -50,6 +50,14 @@ spring:
         multiplier: 2
         max-interval: 10s
 
+# Таймауты прямых HTTP-вызовов DeepSeek API (Spring AI OpenAiChatModel). Без них зависший
+# вызов навсегда блокирует единственный поток Telegram-опроса — бот перестаёт отвечать
+# на любые сообщения (инцидент 14.09.2026).
+llm:
+  http:
+    connect-timeout: ${LLM_CONNECT_TIMEOUT:5s}
+    read-timeout: ${LLM_READ_TIMEOUT:60s}
+
 # Fallback model для structured output retry (дешёвая, только JSON extraction)
 fallback-model:
   model: ${FALLBACK_MODEL:deepseek-v4-flash}

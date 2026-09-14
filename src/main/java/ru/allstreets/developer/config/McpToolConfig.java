@@ -8,12 +8,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.web.client.RestClient;
 import ru.allstreets.developer.mcp.GithubMcpTools;
 import ru.allstreets.developer.mcp.SystemMcpTools;
 import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -46,6 +48,15 @@ public class McpToolConfig {
     }
 
     /**
+     * {@code RestClient.Builder} с ограниченными таймаутами для прямых вызовов DeepSeek API.
+     * Без таймаута зависший запрос навсегда блокирует поток Telegram-опроса (инцидент 14.09.2026).
+     */
+    private RestClient.Builder llmRestClientBuilder(Duration connectTimeout, Duration readTimeout) {
+        return RestClient.builder()
+                .requestFactory(OpenAiHttpClientFactory.requestFactory(connectTimeout, readTimeout));
+    }
+
+    /**
      * Primary OpenAiChatModel для GLM API.
      * GLM использует /chat/completions (без /v1/), поэтому переопределяем auto-config bean.
      */
@@ -55,13 +66,16 @@ public class McpToolConfig {
             @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.api-key}") String apiKey,
             @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.base-url:https://api.deepseek.com}") String baseUrl,
             @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.chat.options.model:deepseek-v4-pro}") String model,
-            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.chat.options.temperature:0.3}") double temperature
+            @org.springframework.beans.factory.annotation.Value("${spring.ai.openai.chat.options.temperature:0.3}") double temperature,
+            @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
+            @Value("${llm.http.read-timeout:60s}") Duration readTimeout
     ) {
         log.info("Primary OpenAiChatModel: model={}, baseUrl={}", model, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .completionsPath("/chat/completions")
+                .restClientBuilder(llmRestClientBuilder(connectTimeout, readTimeout))
                 .build();
         return new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
@@ -120,12 +134,15 @@ public class McpToolConfig {
                                      @Value("${fast-model.base-url:https://api.deepseek.com}") String baseUrl,
                                      GithubMcpTools githubTools,
                                      TaskMcpTools taskTools,
-                                     SystemMcpTools systemTools) {
+                                     SystemMcpTools systemTools,
+                                     @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
+                                     @Value("${llm.http.read-timeout:60s}") Duration readTimeout) {
         log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task+system (no sendMessage)", fastModel, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .completionsPath("/chat/completions")
+                .restClientBuilder(llmRestClientBuilder(connectTimeout, readTimeout))
                 .build();
         var chatModel = new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
@@ -154,13 +171,16 @@ public class McpToolConfig {
     public ChatClient fallbackChatClient(
             @org.springframework.beans.factory.annotation.Value("${fallback-model.model:deepseek-v4-flash}") String fallbackModel,
             @org.springframework.beans.factory.annotation.Value("${fallback-model.api-key:}") String apiKey,
-            @org.springframework.beans.factory.annotation.Value("${fallback-model.base-url:https://api.deepseek.com}") String baseUrl
+            @org.springframework.beans.factory.annotation.Value("${fallback-model.base-url:https://api.deepseek.com}") String baseUrl,
+            @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
+            @Value("${llm.http.read-timeout:60s}") Duration readTimeout
     ) {
         log.info("Fallback ChatClient: model={}, baseUrl={}", fallbackModel, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .completionsPath("/chat/completions")
+                .restClientBuilder(llmRestClientBuilder(connectTimeout, readTimeout))
                 .build();
         var chatModel = new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
