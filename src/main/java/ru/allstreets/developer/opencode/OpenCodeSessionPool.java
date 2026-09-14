@@ -75,7 +75,9 @@ public class OpenCodeSessionPool {
         }
     }
 
-    /** Сколько слотов занято сейчас — для gauge утилизации. */
+    /**
+     * Сколько слотов занято сейчас — для gauge утилизации.
+     */
     private int activeSlots() {
         int n = 0;
         for (AtomicBoolean occupied : slotOccupied) {

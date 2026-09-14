@@ -64,6 +64,11 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
   `mvn test -Dtest=...`); the `tester` agent writes JUnit5/MockMvc/Testcontainers tests from the spec, and the developer
   implements against spec + tests. `nextStep: tester` in `analyst.md` means "tests first (TDD)". Don't accept
   implementation without tests.
+- **Check IDE inspections before commit.** For every file you touched, run the IDE problem view
+  (`idea_get_file_problems`) and **fix all warnings/errors** (unused imports, deprecations, raw types, etc.) before
+  committing — never commit with outstanding warnings.
+- **Reformat every touched file.** Apply the IDE formatter (`idea_reformat_file`) to each file you changed, so the diff
+  matches project style; do this before the commit, not after.
 
 ## Config & env
 

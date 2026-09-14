@@ -39,7 +39,9 @@ public class TaskMetrics {
         this.registry = registry;
     }
 
-    /** Завершение прогона агента: счётчик по статусу + таймер длительности. */
+    /**
+     * Завершение прогона агента: счётчик по статусу + таймер длительности.
+     */
     public void runFinished(String agent, String status, Duration duration) {
         Counter.builder("agent.runs")
                 .tags("agent", nz(agent), "status", nz(status))
@@ -52,7 +54,9 @@ public class TaskMetrics {
         }
     }
 
-    /** Время до первого текста агента (отзывчивость). */
+    /**
+     * Время до первого текста агента (отзывчивость).
+     */
     public void firstResponse(String agent, Duration duration) {
         if (duration == null) {
             return;
@@ -117,7 +121,9 @@ public class TaskMetrics {
                 .register(registry).increment();
     }
 
-    /** Регистрирует gauge'и утилизации пула слотов (idempotent — Micrometer дедупит по имени). */
+    /**
+     * Регистрирует gauge'и утилизации пула слотов (idempotent — Micrometer дедупит по имени).
+     */
     public void registerSlotGauges(java.util.function.IntSupplier activeSlots, int capacity) {
         io.micrometer.core.instrument.Gauge
                 .builder("opencode.slots.active", activeSlots, java.util.function.IntSupplier::getAsInt)
