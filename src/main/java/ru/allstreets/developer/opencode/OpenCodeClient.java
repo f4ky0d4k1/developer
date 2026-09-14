@@ -370,7 +370,7 @@ public class OpenCodeClient {
                 if (Boolean.TRUE.equals(busy)) {
                     lastProgressAt = nowMs;
                 } else if (nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
-                    return abortAndFail(run, agentName, taskId, prevText,
+                    throw abortAndThrow(run, agentName, taskId, prevText,
                             "OpenCode агент завис: сессия idle/неизвестна без прогресса " + stallTimeoutSeconds + "с", "stall");
                 }
 
@@ -478,11 +478,9 @@ public class OpenCodeClient {
     }
 
     /**
-     * Прервать сессию и вернуть ошибку, сохранив накопленный частичный вывод агента
-     * (иначе при таймауте теряем всю работу без следа).
+     * Прервать сессию и сохранить частичный вывод агента (иначе теряем работу без следа).
      */
-    private OpenCodeResult abortAndFail(OpenCodeRunEntity run, String agentName, String taskId,
-                                        String partialText, String message, String reason) {
+    private void abortSession(OpenCodeRunEntity run, String agentName, String partialText, String message) {
         log.warn("[OpenCode:{}] {} — abort сессии {} (сохранён частичный вывод: {} символов)",
                 agentName, message, run.getSessionId(), partialText.length());
         try {
@@ -495,7 +493,24 @@ public class OpenCodeClient {
         run.setError(message);
         run.setLastPolledAt(Instant.now());
         runRepo.save(run);
+    }
+
+    private OpenCodeResult abortAndFail(OpenCodeRunEntity run, String agentName, String taskId,
+                                        String partialText, String message, String reason) {
+        abortSession(run, agentName, partialText, message);
         return fail(taskId, agentName, message, run.getSessionId(), reason);
+    }
+
+    /**
+     * Прервать зависшую сессию, сохранить частичный вывод и выбросить транзиентную
+     * ошибку ({@link OpenCodeTransientException}) — граф ретраит узел: новая сессия +
+     * повторная отправка промпта (старая сессия помечена ABORTED, повтор безопасен).
+     */
+    private OpenCodeTransientException abortAndThrow(OpenCodeRunEntity run, String agentName, String taskId,
+                                                     String partialText, String message, String reason) {
+        abortSession(run, agentName, partialText, message);
+        recordFailure(taskId, agentName, message, reason);
+        return new OpenCodeTransientException("[" + agentName + "] " + message);
     }
 
     private String extractError(OpenCodeApi.MessageEnvelope env) {
@@ -512,12 +527,16 @@ public class OpenCodeClient {
         return fail(taskId, agentName, message, sessionId, "error");
     }
 
-    private OpenCodeResult fail(String taskId, String agentName, String message, String sessionId, String reason) {
+    private void recordFailure(String taskId, String agentName, String message, String reason) {
         if (taskId != null) {
             progressRegistry.recordError(taskId, message);
         }
         metrics.error(agentName, reason);
         log.info("Агент {} завершился с ошибкой: {}", agentName, message);
+    }
+
+    private OpenCodeResult fail(String taskId, String agentName, String message, String sessionId, String reason) {
+        recordFailure(taskId, agentName, message, reason);
         return new OpenCodeResult("error", "", null, null, List.of(), message, sessionId);
     }
 

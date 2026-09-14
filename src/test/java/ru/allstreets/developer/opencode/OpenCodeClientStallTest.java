@@ -6,7 +6,7 @@ import ru.allstreets.developer.metrics.TaskMetrics;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -17,13 +17,13 @@ import static org.mockito.Mockito.when;
 /**
  * Регрессия: когда sidecar принимает промпт, но assistant-ответ так и не появляется и сессия
  * становится idle (в {@code /session/status} её нет → {@code sessionIsBusy} = null), прогон
- * должен быть прерван как «зависший» за stallTimeout, а не висеть до полного timeout
- * (инцидент 0f9e5fa2 — зависал 1800с).
+ * должен быть прерван как «зависший» за stallTimeout с выбросом {@link OpenCodeTransientException}
+ * (её ретраит граф), а не висеть до полного timeout (инцидент 0f9e5fa2 — зависал 1800с).
  */
 class OpenCodeClientStallTest {
 
     @Test
-    void idleSessionWithNoReply_isAbortedAsStalled() throws Exception {
+    void idleSessionWithNoReply_throwsTransientStall() throws Exception {
         OpenCodeApi api = mock(OpenCodeApi.class);
         OpenCodeRunRepository runRepo = mock(OpenCodeRunRepository.class);
         TaskProgressRegistry progress = mock(TaskProgressRegistry.class);
@@ -43,12 +43,12 @@ class OpenCodeClientStallTest {
         var client = new OpenCodeClient(api, runRepo, progress, metrics, 30, 1, 2);
 
         long t0 = System.nanoTime();
-        var result = client.runAgent("developer", "промпт", "/work/slot-0", "task-1");
+        OpenCodeTransientException ex = assertThrows(OpenCodeTransientException.class,
+                () -> client.runAgent("developer", "промпт", "/work/slot-0", "task-1"));
         long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
 
-        assertEquals("error", result.status());
-        assertTrue(result.error() != null && result.error().contains("завис"),
-                "ожидали причину stall: " + result.error());
+        assertTrue(ex.getMessage() != null && ex.getMessage().contains("завис"),
+                "ожидали причину stall: " + ex.getMessage());
         assertTrue(elapsedMs < 10000,
                 "должен абортить за stall (~2-4с), а не ждать timeout 30с: " + elapsedMs + "ms");
     }

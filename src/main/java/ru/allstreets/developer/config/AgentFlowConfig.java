@@ -5,6 +5,7 @@ import io.github.asekka.springai.agents.core.AgentResult;
 import io.github.asekka.springai.agents.graph.AgentGraph;
 import io.github.asekka.springai.agents.graph.Edge;
 import io.github.asekka.springai.agents.graph.ErrorPolicy;
+import io.github.asekka.springai.agents.graph.RetryPolicy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import ru.allstreets.developer.agents.AnalystNode;
@@ -12,10 +13,18 @@ import ru.allstreets.developer.agents.DeveloperNode;
 import ru.allstreets.developer.agents.PostValidationNode;
 import ru.allstreets.developer.agents.TesterNode;
 import ru.allstreets.developer.checkpoint.JpaCheckpointStore;
+import ru.allstreets.developer.opencode.OpenCodeTransientException;
 import ru.allstreets.developer.state.TaskState;
+
+import java.time.Duration;
 
 @Configuration
 public class AgentFlowConfig {
+
+    /**
+     * Число попыток узла при транзиентной ошибке OpenCode (stall): 1 основная + 2 ретрая.
+     */
+    private static final int OPENCODE_RETRY_ATTEMPTS = 3;
 
     @Bean
     public AgentGraph agentGraph(
@@ -76,7 +85,33 @@ public class AgentFlowConfig {
                 .addEdge(Edge.onResult("post_validation",
                         (ctx, result) -> shouldReroute(ctx, result, "tester"), "tester"))
                 .errorPolicy(ErrorPolicy.FAIL_FAST)
+                .retryPolicy(openCodeRetryPolicy())
                 .build();
+    }
+
+    /**
+     * Ретрай-политика для транзиентных ошибок OpenCode (зависание стрима): до 2 повторов
+     * с экспоненциальной задержкой. Ошибки, не помеченные как транзиентные, не ретраятся.
+     */
+    static RetryPolicy openCodeRetryPolicy() {
+        return new RetryPolicy(
+                OPENCODE_RETRY_ATTEMPTS,
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(60),
+                2.0,
+                0.2,
+                AgentFlowConfig::isOpenCodeTransient);
+    }
+
+    static boolean isOpenCodeTransient(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof OpenCodeTransientException) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     private static boolean shouldReroute(AgentContext ctx, AgentResult result, String target) {

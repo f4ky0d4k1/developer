@@ -24,6 +24,7 @@ import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 
@@ -192,11 +193,12 @@ class OpenCodeClientTest extends PostgresTestBase {
         sidecar.stubFor(get(urlPathEqualTo("/session/status"))
                 .willReturn(okJson("{\"ses_1\":{\"type\":\"idle\"}}")));
 
-        // stall=2с срабатывает раньше большого бюджета (60с).
-        var result = client(60, 2).runAgent("analyst", "промпт", "/work/slot-0", "task-1");
+        // stall=2с срабатывает раньше большого бюджета (60с). Зависание — транзиентная ошибка,
+        // которую ретраит граф.
+        OpenCodeTransientException ex = assertThrows(OpenCodeTransientException.class,
+                () -> client(60, 2).runAgent("analyst", "промпт", "/work/slot-0", "task-1"));
 
-        assertEquals("error", result.status());
-        assertTrue(result.error().contains("завис"), "ожидали детекцию зависания: " + result.error());
+        assertTrue(ex.getMessage().contains("завис"), "ожидали детекцию зависания: " + ex.getMessage());
         sidecar.verify(postRequestedFor(urlPathEqualTo("/session/ses_1/abort")));
 
         var aborted = runRepo.findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(
