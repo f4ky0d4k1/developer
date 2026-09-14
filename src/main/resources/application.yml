@@ -60,13 +60,13 @@ llm:
 
 # Fallback model для structured output retry (дешёвая, только JSON extraction)
 fallback-model:
-  model: ${FALLBACK_MODEL:deepseek-v4-pro}
+  model: ${FALLBACK_MODEL:deepseek-flash}
   api-key: ${DEEPSEEK_API_KEY}
   base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
 
 # Fast mode model — быстрый классификатор (дешёвая, стабильная)
 fast-model:
-  model: ${FAST_MODEL:deepseek-v4-pro}
+  model: ${FAST_MODEL:deepseek-flash}
   api-key: ${DEEPSEEK_API_KEY}
   base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
 
@@ -82,7 +82,7 @@ opencode:
   # и прерываем (работающие агенты держат сессию busy и не трогаются). 300с — запас на
   # долгие tool-вызовы (mvn test и т.п.).
   stall-timeout-seconds: ${OPENCODE_STALL_TIMEOUT_SECONDS:300}
-  model: ${OPENCODE_MODEL:deepseek/deepseek-v4-pro}
+  model: ${OPENCODE_MODEL:deepseek/deepseek-flash}
   slots: 5
   max-clarifications: 10
 

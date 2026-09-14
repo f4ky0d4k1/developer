@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Полноценный e2e: {@link OpenCodeClient} против <b>реального</b> opencode sidecar
  * ({@code ghcr.io/anomalyco/opencode}) и <b>реальной штатной модели</b> DeepSeek
- * ({@code deepseek-v4-pro}).
+ * ({@code deepseek-flash}).
  * <p>
  * В отличие от детерминированных {@link OpenCodeApiTest} / {@link OpenCodeClientTest}
  * (WireMock-стаб sidecar — там же остаются все негативные сценарии: timeout, empty,
@@ -48,7 +48,7 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
      * modelID DeepSeek; дефолт — штатная flash-модель, переопределяется через E2E_MODEL.
      */
     private static final String MODEL_ID =
-            System.getenv().getOrDefault("E2E_MODEL", "deepseek-v4-pro");
+            System.getenv().getOrDefault("E2E_MODEL", "deepseek-flash");
 
     /**
      * Маркер, который просим вернуть модель, — доказательство, что промпт дошёл.

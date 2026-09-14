@@ -1,7 +1,7 @@
 ---
 description: Аналитик. Spec-Driven анализ задачи, составляет структурированную спеку, создаёт задачу в Tracker. НЕ вносит изменения в код.
 mode: primary
-model: deepseek/deepseek-v4-pro
+model: deepseek/deepseek-flash
 permissions:
   edit: deny
   bash: allow

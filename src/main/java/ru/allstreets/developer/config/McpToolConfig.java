@@ -129,7 +129,7 @@ public class McpToolConfig {
      * Системный промпт: prompts/conversation-fast.md.
      */
     @Bean("fastChatClient")
-    public ChatClient fastChatClient(@Value("${fast-model.model:deepseek-v4-pro}") String fastModel,
+    public ChatClient fastChatClient(@Value("${fast-model.model:deepseek-flash}") String fastModel,
                                      @Value("${fast-model.api-key:}") String apiKey,
                                      @Value("${fast-model.base-url:https://api.deepseek.com}") String baseUrl,
                                      GithubMcpTools githubTools,
@@ -169,7 +169,7 @@ public class McpToolConfig {
      */
     @Bean("fallbackChatClient")
     public ChatClient fallbackChatClient(
-            @org.springframework.beans.factory.annotation.Value("${fallback-model.model:deepseek-v4-pro}") String fallbackModel,
+            @org.springframework.beans.factory.annotation.Value("${fallback-model.model:deepseek-flash}") String fallbackModel,
             @org.springframework.beans.factory.annotation.Value("${fallback-model.api-key:}") String apiKey,
             @org.springframework.beans.factory.annotation.Value("${fallback-model.base-url:https://api.deepseek.com}") String baseUrl,
             @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
