@@ -43,6 +43,7 @@ public class OpenCodeClient {
     private final OpenCodeApi api;
     private final OpenCodeRunRepository runRepo;
     private final TaskProgressRegistry progressRegistry;
+    private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final int timeoutSeconds;
     private final int pollIntervalSeconds;
     private final int stallTimeoutSeconds;
@@ -51,6 +52,7 @@ public class OpenCodeClient {
             OpenCodeApi api,
             OpenCodeRunRepository runRepo,
             TaskProgressRegistry progressRegistry,
+            ru.allstreets.developer.metrics.TaskMetrics metrics,
             @Value("${opencode.timeout-seconds:300}") int timeoutSeconds,
             @Value("${opencode.poll-interval-seconds:5}") int pollIntervalSeconds,
             @Value("${opencode.stall-timeout-seconds:120}") int stallTimeoutSeconds
@@ -58,17 +60,27 @@ public class OpenCodeClient {
         this.api = api;
         this.runRepo = runRepo;
         this.progressRegistry = progressRegistry;
+        this.metrics = metrics;
         this.timeoutSeconds = timeoutSeconds;
         this.pollIntervalSeconds = Math.max(1, pollIntervalSeconds);
         this.stallTimeoutSeconds = Math.max(pollIntervalSeconds, stallTimeoutSeconds);
     }
 
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId) {
-        return runAgentInternal(agentName, prompt, cwd, taskId, null);
+        return runAgent(agentName, prompt, cwd, taskId, null);
     }
 
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId, String sessionId) {
-        return runAgentInternal(agentName, prompt, cwd, taskId, sessionId);
+        long startNanos = System.nanoTime();
+        OpenCodeResult result = null;
+        try {
+            result = runAgentInternal(agentName, prompt, cwd, taskId, sessionId);
+            return result;
+        } finally {
+            // Метрика длительности прогона — на любой исход (успех/ошибка/исключение = error).
+            metrics.runFinished(agentName, result != null ? result.status() : "error",
+                    java.time.Duration.ofNanos(System.nanoTime() - startNanos));
+        }
     }
 
     private OpenCodeResult runAgentInternal(String agentName, String prompt, String cwd, String taskId, String sessionId) {
@@ -86,11 +98,11 @@ public class OpenCodeClient {
                 health = api.health();
             } catch (Exception e) {
                 log.error("[OpenCode:{}] sidecar недоступен (health gate): {}", agentName, e.getMessage());
-                return fail(taskId, agentName, "OpenCode sidecar недоступен: " + e.getMessage(), null);
+                return fail(taskId, agentName, "OpenCode sidecar недоступен: " + e.getMessage(), null, "sidecar-unavailable");
             }
             if (!health.healthy()) {
                 log.error("[OpenCode:{}] sidecar unhealthy (version={})", agentName, health.version());
-                return fail(taskId, agentName, "OpenCode sidecar unhealthy (version=" + health.version() + ")", null);
+                return fail(taskId, agentName, "OpenCode sidecar unhealthy (version=" + health.version() + ")", null, "sidecar-unhealthy");
             }
 
             // === 2. Resume-or-start ===
@@ -199,6 +211,8 @@ public class OpenCodeClient {
         // Прогресс за текущий прогон: сколько tool-вызовов и шагов уже записали (дельта опроса).
         int recordedToolCalls = 0;
         java.util.Set<String> recordedSteps = new java.util.HashSet<>();
+        long pollStartNanos = System.nanoTime();
+        boolean ttfbRecorded = false;
 
         OpenCodeApi.EventSource events = openEventWake(run.getCwd());
         try {
@@ -206,7 +220,7 @@ public class OpenCodeClient {
                 long now = System.currentTimeMillis();
                 if (now > deadline) {
                     return abortAndFail(run, agentName, taskId, prevText,
-                            "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName);
+                            "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName, "timeout");
                 }
 
                 List<OpenCodeApi.MessageEnvelope> messages;
@@ -220,7 +234,7 @@ public class OpenCodeClient {
                     run.setError(e.getMessage());
                     run.setLastPolledAt(Instant.now());
                     runRepo.save(run);
-                    return fail(taskId, agentName, e.getMessage(), sessionId);
+                    return fail(taskId, agentName, e.getMessage(), sessionId, "list-messages-error");
                 } catch (ResourceAccessException e) {
                     // Транзиентная сетевая ошибка: агент продолжает работать в sidecar,
                     // не прерываем опрос, ждём до конца бюджета.
@@ -266,29 +280,43 @@ public class OpenCodeClient {
                     run.setStatus(OpenCodeRunStatus.FAILED);
                     run.setError(err);
                     runRepo.save(run);
-                    return fail(taskId, agentName, err, sessionId);
+                    return fail(taskId, agentName, err, sessionId, "agent-error");
                 }
 
-                // Прогресс steps/tool_calls/tokens: считаем дельту по всем шагам-сообщениям, чтобы не
-                // дублировать при повторных опросах. Раньше recordToolCall/recordStepFinish вообще не
-                // вызывались — steps/tool_calls всегда были 0 (known gap).
-                if (taskId != null) {
-                    List<OpenCodeApi.Part> parts = replies.stream()
-                            .flatMap(r -> r.parts() == null
-                                    ? java.util.stream.Stream.<OpenCodeApi.Part>empty()
-                                    : r.parts().stream())
-                            .toList();
-                    long toolTotal = parts.stream().filter(p -> "tool".equals(p.type())).count();
-                    if (toolTotal > recordedToolCalls) {
-                        parts.stream().filter(p -> "tool".equals(p.type()))
-                                .skip(recordedToolCalls)
-                                .forEach(p -> progressRegistry.recordToolCall(taskId,
-                                        p.tool() != null && !p.tool().isBlank() ? p.tool() : "tool"));
-                        recordedToolCalls = (int) toolTotal;
+                // Прогресс steps/tool_calls/tokens (дельта, чтобы не дублировать при повторных опросах)
+                // + метрики (агрегаты Prometheus — без taskId в тегах).
+                List<OpenCodeApi.Part> parts = replies.stream()
+                        .flatMap(r -> r.parts() == null
+                                ? java.util.stream.Stream.<OpenCodeApi.Part>empty()
+                                : r.parts().stream())
+                        .toList();
+                long toolTotal = parts.stream().filter(p -> "tool".equals(p.type())).count();
+                if (toolTotal > recordedToolCalls) {
+                    List<OpenCodeApi.Part> newTools = parts.stream()
+                            .filter(p -> "tool".equals(p.type())).skip(recordedToolCalls).toList();
+                    for (OpenCodeApi.Part p : newTools) {
+                        String tool = p.tool() != null && !p.tool().isBlank() ? p.tool() : "tool";
+                        metrics.toolCall(agentName, tool);
+                        if (taskId != null) {
+                            progressRegistry.recordToolCall(taskId, tool);
+                        }
                     }
-                    for (OpenCodeApi.MessageEnvelope r : replies) {
-                        String rid = r.info() != null ? r.info().id() : null;
-                        if (r.isCompleted() && rid != null && recordedSteps.add(rid)) {
+                    recordedToolCalls = (int) toolTotal;
+                }
+                for (OpenCodeApi.MessageEnvelope r : replies) {
+                    String rid = r.info() != null ? r.info().id() : null;
+                    if (r.isCompleted() && rid != null && recordedSteps.add(rid)) {
+                        metrics.steps(agentName, 1);
+                        OpenCodeApi.Tokens tk = r.info().tokens();
+                        if (tk != null) {
+                            metrics.tokens(agentName, "input", orZero(tk.input()));
+                            metrics.tokens(agentName, "output", orZero(tk.output()));
+                            metrics.tokens(agentName, "reasoning", orZero(tk.reasoning()));
+                        }
+                        if (r.info().cost() != null) {
+                            metrics.cost(agentName, api.model(), r.info().cost());
+                        }
+                        if (taskId != null) {
                             progressRegistry.recordStepFinish(taskId, r.info().totalTokens(),
                                     r.info().cost() != null ? r.info().cost() : 0.0,
                                     r.info().finish() != null ? r.info().finish() : "stop");
@@ -301,6 +329,11 @@ public class OpenCodeClient {
                         .collect(Collectors.joining());
                 if (full.length() > prevText.length()) {
                     String delta = full.substring(prevText.length());
+                    if (!ttfbRecorded && !full.isBlank()) {
+                        ttfbRecorded = true;
+                        metrics.firstResponse(agentName,
+                                java.time.Duration.ofNanos(System.nanoTime() - pollStartNanos));
+                    }
                     if (taskId != null) {
                         progressRegistry.recordText(taskId, delta);
                     }
@@ -333,7 +366,7 @@ public class OpenCodeClient {
                     lastProgressAt = nowMs;
                 } else if (Boolean.FALSE.equals(busy) && nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
                     return abortAndFail(run, agentName, taskId, prevText,
-                            "OpenCode агент завис: сессия idle без прогресса " + stallTimeoutSeconds + "с");
+                            "OpenCode агент завис: сессия idle без прогресса " + stallTimeoutSeconds + "с", "stall");
                 }
 
                 events = waitForEventOrFallback(events, pollIntervalSeconds);
@@ -444,7 +477,7 @@ public class OpenCodeClient {
      * (иначе при таймауте теряем всю работу без следа).
      */
     private OpenCodeResult abortAndFail(OpenCodeRunEntity run, String agentName, String taskId,
-                                        String partialText, String message) {
+                                        String partialText, String message, String reason) {
         log.warn("[OpenCode:{}] {} — abort сессии {} (сохранён частичный вывод: {} символов)",
                 agentName, message, run.getSessionId(), partialText.length());
         try {
@@ -457,7 +490,7 @@ public class OpenCodeClient {
         run.setError(message);
         run.setLastPolledAt(Instant.now());
         runRepo.save(run);
-        return fail(taskId, agentName, message, run.getSessionId());
+        return fail(taskId, agentName, message, run.getSessionId(), reason);
     }
 
     private String extractError(OpenCodeApi.MessageEnvelope env) {
@@ -471,11 +504,20 @@ public class OpenCodeClient {
     }
 
     private OpenCodeResult fail(String taskId, String agentName, String message, String sessionId) {
+        return fail(taskId, agentName, message, sessionId, "error");
+    }
+
+    private OpenCodeResult fail(String taskId, String agentName, String message, String sessionId, String reason) {
         if (taskId != null) {
             progressRegistry.recordError(taskId, message);
         }
+        metrics.error(agentName, reason);
         log.info("Агент {} завершился с ошибкой: {}", agentName, message);
         return new OpenCodeResult("error", "", null, null, List.of(), message, sessionId);
+    }
+
+    private static long orZero(Integer v) {
+        return v != null ? v : 0;
     }
 
     private void sleep() {

@@ -80,17 +80,22 @@ class OpenCodeClientTest extends PostgresTestBase {
     }
 
     private OpenCodeClient client() {
-        return new OpenCodeClient(api, runRepo, progress, 300, 1, 120);
+        return new OpenCodeClient(api, runRepo, progress, metrics(), 300, 1, 120);
     }
 
     @SuppressWarnings("SameParameterValue")
     private OpenCodeClient client(int timeoutSeconds) {
-        return new OpenCodeClient(api, runRepo, progress, timeoutSeconds, 1, 120);
+        return new OpenCodeClient(api, runRepo, progress, metrics(), timeoutSeconds, 1, 120);
     }
 
     @SuppressWarnings("SameParameterValue")
     private OpenCodeClient client(int timeoutSeconds, int stallTimeoutSeconds) {
-        return new OpenCodeClient(api, runRepo, progress, timeoutSeconds, 1, stallTimeoutSeconds);
+        return new OpenCodeClient(api, runRepo, progress, metrics(), timeoutSeconds, 1, stallTimeoutSeconds);
+    }
+
+    private static ru.allstreets.developer.metrics.TaskMetrics metrics() {
+        return new ru.allstreets.developer.metrics.TaskMetrics(
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     @Test

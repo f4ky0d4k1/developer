@@ -140,6 +140,11 @@ public class OpenCodeApi {
         log.info("OpenCodeApi инициализирован: baseUrl={}, model={}, пул соединений: 50 total / 20 per route", baseUrl, model);
     }
 
+    /** Модель провайдера ({@code provider/modelID}) — для тега метрик. */
+    public String model() {
+        return model;
+    }
+
     // ---------------------------------------------------------------------
     // Публичные операции
     // ---------------------------------------------------------------------

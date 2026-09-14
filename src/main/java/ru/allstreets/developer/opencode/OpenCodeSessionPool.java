@@ -22,17 +22,20 @@ public class OpenCodeSessionPool {
 
     private final Semaphore semaphore;
     private final WorktreeManager worktreeManager;
+    private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final int slotCount;
     private final AtomicBoolean[] slotOccupied;
 
-    public OpenCodeSessionPool(WorktreeManager worktreeManager) {
+    public OpenCodeSessionPool(WorktreeManager worktreeManager, ru.allstreets.developer.metrics.TaskMetrics metrics) {
         this.worktreeManager = worktreeManager;
+        this.metrics = metrics;
         this.slotCount = worktreeManager.getSlotCount();
         this.semaphore = new Semaphore(slotCount, true);
         this.slotOccupied = new AtomicBoolean[slotCount];
         for (int i = 0; i < slotCount; i++) {
             slotOccupied[i] = new AtomicBoolean(false);
         }
+        metrics.registerSlotGauges(this::activeSlots, slotCount);
         log.info("OpenCode пул инициализирован: {} слотов", slotCount);
     }
 
@@ -43,10 +46,12 @@ public class OpenCodeSessionPool {
      * @return индекс слота или -1 при таймауте
      */
     public int acquire(long timeoutSeconds) {
+        long startNanos = System.nanoTime();
         try {
             log.info("Ожидание свободного слота OpenCode (таймаут {}с)...", timeoutSeconds);
             if (!semaphore.tryAcquire(timeoutSeconds, TimeUnit.SECONDS)) {
                 log.warn("Таймаут ожидания слота OpenCode");
+                metrics.slotWait(java.time.Duration.ofNanos(System.nanoTime() - startNanos));
                 return -1;
             }
 
@@ -54,6 +59,7 @@ public class OpenCodeSessionPool {
             for (int i = 0; i < slotCount; i++) {
                 if (slotOccupied[i].compareAndSet(false, true)) {
                     log.info("Слот {} занят", i);
+                    metrics.slotWait(java.time.Duration.ofNanos(System.nanoTime() - startNanos));
                     return i;
                 }
             }
@@ -67,6 +73,17 @@ public class OpenCodeSessionPool {
             log.error("Прервано ожидание слота OpenCode");
             return -1;
         }
+    }
+
+    /** Сколько слотов занято сейчас — для gauge утилизации. */
+    private int activeSlots() {
+        int n = 0;
+        for (AtomicBoolean occupied : slotOccupied) {
+            if (occupied.get()) {
+                n++;
+            }
+        }
+        return n;
     }
 
     /**

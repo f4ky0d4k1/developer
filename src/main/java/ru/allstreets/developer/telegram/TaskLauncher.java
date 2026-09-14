@@ -36,6 +36,7 @@ public class TaskLauncher {
     private final ThreadPoolExecutor executor;
     private final ChatClient fallbackChatClient;
     private final PriorTaskContextBuilder priorTaskContextBuilder;
+    private final ru.allstreets.developer.metrics.TaskMetrics metrics;
 
     // taskId → running future (для interrupt)
     private final Map<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
@@ -47,7 +48,8 @@ public class TaskLauncher {
                         OpenCodeSessionPool sessionPool,
                         @Qualifier("taskExecutor") ThreadPoolExecutor executor,
                         @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
-                        PriorTaskContextBuilder priorTaskContextBuilder) {
+                        PriorTaskContextBuilder priorTaskContextBuilder,
+                        ru.allstreets.developer.metrics.TaskMetrics metrics) {
         this.graphRunner = graphRunner;
         this.telegram = telegram;
         this.taskRegistry = taskRegistry;
@@ -57,6 +59,7 @@ public class TaskLauncher {
         this.executor = executor;
         this.fallbackChatClient = fallbackChatClient;
         this.priorTaskContextBuilder = priorTaskContextBuilder;
+        this.metrics = metrics;
     }
 
     public void launch(String taskDescription, long chatId, String targetRepo) {
@@ -199,6 +202,7 @@ public class TaskLauncher {
                 // Не помечаем как completed/failed — задача остаётся RUNNING.
                 log.info("TaskLauncher: задача {} приостановлена (HITL interrupt: {})",
                         taskId.substring(0, 8), result.interrupt().reason());
+                metrics.taskOutcome("awaiting_hitl");
                 return;
             }
 
@@ -213,9 +217,11 @@ public class TaskLauncher {
                     resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
                 }
                 taskRegistry.markCompleted(taskId);
+                metrics.taskOutcome("completed");
             } else {
                 resultMsg = "❌ Задача " + taskId.substring(0, 8) + " не завершена: " + result.error();
                 taskRegistry.markFailed(taskId);
+                metrics.taskOutcome("failed");
             }
 
             telegram.sendMessage(chatId, resultMsg, taskId);
@@ -229,6 +235,7 @@ public class TaskLauncher {
             String errMsg = "❌ Ошибка: " + e.getMessage();
             telegram.sendMessage(chatId, errMsg, taskId);
             taskRegistry.markFailed(taskId);
+            metrics.taskOutcome("failed");
         } finally {
             runningTasks.remove(taskId);
         }

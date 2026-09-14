@@ -107,7 +107,9 @@ class OpenCodeClientRealSidecarIT extends PostgresTestBase {
 
     private OpenCodeClient client() {
         // Живая модель отвечает медленнее стаба — бюджет/сталл увеличены.
-        return new OpenCodeClient(api, runRepo, progress, 180, 2, 180);
+        return new OpenCodeClient(api, runRepo, progress,
+                new ru.allstreets.developer.metrics.TaskMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                180, 2, 180);
     }
 
     @Test

@@ -35,7 +35,9 @@ class OpenCodeClientProgressTest {
         when(api.listMessagesPage(anyString(), anyString(), anyInt(), any()))
                 .thenAnswer(inv -> new OpenCodeApi.MessagesPage(List.of(stepWithTools(parentId[0])), null));
 
-        var client = new OpenCodeClient(api, runRepo, progress, 30, 1, 30);
+        var client = new OpenCodeClient(api, runRepo, progress,
+                new ru.allstreets.developer.metrics.TaskMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                30, 1, 30);
         var result = client.runAgent("developer", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("success", result.status());
