@@ -5,7 +5,7 @@ discovery.relabel "metrics_developer" {
 
 	rule {
 		target_label = "instance"
-		replacement  = "agent-system"
+		replacement  = "prod"
 	}
 
 	rule {
@@ -17,7 +17,7 @@ discovery.relabel "metrics_developer" {
 prometheus.scrape "metrics_developer" {
 	targets      = discovery.relabel.metrics_developer.output
 	forward_to   = [prometheus.relabel.metrics_developer.receiver]
-	job_name     = "integrations/spring-boot"
+	job_name     = "agent-system"
 	metrics_path = "/actuator/prometheus"
 }
 
