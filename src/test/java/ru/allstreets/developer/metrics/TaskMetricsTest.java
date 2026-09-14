@@ -57,4 +57,16 @@ class TaskMetricsTest {
         assertEquals(1.0, registry.get("agent.errors")
                 .tags("agent", "unknown", "reason", "stall").counter().count());
     }
+
+    @Test
+    void slotGauges_reportLiveValues() {
+        var active = new java.util.concurrent.atomic.AtomicInteger(2);
+        metrics.registerSlotGauges(active::get, 5);
+
+        assertEquals(2.0, registry.get("opencode.slots.active").gauge().value());
+        assertEquals(5.0, registry.get("opencode.slots.capacity").gauge().value());
+
+        active.set(4);
+        assertEquals(4.0, registry.get("opencode.slots.active").gauge().value());
+    }
 }

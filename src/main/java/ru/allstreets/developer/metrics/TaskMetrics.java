@@ -125,11 +125,15 @@ public class TaskMetrics {
      * Регистрирует gauge'и утилизации пула слотов (idempotent — Micrometer дедупит по имени).
      */
     public void registerSlotGauges(java.util.function.IntSupplier activeSlots, int capacity) {
+        // strongReference(true): иначе Micrometer держит supplier/lambda слабо и после GC gauge
+        // становится NaN (инцидент: opencode_slots_active = NaN).
         io.micrometer.core.instrument.Gauge
                 .builder("opencode.slots.active", activeSlots, java.util.function.IntSupplier::getAsInt)
+                .strongReference(true)
                 .register(registry);
         io.micrometer.core.instrument.Gauge
                 .builder("opencode.slots.capacity", () -> capacity)
+                .strongReference(true)
                 .register(registry);
     }
 
