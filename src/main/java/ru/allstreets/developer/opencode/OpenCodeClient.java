@@ -302,6 +302,7 @@ public class OpenCodeClient {
                         }
                     }
                     recordedToolCalls = (int) toolTotal;
+                    lastProgressAt = now;
                 }
                 for (OpenCodeApi.MessageEnvelope r : replies) {
                     String rid = r.info() != null ? r.info().id() : null;
@@ -321,6 +322,7 @@ public class OpenCodeClient {
                                     r.info().cost() != null ? r.info().cost() : 0.0,
                                     r.info().finish() != null ? r.info().finish() : "stop");
                         }
+                        lastProgressAt = now;
                     }
                 }
 
@@ -358,15 +360,18 @@ public class OpenCodeClient {
                 }
 
                 // Детекция зависания: работающий агент держит сессию busy/retry (в т.ч. во время
-                // долгих tool-вызовов) — такие long-running задачи не трогаем. Если же sidecar
-                // явно сообщает idle, а прогресса нет уже stallTimeout — агент завис.
+                // долгих tool-вызовов) — такие long-running задачи не трогаем. Если же sidecar НЕ
+                // busy (idle, либо сессии вообще нет в /session/status — busy=null) и прогресса нет
+                // уже stallTimeout — агент завис. Раньше busy=null игнорировался, и idle-агент
+                // (opencode принял промпт, но assistant-ответ так и не появился) висел до timeout
+                // (инцидент 0f9e5fa2).
                 Boolean busy = sessionIsBusy(sessionId);
                 long nowMs = System.currentTimeMillis();
                 if (Boolean.TRUE.equals(busy)) {
                     lastProgressAt = nowMs;
-                } else if (Boolean.FALSE.equals(busy) && nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
+                } else if (nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
                     return abortAndFail(run, agentName, taskId, prevText,
-                            "OpenCode агент завис: сессия idle без прогресса " + stallTimeoutSeconds + "с", "stall");
+                            "OpenCode агент завис: сессия idle/неизвестна без прогресса " + stallTimeoutSeconds + "с", "stall");
                 }
 
                 events = waitForEventOrFallback(events, pollIntervalSeconds);
