@@ -572,3 +572,24 @@ assistant-сообщению с `parentID == messageID`. Реализация: `
 
 `OpenCodeClientTest` (WireMock-стаб sidecar) переведён на новый контракт через кастомный
 `ResponseTransformer`, эмулирующий messageID → user + assistant по parentID.
+
+## Часть 9. Нерешённые проблемы (2026-09-14)
+
+1. **opencode иногда не выдаёт assistant-ответ.** Наблюдалось на задаче `0f9e5fa2`: в сессии
+   только наш user-промпт, assistant-сообщений нет, `GET /session/status` возвращает `{}`
+   (сессия idle). Прогон висит до `opencode.timeout-seconds` (1800с). Точная причина неизвестна —
+   нужны файловые логи opencode (теперь `--print-logs` → Loki, `service_name=opencode`); закрыть
+   после воспроизведения по логам.
+
+2. **Нет guard'а «нет первого ответа».** Если assistant-сообщение не появилось за N секунд, мы не
+   абортим: `sessionIsBusy` при отсутствии сессии в `/session/status` возвращает `null`, а страж
+   «зависла» срабатывает только при `Boolean.FALSE`. Нужно: (а) дедлайн первого ответа
+   (abort с `reason=no-response`), (б) трактовать `null` + ноль replies как idle.
+
+3. **Session lost при пересоздании контейнера opencode.** `listMessages 404 Session not found`
+   жёстко валит узел (recover через restart с чекпоинта работает, но не автоматически). Данные
+   сессий персистятся (`opencode-data` volume), но in-flight генерация при рестарте не
+   восстанавливается. Задача: самовосстановление (новая сессия/перезапуск узла), а не жёсткий fail.
+
+4. **Testcontainers / Real-sidecar IT нестабильны при холодном Docker** (долгий старт контейнеров,
+   таймаут > 5 мин). Не код; решается прогревом Docker перед прогоном.
