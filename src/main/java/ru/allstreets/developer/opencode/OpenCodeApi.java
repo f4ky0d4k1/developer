@@ -92,7 +92,7 @@ public class OpenCodeApi {
 
     public OpenCodeApi(
             @SuppressWarnings("HttpUrlsUsage") @Value("${opencode.base-url:http://opencode:4096}") String baseUrl,
-            @Value("${opencode.model:deepseek/deepseek-flash}") String model
+            @Value("${opencode.model:deepseek/deepseek-v4-pro}") String model
     ) {
         this.model = model;
         this.baseUrl = baseUrl;
@@ -143,7 +143,9 @@ public class OpenCodeApi {
         log.info("OpenCodeApi инициализирован: baseUrl={}, model={}, пул соединений: 50 total / 20 per route", baseUrl, model);
     }
 
-    /** Модель провайдера ({@code provider/modelID}) — для тега метрик. */
+    /**
+     * Модель провайдера ({@code provider/modelID}) — для тега метрик.
+     */
     public String model() {
         return model;
     }

@@ -12,7 +12,7 @@ observability.
 - `DeveloperApplicationTests.contextLoads` is a bare `@SpringBootTest` that needs Postgres at host `postgres` (no
   Testcontainers) — it fails locally and is skipped in CI (`-DskipTests`). Exclude it in any full run.
 - Integration tests need Docker Desktop: `PostgresTestBase` starts a shared Testcontainers Postgres (static).
-  `OpenCodeClientRealSidecarIT` is a real e2e — real opencode sidecar + the real DeepSeek model (`deepseek-v4-flash`,
+  `OpenCodeClientRealSidecarIT` is a real e2e — real opencode sidecar + the real DeepSeek model (`deepseek-v4-pro`,
   override via `E2E_MODEL`); it is environment-gated on `DEEPSEEK_API_KEY` (skipped without it, so plain `mvn test`
   needs no key/network). Deterministic protocol/negative cases stay on WireMock stubs (`OpenCodeApiTest`,
   `OpenCodeClientTest`).

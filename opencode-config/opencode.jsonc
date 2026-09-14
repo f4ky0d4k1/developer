@@ -7,8 +7,7 @@
         "baseURL": "https://api.deepseek.com"
       },
       "models": {
-        "deepseek-v4-pro": {},
-        "deepseek-flash": {}
+        "deepseek-v4-pro": {}
       }
     }
   },

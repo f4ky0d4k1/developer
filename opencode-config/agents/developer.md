@@ -1,7 +1,7 @@
 ---
 description: Разработчик. Пишет код по ТЗ и тестам. Коммитит в ветку.
 mode: primary
-model: deepseek/deepseek-flash
+model: deepseek/deepseek-v4-pro
 permissions:
   edit: allow
   bash: allow

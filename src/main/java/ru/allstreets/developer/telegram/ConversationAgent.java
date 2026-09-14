@@ -21,7 +21,7 @@ import java.util.Map;
 /**
  * Conversation Agent — оркестратор группового чата Telegram.
  * <p>
- * Fast mode: deepseek-v4-flash (дешёвая), умный промпт → HITL_ANSWER / ANSWER / STATUS.
+ * Fast mode: deepseek-v4-pro, умный промпт → HITL_ANSWER / ANSWER / STATUS.
  * Запуск задачи — инструмент {@code launch_task} (repo обязателен в схеме тула), не action.
  * <p>
  * Видит sliding window истории чата и активные задачи с pending-вопросами.
