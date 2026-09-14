@@ -7,7 +7,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientException;
 
+import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
@@ -198,141 +200,214 @@ public class OpenCodeClient {
         int recordedToolCalls = 0;
         java.util.Set<String> recordedSteps = new java.util.HashSet<>();
 
-        while (true) {
-            long now = System.currentTimeMillis();
-            if (now > deadline) {
-                return abortAndFail(run, agentName, taskId, prevText,
-                        "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName);
-            }
+        OpenCodeApi.EventSource events = openEventWake(run.getCwd());
+        try {
+            while (true) {
+                long now = System.currentTimeMillis();
+                if (now > deadline) {
+                    return abortAndFail(run, agentName, taskId, prevText,
+                            "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName);
+                }
 
-            List<OpenCodeApi.MessageEnvelope> messages;
-            try {
-                messages = api.listMessages(sessionId, run.getCwd());
-            } catch (OpenCodeApi.OpenCodeApiException e) {
-                // 5xx от sidecar — не retriable (п.1.2 плана); фиксируем провал прогона.
-                log.error("[OpenCode:{}] listMessages HTTP {} (ref={}): {}",
-                        agentName, e.status(), e.errorRef(), e.getMessage());
-                run.setStatus(OpenCodeRunStatus.FAILED);
-                run.setError(e.getMessage());
+                List<OpenCodeApi.MessageEnvelope> messages;
+                try {
+                    messages = collectRunMessages(sessionId, run.getCwd(), messageId);
+                } catch (OpenCodeApi.OpenCodeApiException e) {
+                    // 5xx от sidecar — не retriable (п.1.2 плана); фиксируем провал прогона.
+                    log.error("[OpenCode:{}] listMessages HTTP {} (ref={}): {}",
+                            agentName, e.status(), e.errorRef(), e.getMessage());
+                    run.setStatus(OpenCodeRunStatus.FAILED);
+                    run.setError(e.getMessage());
+                    run.setLastPolledAt(Instant.now());
+                    runRepo.save(run);
+                    return fail(taskId, agentName, e.getMessage(), sessionId);
+                } catch (ResourceAccessException e) {
+                    // Транзиентная сетевая ошибка: агент продолжает работать в sidecar,
+                    // не прерываем опрос, ждём до конца бюджета.
+                    log.warn("[OpenCode:{}] сетевая ошибка опроса, жду следующего цикла: {}", agentName, e.getMessage());
+                    if (taskId != null) {
+                        progressRegistry.recordError(taskId, "network: " + e.getMessage());
+                    }
+                    sleep();
+                    continue;
+                } catch (RestClientException e) {
+                    // Ошибка чтения тела ответа (read timeout/reset при большом JSON) — не 5xx и не
+                    // сетевой отказ соединения, а сбой извлечения: «Error while extracting response for
+                    // type [java.lang.String] ... application/json». GET идемпотентен — продолжаем опрос,
+                    // а не валим задачу (инцидент: developer падал сразу после старта).
+                    log.warn("[OpenCode:{}] ошибка чтения ответа опроса ({}), жду следующего цикла: {}",
+                            agentName, e.getClass().getSimpleName(), e.getMessage());
+                    if (taskId != null) {
+                        progressRegistry.recordError(taskId, "read: " + e.getMessage());
+                    }
+                    sleep();
+                    continue;
+                }
+
                 run.setLastPolledAt(Instant.now());
-                runRepo.save(run);
-                return fail(taskId, agentName, e.getMessage(), sessionId);
-            } catch (ResourceAccessException e) {
-                // Транзиентная сетевая ошибка: агент продолжает работать в sidecar,
-                // не прерываем опрос, ждём до конца бюджета.
-                log.warn("[OpenCode:{}] сетевая ошибка опроса, жду следующего цикла: {}", agentName, e.getMessage());
-                if (taskId != null) {
-                    progressRegistry.recordError(taskId, "network: " + e.getMessage());
-                }
-                sleep();
-                continue;
-            } catch (RestClientException e) {
-                // Ошибка чтения тела ответа (read timeout/reset при большом JSON) — не 5xx и не
-                // сетевой отказ соединения, а сбой извлечения: «Error while extracting response for
-                // type [java.lang.String] ... application/json». GET идемпотентен — продолжаем опрос,
-                // а не валим задачу (инцидент: developer падал сразу после старта).
-                log.warn("[OpenCode:{}] ошибка чтения ответа опроса ({}), жду следующего цикла: {}",
-                        agentName, e.getClass().getSimpleName(), e.getMessage());
-                if (taskId != null) {
-                    progressRegistry.recordError(taskId, "read: " + e.getMessage());
-                }
-                sleep();
-                continue;
-            }
 
-            run.setLastPolledAt(Instant.now());
-
-            // Ответы агента. OpenCode создаёт ОТДЕЛЬНОЕ assistant-сообщение на каждый шаг,
-            // и все они имеют один parentID == нашему messageId. Шаг с finish=tool-calls —
-            // промежуточный (агент продолжит после выполнения инструментов), его нельзя
-            // принимать за результат: именно на нём мы останавливались и получали пустой или
-            // вступительный текст вместо финального решения (инциденты 3c7b33db, fab06fb0).
-            List<OpenCodeApi.MessageEnvelope> replies = messages.stream()
-                    .filter(m -> m.info() != null && messageId.equals(m.info().parentID()))
-                    .filter(OpenCodeApi.MessageEnvelope::isAssistant)
-                    .sorted(Comparator.comparingLong((OpenCodeApi.MessageEnvelope m) ->
-                            m.info().time() != null ? m.info().time().created() : Long.MAX_VALUE))
-                    .toList();
-
-            OpenCodeApi.MessageEnvelope errored = replies.stream()
-                    .filter(OpenCodeApi.MessageEnvelope::hasError).findFirst().orElse(null);
-            if (errored != null) {
-                String err = extractError(errored);
-                log.error("[OpenCode:{}] агент завершился с ошибкой: {}", agentName, err);
-                run.setStatus(OpenCodeRunStatus.FAILED);
-                run.setError(err);
-                runRepo.save(run);
-                return fail(taskId, agentName, err, sessionId);
-            }
-
-            // Прогресс steps/tool_calls/tokens: считаем дельту по всем шагам-сообщениям, чтобы не
-            // дублировать при повторных опросах. Раньше recordToolCall/recordStepFinish вообще не
-            // вызывались — steps/tool_calls всегда были 0 (known gap).
-            if (taskId != null) {
-                List<OpenCodeApi.Part> parts = replies.stream()
-                        .flatMap(r -> r.parts() == null
-                                ? java.util.stream.Stream.<OpenCodeApi.Part>empty()
-                                : r.parts().stream())
+                // Ответы агента. OpenCode создаёт ОТДЕЛЬНОЕ assistant-сообщение на каждый шаг,
+                // и все они имеют один parentID == нашему messageId. Шаг с finish=tool-calls —
+                // промежуточный (агент продолжит после выполнения инструментов), его нельзя
+                // принимать за результат: именно на нём мы останавливались и получали пустой или
+                // вступительный текст вместо финального решения (инциденты 3c7b33db, fab06fb0).
+                List<OpenCodeApi.MessageEnvelope> replies = messages.stream()
+                        .filter(m -> m.info() != null && messageId.equals(m.info().parentID()))
+                        .filter(OpenCodeApi.MessageEnvelope::isAssistant)
+                        .sorted(Comparator.comparingLong((OpenCodeApi.MessageEnvelope m) ->
+                                m.info().time() != null ? m.info().time().created() : Long.MAX_VALUE))
                         .toList();
-                long toolTotal = parts.stream().filter(p -> "tool".equals(p.type())).count();
-                if (toolTotal > recordedToolCalls) {
-                    parts.stream().filter(p -> "tool".equals(p.type()))
-                            .skip(recordedToolCalls)
-                            .forEach(p -> progressRegistry.recordToolCall(taskId,
-                                    p.tool() != null && !p.tool().isBlank() ? p.tool() : "tool"));
-                    recordedToolCalls = (int) toolTotal;
+
+                OpenCodeApi.MessageEnvelope errored = replies.stream()
+                        .filter(OpenCodeApi.MessageEnvelope::hasError).findFirst().orElse(null);
+                if (errored != null) {
+                    String err = extractError(errored);
+                    log.error("[OpenCode:{}] агент завершился с ошибкой: {}", agentName, err);
+                    run.setStatus(OpenCodeRunStatus.FAILED);
+                    run.setError(err);
+                    runRepo.save(run);
+                    return fail(taskId, agentName, err, sessionId);
                 }
-                for (OpenCodeApi.MessageEnvelope r : replies) {
-                    String rid = r.info() != null ? r.info().id() : null;
-                    if (r.isCompleted() && rid != null && recordedSteps.add(rid)) {
-                        progressRegistry.recordStepFinish(taskId, r.info().totalTokens(),
-                                r.info().cost() != null ? r.info().cost() : 0.0,
-                                r.info().finish() != null ? r.info().finish() : "stop");
+
+                // Прогресс steps/tool_calls/tokens: считаем дельту по всем шагам-сообщениям, чтобы не
+                // дублировать при повторных опросах. Раньше recordToolCall/recordStepFinish вообще не
+                // вызывались — steps/tool_calls всегда были 0 (known gap).
+                if (taskId != null) {
+                    List<OpenCodeApi.Part> parts = replies.stream()
+                            .flatMap(r -> r.parts() == null
+                                    ? java.util.stream.Stream.<OpenCodeApi.Part>empty()
+                                    : r.parts().stream())
+                            .toList();
+                    long toolTotal = parts.stream().filter(p -> "tool".equals(p.type())).count();
+                    if (toolTotal > recordedToolCalls) {
+                        parts.stream().filter(p -> "tool".equals(p.type()))
+                                .skip(recordedToolCalls)
+                                .forEach(p -> progressRegistry.recordToolCall(taskId,
+                                        p.tool() != null && !p.tool().isBlank() ? p.tool() : "tool"));
+                        recordedToolCalls = (int) toolTotal;
+                    }
+                    for (OpenCodeApi.MessageEnvelope r : replies) {
+                        String rid = r.info() != null ? r.info().id() : null;
+                        if (r.isCompleted() && rid != null && recordedSteps.add(rid)) {
+                            progressRegistry.recordStepFinish(taskId, r.info().totalTokens(),
+                                    r.info().cost() != null ? r.info().cost() : 0.0,
+                                    r.info().finish() != null ? r.info().finish() : "stop");
+                        }
                     }
                 }
-            }
 
-            // Текст всех шагов: прогресс (delta) и итоговый вывод.
-            String full = replies.stream().map(OpenCodeApi.MessageEnvelope::text)
-                    .collect(Collectors.joining());
-            if (full.length() > prevText.length()) {
-                String delta = full.substring(prevText.length());
-                if (taskId != null) {
-                    progressRegistry.recordText(taskId, delta);
+                // Текст всех шагов: прогресс (delta) и итоговый вывод.
+                String full = replies.stream().map(OpenCodeApi.MessageEnvelope::text)
+                        .collect(Collectors.joining());
+                if (full.length() > prevText.length()) {
+                    String delta = full.substring(prevText.length());
+                    if (taskId != null) {
+                        progressRegistry.recordText(taskId, delta);
+                    }
+                    prevText = full;
+                    lastProgressAt = now;
                 }
-                prevText = full;
-                lastProgressAt = now;
-            }
 
-            // Завершение прогона — только финальный шаг (finish != tool-calls).
-            OpenCodeApi.MessageEnvelope last = replies.isEmpty() ? null : replies.getLast();
-            if (last != null && last.isCompleted()) {
-                if (isFinalFinish(last.info().finish())) {
-                    log.info("Агент {} завершил работу. session={}, шагов={}, текст={} символов, finish={}, parts={}",
-                            agentName, sessionId, replies.size(), full.length(),
-                            last.info().finish(), last.partTypes());
-                    run.setStatus(OpenCodeRunStatus.DONE);
-                    run.setOutput(full);
-                    runRepo.save(run);
-                    return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
+                // Завершение прогона — только финальный шаг (finish != tool-calls).
+                OpenCodeApi.MessageEnvelope last = replies.isEmpty() ? null : replies.getLast();
+                if (last != null && last.isCompleted()) {
+                    if (isFinalFinish(last.info().finish())) {
+                        log.info("Агент {} завершил работу. session={}, шагов={}, текст={} символов, finish={}, parts={}",
+                                agentName, sessionId, replies.size(), full.length(),
+                                last.info().finish(), last.partTypes());
+                        run.setStatus(OpenCodeRunStatus.DONE);
+                        run.setOutput(full);
+                        runRepo.save(run);
+                        return new OpenCodeResult("success", full, null, null, List.of(), null, sessionId);
+                    }
+                    log.debug("[OpenCode:{}] шаг {} завершён (finish={}) — промежуточный, продолжаю опрос",
+                            agentName, last.info().id(), last.info().finish());
                 }
-                log.debug("[OpenCode:{}] шаг {} завершён (finish={}) — промежуточный, продолжаю опрос",
-                        agentName, last.info().id(), last.info().finish());
-            }
 
-            // Детекция зависания: работающий агент держит сессию busy/retry (в т.ч. во время
-            // долгих tool-вызовов) — такие long-running задачи не трогаем. Если же sidecar
-            // явно сообщает idle, а прогресса нет уже stallTimeout — агент завис.
-            Boolean busy = sessionIsBusy(sessionId);
-            long nowMs = System.currentTimeMillis();
-            if (Boolean.TRUE.equals(busy)) {
-                lastProgressAt = nowMs;
-            } else if (Boolean.FALSE.equals(busy) && nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
-                return abortAndFail(run, agentName, taskId, prevText,
-                        "OpenCode агент завис: сессия idle без прогресса " + stallTimeoutSeconds + "с");
-            }
+                // Детекция зависания: работающий агент держит сессию busy/retry (в т.ч. во время
+                // долгих tool-вызовов) — такие long-running задачи не трогаем. Если же sidecar
+                // явно сообщает idle, а прогресса нет уже stallTimeout — агент завис.
+                Boolean busy = sessionIsBusy(sessionId);
+                long nowMs = System.currentTimeMillis();
+                if (Boolean.TRUE.equals(busy)) {
+                    lastProgressAt = nowMs;
+                } else if (Boolean.FALSE.equals(busy) && nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
+                    return abortAndFail(run, agentName, taskId, prevText,
+                            "OpenCode агент завис: сессия idle без прогресса " + stallTimeoutSeconds + "с");
+                }
 
+                events = waitForEventOrFallback(events, pollIntervalSeconds);
+            }
+        } finally {
+            closeQuietly(events);
+        }
+    }
+
+    /**
+     * Собрать сообщения текущего прогона пагинированным обходом: страницы идут от новых к
+     * старым, останавливаемся, когда дошли до нашего промпта ({@code info.id == messageId})
+     * или страницы закончились. Каждый HTTP-запрос ограничен {@link OpenCodeApi#MESSAGE_PAGE_SIZE},
+     * поэтому payload не растёт с историей сессии (инцидент: Premature end of Content-Length).
+     */
+    private List<OpenCodeApi.MessageEnvelope> collectRunMessages(String sessionId, String cwd, String messageId) {
+        List<OpenCodeApi.MessageEnvelope> all = new ArrayList<>();
+        String cursor = null;
+        while (true) {
+            OpenCodeApi.MessagesPage page = api.listMessagesPage(sessionId, cwd, OpenCodeApi.MESSAGE_PAGE_SIZE, cursor);
+            for (OpenCodeApi.MessageEnvelope m : page.items()) {
+                all.add(m);
+                if (messageId.equals(m.info() != null ? m.info().id() : null)) {
+                    return all;
+                }
+            }
+            if (page.items().isEmpty() || page.nextCursor() == null) {
+                return all;
+            }
+            cursor = page.nextCursor();
+        }
+    }
+
+    /**
+     * Открыть SSE-подписку на события sidecar'а. Возвращает {@code null}, если подписка
+     * недоступна (упал sidecar, нет сети) — тогда цикл опроса поллит по таймеру.
+     */
+    private OpenCodeApi.EventSource openEventWake(String cwd) {
+        try {
+            return api.openEvents(cwd);
+        } catch (Exception e) {
+            log.warn("[OpenCode] SSE /event недоступен, поллю по таймеру: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Ожидание следующего события SSE (пробуждение) либо, если SSE нет/оборвался, — обычный
+     * таймер. Возвращает источник событий, если он жив, иначе {@code null} (переключаемся на
+     * поллинг по таймеру).
+     */
+    private OpenCodeApi.EventSource waitForEventOrFallback(OpenCodeApi.EventSource events, int pollIntervalSeconds) {
+        if (events == null) {
             sleep();
+            return null;
+        }
+        try {
+            events.next();
+            return events;
+        } catch (IOException e) {
+            log.warn("[OpenCode] SSE поток оборвался, переключаюсь на поллинг: {}", e.getMessage());
+            closeQuietly(events);
+            return null;
+        }
+    }
+
+    private void closeQuietly(OpenCodeApi.EventSource events) {
+        if (events == null) {
+            return;
+        }
+        try {
+            events.close();
+        } catch (Exception ignored) {
+            // ignore
         }
     }
 
@@ -343,7 +418,7 @@ public class OpenCodeClient {
      * {@code finish=null} считаем финальным (некоторые провайдеры его не отдают).
      */
     private static boolean isFinalFinish(String finish) {
-        return finish == null || !"tool-calls".equalsIgnoreCase(finish);
+        return !"tool-calls".equalsIgnoreCase(finish);
     }
 
     /**

@@ -6,8 +6,7 @@ import org.springframework.web.client.RestClientException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -35,19 +34,20 @@ class OpenCodeClientTransientErrorTest {
             return null;
         }).when(api).promptAsync(anyString(), anyString(), anyString(), anyString(), anyString());
 
-        when(api.listMessages(anyString(), anyString()))
+        when(api.listMessagesPage(anyString(), anyString(), anyInt(), any()))
                 .thenThrow(new RestClientException(
                         "Error while extracting response for type [java.lang.String] and content type [application/json]"))
-                .thenAnswer(inv -> List.of(completed(parentId[0], "готово")));
+                .thenAnswer(inv -> new OpenCodeApi.MessagesPage(List.of(completed(parentId[0], "готово")), null));
 
         var client = new OpenCodeClient(api, runRepo, progress, 30, 1, 30);
         var result = client.runAgent("developer", "промпт", "/work/slot-0", "task-1");
 
         assertEquals("success", result.status());
         assertEquals("готово", result.output());
-        verify(api, times(2)).listMessages(anyString(), anyString());
+        verify(api, times(2)).listMessagesPage(anyString(), anyString(), anyInt(), any());
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static OpenCodeApi.MessageEnvelope completed(String parentId, String text) {
         var info = new OpenCodeApi.MessageInfo("msg_assist", "assistant",
                 new OpenCodeApi.TimeInfo(1L, 2L), null, "stop", parentId, null, null);

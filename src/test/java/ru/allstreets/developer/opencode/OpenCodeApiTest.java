@@ -123,6 +123,38 @@ class OpenCodeApiTest {
     }
 
     @Test
+    void listMessagesPage_passesLimitAndParsesCursor(WireMockRuntimeInfo wm) {
+        WireMock.stubFor(get(urlPathEqualTo("/session/ses_1/message"))
+                .withQueryParam("limit", equalTo("20"))
+                .willReturn(okJson("""
+                        [{"info":{"id":"msg_a","role":"assistant","time":{"created":1},"parentID":"msg_p"},
+                          "parts":[{"type":"text","text":"hi"}]}]
+                        """)
+                        .withHeader("X-Next-Cursor", "cursor_1")));
+
+        var page = api(wm).listMessagesPage("ses_1", "/work", 20, null);
+
+        assertEquals(1, page.items().size());
+        assertEquals("hi", page.items().getFirst().text());
+        assertEquals("cursor_1", page.nextCursor());
+        WireMock.verify(getRequestedFor(urlPathEqualTo("/session/ses_1/message"))
+                .withQueryParam("limit", equalTo("20")));
+    }
+
+    @Test
+    void listMessagesPage_passesBeforeCursor(WireMockRuntimeInfo wm) {
+        WireMock.stubFor(get(urlPathEqualTo("/session/ses_1/message"))
+                .withQueryParam("limit", equalTo("20"))
+                .withQueryParam("before", equalTo("cursor_1"))
+                .willReturn(okJson("[]")));
+
+        var page = api(wm).listMessagesPage("ses_1", "/work", 20, "cursor_1");
+
+        assertTrue(page.items().isEmpty());
+        assertNull(page.nextCursor());
+    }
+
+    @Test
     void abort_returnsTrue(WireMockRuntimeInfo wm) {
         WireMock.stubFor(post(urlPathEqualTo("/session/ses_1/abort"))
                 .willReturn(okJson("true")));

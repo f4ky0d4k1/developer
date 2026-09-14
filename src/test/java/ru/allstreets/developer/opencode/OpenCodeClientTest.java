@@ -262,7 +262,7 @@ class OpenCodeClientTest extends PostgresTestBase {
                 return response;
             }
 
-            if ("GET".equals(method) && url.matches(".*/session/[^/]+/message$")) {
+            if ("GET".equals(method) && url.matches(".*/session/[^/]+/message(\\?.*)?")) {
                 if (emptyAssistant) {
                     return jsonList(response, java.util.Collections.emptyList());
                 }

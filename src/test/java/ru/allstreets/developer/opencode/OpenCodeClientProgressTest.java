@@ -5,8 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -33,8 +32,8 @@ class OpenCodeClientProgressTest {
             return null;
         }).when(api).promptAsync(anyString(), anyString(), anyString(), anyString(), anyString());
 
-        when(api.listMessages(anyString(), anyString()))
-                .thenAnswer(inv -> List.of(stepWithTools(parentId[0])));
+        when(api.listMessagesPage(anyString(), anyString(), anyInt(), any()))
+                .thenAnswer(inv -> new OpenCodeApi.MessagesPage(List.of(stepWithTools(parentId[0])), null));
 
         var client = new OpenCodeClient(api, runRepo, progress, 30, 1, 30);
         var result = client.runAgent("developer", "промпт", "/work/slot-0", "task-1");

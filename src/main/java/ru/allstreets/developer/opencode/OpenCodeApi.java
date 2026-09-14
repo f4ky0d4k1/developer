@@ -8,10 +8,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.resilience4j.retry.annotation.Retry;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.config.ConnectionConfig;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.util.TimeValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,10 +27,16 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriBuilder;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
@@ -55,15 +64,35 @@ public class OpenCodeApi {
 
     private static final String DIRECTORY_HEADER = "x-opencode-directory";
 
+    /**
+     * Размер страницы {@code GET /session/:id/message?limit=&before=}. Sidecar отдаёт
+     * всю историю сессии, если не передать {@code limit} — payload растёт неограниченно
+     * и на длинной сессии обрывается на транспорте (Premature end of Content-Length).
+     * Пагинация: без {@code before} страница возвращает {@code limit} новейших сообщений
+     * и курсор {@code X-Next-Cursor} для следующей (более старой) страницы. Клиент
+     * ({@code OpenCodeClient#collectRunMessages}) ходит окнами от новых к старым, пока не
+     * дойдёт до нашего промпта ({@code info.id == messageId}), поэтому payload каждого
+     * запроса ограничен этой константой.
+     */
+    static final int MESSAGE_PAGE_SIZE = 20;
+
+    /**
+     * Таймаут неактивности SSE-соединения. Heartbeat sidecar'а — 10с, поэтому 30с безопасно.
+     */
+    private static final int SSE_SOCKET_TIMEOUT_SECONDS = 30;
+
     private final RestClient api;
     private final ObjectMapper mapper;
     private final String model;
+    private final String baseUrl;
+    private final CloseableHttpClient sseHttpClient;
 
     public OpenCodeApi(
             @SuppressWarnings("HttpUrlsUsage") @Value("${opencode.base-url:http://opencode:4096}") String baseUrl,
             @Value("${opencode.model:deepseek/deepseek-v4-pro}") String model
     ) {
         this.model = model;
+        this.baseUrl = baseUrl;
         this.mapper = new ObjectMapper()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
@@ -75,15 +104,31 @@ public class OpenCodeApi {
         CloseableHttpClient httpClient = HttpClients.custom()
                 .setConnectionManager(connectionManager)
                 .evictIdleConnections(TimeValue.ofSeconds(30))
-                // sidecar (Bun) закрывает reused-соединение на POST после GET — NoHttpResponse.
+                // sidecar закрывает reused-соединение на POST после GET — NoHttpResponse.
                 // Для локального sidecar keep-alive не даёт выгоды, отключаем (Connection: close).
                 .setDefaultHeaders(java.util.List.of(new org.apache.hc.core5.http.message.BasicHeader("Connection", "close")))
                 .build();
 
+        // Отдельный клиент для SSE: БЕЗ Connection: close — это одно долгоживущее соединение
+        // (subscribe до конца прогона), а не короткий вызов. Таймауты задаются в ConnectionConfig
+        // (setConnectTimeout/setSocketTimeout на RequestConfig помечены deprecated в httpclient5 5.4).
+        ConnectionConfig sseConnectionConfig = ConnectionConfig.custom()
+                .setConnectTimeout(5, TimeUnit.SECONDS)
+                .setSocketTimeout(SSE_SOCKET_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .build();
+        PoolingHttpClientConnectionManager sseConnectionManager = PoolingHttpClientConnectionManagerBuilder.create()
+                .setDefaultConnectionConfig(sseConnectionConfig)
+                .setMaxConnTotal(20)
+                .setMaxConnPerRoute(20)
+                .build();
+        this.sseHttpClient = HttpClients.custom()
+                .setConnectionManager(sseConnectionManager)
+                .evictIdleConnections(TimeValue.ofSeconds(30))
+                .build();
+
         HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
         requestFactory.setConnectTimeout(Duration.ofSeconds(5));
-        // 60с, а не 15с: listMessages длинного multi-step прогона отдаёт большой JSON,
-        // быстрый read timeout рвал чтение тела → RestClientException «Error while extracting response».
+        // 60с, а не 15с: длинный GET отдаёт большой JSON, быстрый read timeout рвал чтение тела.
         requestFactory.setReadTimeout(Duration.ofSeconds(60));
 
         this.api = RestClient.builder()
@@ -182,21 +227,31 @@ public class OpenCodeApi {
     }
 
     /**
-     * Список сообщений сессии. Ответ — массив {@code [{info, parts}]}. Используется для
-     * опроса: ответ агента — это assistant-сообщение с {@code parentID == нашему messageId}.
+     * Одна страница списка сообщений сессии. Ответ — массив {@code [{info, parts}]}
+     * плюс курсор следующей (более старой) страницы в {@code X-Next-Cursor}, если есть.
+     * Без {@code before} страница содержит {@code limit} новейших сообщений.
      */
     @Retry(name = "opencodeApi")
-    public List<MessageEnvelope> listMessages(String sessionId, String cwd) {
-        RawResponse resp = exchange(HttpMethod.GET, "/session/" + sessionId + "/message", cwd, null);
+    public MessagesPage listMessagesPage(String sessionId, String cwd, int limit, String before) {
+        RawResponse resp = exchange(HttpMethod.GET,
+                b -> {
+                    var ub = b.path("/session/" + sessionId + "/message").queryParam("limit", limit);
+                    if (before != null && !before.isBlank()) {
+                        ub = ub.queryParam("before", before);
+                    }
+                    return ub.build();
+                },
+                cwd, null);
         if (!resp.is2xx()) {
             throw openCodeError("listMessages", resp);
         }
         if (resp.body() == null || resp.body().isBlank()) {
-            return List.of();
+            return new MessagesPage(List.of(), null);
         }
         try {
-            return mapper.readValue(resp.body(), new TypeReference<>() {
+            List<MessageEnvelope> items = mapper.readValue(resp.body(), new TypeReference<>() {
             });
+            return new MessagesPage(items, resp.nextCursor());
         } catch (JsonProcessingException e) {
             throw new OpenCodeApiException("OpenCode: не удалось распарсить список сообщений: " + e.getMessage(), 0, null);
         }
@@ -243,6 +298,123 @@ public class OpenCodeApi {
     }
 
     // ---------------------------------------------------------------------
+    // SSE (GET /event)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Открыть событийный поток sidecar'а ({@code GET /event}, SSE). Возвращает блокирующий
+     * источник событий; соединение держится до {@link EventSource#close()} или обрыва.
+     * Используется как «пробуждение» в цикле опроса вместо слепого {@code sleep}.
+     * <p>
+     * <b>Важно:</b> поток live-only (без replay) — при резюме уже прошедшие события не
+     * приходят, поэтому состояние прогона по-прежнему читается из
+     * {@link #listMessagesPage} (durable), а SSE лишь ускоряет реакцию.
+     */
+    public EventSource openEvents(String cwd) throws IOException {
+        HttpGet get = new HttpGet(baseUrl + "/event");
+        get.setHeader(DIRECTORY_HEADER, cwd);
+        get.setHeader("Accept", "text/event-stream");
+        // executeOpen — недипрекейтед-путь для долгоживущего стрима (execute() закрыл бы ответ).
+        ClassicHttpResponse response = sseHttpClient.executeOpen(null, get, null);
+        int code = response.getCode();
+        if (code < 200 || code >= 300) {
+            response.close();
+            throw new IOException("OpenCode /event вернул HTTP " + code);
+        }
+        return new SseEventSource(response);
+    }
+
+    /**
+     * Блокирующий источник SSE-событий. {@link #next()} возвращает событие, {@code null}
+     * при таймауте неактивности (здоровая пауза) и бросает {@link IOException} при обрыве
+     * соединения (EOF) или транспортной ошибке.
+     */
+    public interface EventSource extends AutoCloseable {
+        SseEvent next() throws IOException;
+
+        @Override
+        void close();
+    }
+
+    /**
+     * Событие шины sidecar'а: {@code {id, type, properties}}. {@code properties} несёт
+     * {@code sessionID}/{@code assistantMessageID} (но не {@code parentID}).
+     */
+    public record SseEvent(String id, String type, JsonNode properties) {
+    }
+
+    private final class SseEventSource implements EventSource {
+
+        private final ClassicHttpResponse response;
+        private final BufferedReader reader;
+
+        private SseEventSource(ClassicHttpResponse response) throws IOException {
+            this.response = response;
+            this.reader = new BufferedReader(new InputStreamReader(response.getEntity().getContent(), StandardCharsets.UTF_8));
+        }
+
+        @Override
+        public SseEvent next() throws IOException {
+            StringBuilder data = null;
+            String line;
+            try {
+                while ((line = reader.readLine()) != null) {
+                    if (line.isEmpty()) {
+                        if (data != null) {
+                            return parse(data.toString());
+                        }
+                        continue;
+                    }
+                    if (line.startsWith("data:")) {
+                        if (data == null) {
+                            data = new StringBuilder();
+                        } else {
+                            data.append('\n');
+                        }
+                        data.append(line.substring("data:".length()).trim());
+                    }
+                    // event:/id:/retry: — не используем (event всегда "message", id пустой)
+                }
+            } catch (SocketTimeoutException e) {
+                // Таймаут неактивности — это не обрыв: heartbeat ходит каждые 10с, но на
+                // долгой паузе (idle-агент) можем дождаться таймаута. Возвращаем null.
+                return null;
+            }
+            // EOF — соединение закрыто.
+            if (data != null) {
+                return parse(data.toString());
+            }
+            throw new IOException("SSE поток закрыт (EOF)");
+        }
+
+        private SseEvent parse(String raw) throws IOException {
+            try {
+                JsonNode node = OpenCodeApi.this.mapper.readTree(raw);
+                String id = node.has("id") && !node.path("id").isNull() ? node.path("id").asText() : null;
+                String type = node.path("type").asText(null);
+                JsonNode props = node.get("properties");
+                return new SseEvent(id, type, props != null && !props.isNull() ? props : OpenCodeApi.this.mapper.createObjectNode());
+            } catch (JsonProcessingException e) {
+                throw new IOException("Не-JSON SSE-событие: " + e.getMessage(), e);
+            }
+        }
+
+        @Override
+        public void close() {
+            try {
+                reader.close();
+            } catch (IOException ignored) {
+                // ignore
+            }
+            try {
+                response.close();
+            } catch (IOException ignored) {
+                // ignore
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Транспорт
     // ---------------------------------------------------------------------
 
@@ -270,9 +442,10 @@ public class OpenCodeApi {
                 request = request.body(toJson(requestBody));
             }
             var response = request.retrieve().toEntity(String.class);
-            return new RawResponse(response.getStatusCode().value(), response.getBody());
+            return new RawResponse(response.getStatusCode().value(), response.getBody(),
+                    response.getHeaders().getFirst("X-Next-Cursor"));
         } catch (HttpStatusCodeException e) {
-            return new RawResponse(e.getStatusCode().value(), e.getResponseBodyAsString());
+            return new RawResponse(e.getStatusCode().value(), e.getResponseBodyAsString(), null);
         }
     }
 
@@ -318,11 +491,18 @@ public class OpenCodeApi {
     // Модель ответов (Java records, FAIL_ON_UNKNOWN_PROPERTIES=false)
     // ---------------------------------------------------------------------
 
-    private record RawResponse(int status, String body) {
+    private record RawResponse(int status, String body, String nextCursor) {
         @SuppressWarnings("BooleanMethodIsAlwaysInverted")
         boolean is2xx() {
             return status >= 200 && status < 300;
         }
+    }
+
+    /**
+     * Страница списка сообщений: {@code items} + {@code nextCursor} следующей (более
+     * старой) страницы, либо {@code null}, если страниц больше нет.
+     */
+    public record MessagesPage(List<MessageEnvelope> items, String nextCursor) {
     }
 
     /**
@@ -401,7 +581,9 @@ public class OpenCodeApi {
             Double cost,
             Tokens tokens
     ) {
-        /** Суммарное число токенов шага (input + output + reasoning). */
+        /**
+         * Суммарное число токенов шага (input + output + reasoning).
+         */
         public long totalTokens() {
             if (tokens == null) {
                 return 0;
