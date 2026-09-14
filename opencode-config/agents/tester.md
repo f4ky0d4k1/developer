@@ -1,7 +1,7 @@
 ---
 description: Тестировщик. Пишет тесты по ТЗ используя JUnit5, MockMvc, Testcontainers. Коммитит в ветку.
 mode: primary
-model: deepseek/deepseek-v4.1-flash
+model: deepseek/deepseek-flash
 permissions:
   edit: allow
   bash: allow

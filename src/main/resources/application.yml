@@ -74,7 +74,7 @@ opencode:
   # и прерываем (работающие агенты держат сессию busy и не трогаются). 300с — запас на
   # долгие tool-вызовы (mvn test и т.п.).
   stall-timeout-seconds: ${OPENCODE_STALL_TIMEOUT_SECONDS:300}
-  model: ${OPENCODE_MODEL:deepseek/deepseek-v4.1-flash}
+  model: ${OPENCODE_MODEL:deepseek/deepseek-flash}
   slots: 5
   max-clarifications: 10
 
