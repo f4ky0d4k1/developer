@@ -32,7 +32,7 @@ services:
     image: opencode-with-mcp
     container_name: opencode
     working_dir: /work
-    command: [ "serve", "--port", "4096", "--hostname", "0.0.0.0" ]
+    command: [ "--print-logs", "--log-level", "${OPENCODE_LOG_LEVEL:-INFO}", "serve", "--port", "4096", "--hostname", "0.0.0.0" ]
     restart: unless-stopped
     volumes:
       - repo-data:/work               # Git репозиторий проекта

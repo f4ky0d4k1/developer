@@ -97,8 +97,7 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 
 ## Known gaps (don't "fix" blindly)
 
-- opencode sidecar logs are not shipped to Loki (Alloy config exists but is not deployed) — no log visibility into agent
-  tool calls.
+- None right now.
 
 ## Docs
 
