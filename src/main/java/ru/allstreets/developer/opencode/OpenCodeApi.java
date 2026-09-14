@@ -92,7 +92,7 @@ public class OpenCodeApi {
 
     public OpenCodeApi(
             @SuppressWarnings("HttpUrlsUsage") @Value("${opencode.base-url:http://opencode:4096}") String baseUrl,
-            @Value("${opencode.model:deepseek/deepseek-v4-pro}") String model
+            @Value("${opencode.model:deepseek/deepseek-v4.1-flash}") String model
     ) {
         this.model = model;
         this.baseUrl = baseUrl;

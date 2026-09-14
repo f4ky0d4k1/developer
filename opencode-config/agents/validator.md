@@ -1,7 +1,7 @@
 ---
 description: Валидатор. Запускает тесты, проверяет покрытие, качество кода. Формирует отчёт.
 mode: primary
-model: deepseek/deepseek-v4-pro
+model: deepseek/deepseek-v4.1-flash
 permissions:
   bash: allow
   read: allow
