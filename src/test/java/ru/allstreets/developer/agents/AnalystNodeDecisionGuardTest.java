@@ -41,7 +41,7 @@ class AnalystNodeDecisionGuardTest {
         humanLoop = mock(HumanLoopService.class);
 
         analyst = new AnalystNode(openCode, sessionPool, mock(TelegramGateway.class),
-                humanLoop, mock(TaskRepository.class), 3);
+                humanLoop, mock(TaskRepository.class), 3, mock(SlotUnavailableHandler.class));
 
         when(sessionPool.acquire(600L)).thenReturn(0);
         when(sessionPool.getSlotWorkDir(0)).thenReturn("/work");

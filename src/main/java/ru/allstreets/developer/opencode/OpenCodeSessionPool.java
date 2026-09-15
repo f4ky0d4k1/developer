@@ -142,6 +142,20 @@ public class OpenCodeSessionPool {
     }
 
     /**
+     * Задачи, держащие слоты сейчас (для запроса «какие закрыть» при исчерпании).
+     */
+    public java.util.List<String> heldTasks() {
+        return java.util.List.copyOf(taskSlots.keySet());
+    }
+
+    /**
+     * Сколько слотов свободно сейчас.
+     */
+    public int freeSlots() {
+        return semaphore.availablePermits();
+    }
+
+    /**
      * Сколько слотов занято сейчас — для gauge утилизации.
      */
     private int activeSlots() {

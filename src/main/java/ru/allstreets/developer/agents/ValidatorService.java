@@ -40,8 +40,8 @@ public class ValidatorService {
     public String run(String prompt, long chatIdLong, String repoUrl, String taskId) {
         int slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
         if (slot < 0) {
-            telegram.sendMessage(chatIdLong, "❌ Таймаут ожидания слота OpenCode", taskId);
-            return null;
+            throw new ru.allstreets.developer.opencode.SlotUnavailableException(
+                    "Нет свободного слота OpenCode для задачи " + taskId);
         }
         String workDir = sessionPool.getSlotWorkDir(slot);
 

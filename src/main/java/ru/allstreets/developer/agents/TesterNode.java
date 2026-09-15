@@ -27,13 +27,15 @@ public class TesterNode implements Agent {
     private final OpenCodeSessionPool sessionPool;
     private final TelegramGateway telegram;
     private final TaskRepository taskRepo;
+    private final SlotUnavailableHandler slotHandler;
 
     public TesterNode(OpenCodeClient openCode, OpenCodeSessionPool sessionPool, TelegramGateway telegram,
-                      TaskRepository taskRepo) {
+                      TaskRepository taskRepo, SlotUnavailableHandler slotHandler) {
         this.openCode = openCode;
         this.sessionPool = sessionPool;
         this.telegram = telegram;
         this.taskRepo = taskRepo;
+        this.slotHandler = slotHandler;
     }
 
     @Override
@@ -61,8 +63,7 @@ public class TesterNode implements Agent {
 
         int slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
         if (slot < 0) {
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("tester",
-                    new RuntimeException("Таймаут ожидания слота OpenCode")));
+            return slotHandler.askToFreeSlots(taskId, Long.parseLong(chatId), "tester");
         }
         String workDir = sessionPool.getSlotWorkDir(slot);
 

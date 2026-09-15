@@ -45,12 +45,14 @@ public class PostValidationNode implements Agent {
     private final TaskRepository taskRepo;
     private final ValidatorService validator;
     private final String prLabel;
+    private final SlotUnavailableHandler slotHandler;
 
     public PostValidationNode(@Qualifier("postValidationChatClient") ChatClient chatClient,
                               @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
                               TaskRepository taskRepo, ValidatorService validator,
-                              @Value("${github.pr-label:agent-generated}") String prLabel) {
+                              @Value("${github.pr-label:agent-generated}") String prLabel,
+                              SlotUnavailableHandler slotHandler) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.telegram = telegram;
@@ -58,6 +60,7 @@ public class PostValidationNode implements Agent {
         this.taskRepo = taskRepo;
         this.validator = validator;
         this.prLabel = prLabel;
+        this.slotHandler = slotHandler;
     }
 
     @Override
@@ -101,7 +104,12 @@ public class PostValidationNode implements Agent {
         }
 
         telegram.sendMessage(chatIdLong, "🔍 Post-validation: валидатор проверяет результат...", taskId);
-        String openCodeOutput = validator.run(buildValidatorPrompt(ctx, reworkCount), chatIdLong, repoUrl, taskId);
+        String openCodeOutput;
+        try {
+            openCodeOutput = validator.run(buildValidatorPrompt(ctx, reworkCount), chatIdLong, repoUrl, taskId);
+        } catch (ru.allstreets.developer.opencode.SlotUnavailableException e) {
+            return slotHandler.askToFreeSlots(taskId, chatIdLong, "validator");
+        }
         if (openCodeOutput == null) {
             return AgentResult.failed(AgentError.of("post_validation",
                     new RuntimeException("Ошибка OpenCode при валидации")));
@@ -188,7 +196,7 @@ public class PostValidationNode implements Agent {
                    - не хватает/неверны тесты → reroute "tester";
                    - проблема в ТЗ/требованиях, нужен пересмотр → reroute "analyst";
                    - задача невыполнима → failed.
-
+                
                 В конце ответа выведи СТРОГО JSON:
                 ```json
                 {

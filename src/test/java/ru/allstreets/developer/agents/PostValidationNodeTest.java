@@ -42,7 +42,7 @@ class PostValidationNodeTest {
         when(taskRepo.findById(anyString())).thenReturn(Optional.empty());
         node = new PostValidationNode(
                 mock(ChatClient.class), mock(ChatClient.class), mock(TelegramGateway.class),
-                structuredOutput, taskRepo, validator, "agent-generated");
+                structuredOutput, taskRepo, validator, "agent-generated", mock(SlotUnavailableHandler.class));
     }
 
     private AgentContext baseCtx() {

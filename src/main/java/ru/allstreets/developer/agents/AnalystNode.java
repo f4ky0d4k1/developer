@@ -52,17 +52,20 @@ public class AnalystNode implements Agent {
     private final HumanLoopService humanLoop;
     private final TaskRepository taskRepo;
     private final int maxClarifications;
+    private final SlotUnavailableHandler slotHandler;
 
     public AnalystNode(OpenCodeClient openCode, OpenCodeSessionPool sessionPool,
                        TelegramGateway telegram, HumanLoopService humanLoop,
                        TaskRepository taskRepo,
-                       @Value("${opencode.max-clarifications:3}") int maxClarifications) {
+                       @Value("${opencode.max-clarifications:3}") int maxClarifications,
+                       SlotUnavailableHandler slotHandler) {
         this.openCode = openCode;
         this.sessionPool = sessionPool;
         this.telegram = telegram;
         this.humanLoop = humanLoop;
         this.taskRepo = taskRepo;
         this.maxClarifications = maxClarifications;
+        this.slotHandler = slotHandler;
     }
 
     @Override
@@ -129,8 +132,7 @@ public class AnalystNode implements Agent {
 
             slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
             if (slot < 0) {
-                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
-                        new RuntimeException("Таймаут ожидания слота OpenCode")));
+                return slotHandler.askToFreeSlots(taskId, chatIdLong, "analyst");
             }
 
             try {
