@@ -394,19 +394,28 @@ public class OpenCodeClient {
     /**
      * Собрать сообщения текущего прогона пагинированным обходом: страницы идут от новых к
      * старым, останавливаемся, когда дошли до нашего промпта ({@code info.id == messageId})
-     * или страницы закончились. Каждый HTTP-запрос ограничен {@link OpenCodeApi#MESSAGE_PAGE_SIZE},
-     * поэтому payload не растёт с историей сессии (инцидент: Premature end of Content-Length).
+     * или страницы закончились. Страница берётся ЦЕЛИКОМ: внутри неё порядок вставки
+     * (user-промпт раньше assistant-ответов), и ранний выход по промпту терял ответы.
+     * Каждый HTTP-запрос ограничен {@link OpenCodeApi#MESSAGE_PAGE_SIZE}, поэтому payload
+     * не растёт с историей сессии (инцидент: Premature end of Content-Length).
      */
     private List<OpenCodeApi.MessageEnvelope> collectRunMessages(String sessionId, String cwd, String messageId) {
         List<OpenCodeApi.MessageEnvelope> all = new ArrayList<>();
         String cursor = null;
         while (true) {
             OpenCodeApi.MessagesPage page = api.listMessagesPage(sessionId, cwd, OpenCodeApi.MESSAGE_PAGE_SIZE, cursor);
+            boolean foundPrompt = false;
             for (OpenCodeApi.MessageEnvelope m : page.items()) {
                 all.add(m);
                 if (messageId.equals(m.info() != null ? m.info().id() : null)) {
-                    return all;
+                    foundPrompt = true;
                 }
+            }
+            // Нашли наш промпт — берём страницу ЦЕЛИКОМ. Ответы-ассистенты идут в порядке вставки
+            // (после user-промпта), и ранний выход по промпту терял их: replies оставался пустым →
+            // ни шагов, ни текста → ложный stall и «0 шагов» на коротких сессиях.
+            if (foundPrompt) {
+                return all;
             }
             if (page.items().isEmpty() || page.nextCursor() == null) {
                 return all;

@@ -3,6 +3,7 @@ package ru.allstreets.developer.opencode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
@@ -45,6 +46,48 @@ class OpenCodeClientProgressTest {
         verify(progress).recordToolCall("task-1", "bash");
         // шаг: input+output+reasoning = 10+20+0 = 30 токенов, cost 0.001, finish=stop
         verify(progress).recordStepFinish("task-1", 30L, 0.001, "stop");
+    }
+
+    /**
+     * Регрессия: sidecar отдаёт страницу в порядке вставки (сначала user-промпт, потом
+     * assistant-ответы). Раньше сбор останавливался на промпте, не дочитав страницу →
+     * replies пустой → шаги/текст не фиксировались → ложный stall («0 символов», «0 шагов»).
+     */
+    @Test
+    void runAgent_promptComesBeforeAssistant_stillRecordsSteps() {
+        OpenCodeApi api = mock(OpenCodeApi.class);
+        OpenCodeRunRepository runRepo = mock(OpenCodeRunRepository.class);
+        TaskProgressRegistry progress = mock(TaskProgressRegistry.class);
+
+        when(runRepo.findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(anyString(), anyString(), any()))
+                .thenReturn(List.of());
+        when(api.health()).thenReturn(new OpenCodeApi.HealthInfo(true, "1.20.0"));
+        when(api.createSession(anyString())).thenReturn("ses_1");
+
+        AtomicReference<String> parentId = new AtomicReference<>();
+        doAnswer(inv -> {
+            parentId.set(inv.getArgument(2));
+            return null;
+        }).when(api).promptAsync(anyString(), anyString(), anyString(), anyString(), anyString());
+
+        // Порядок вставки: user-промпт ПЕРВЫЙ, assistant-ответ ВТОРЫМ.
+        when(api.listMessagesPage(anyString(), anyString(), anyInt(), any()))
+                .thenAnswer(inv -> new OpenCodeApi.MessagesPage(
+                        List.of(userMessage(parentId.get()), stepWithTools(parentId.get())), null));
+
+        var client = new OpenCodeClient(api, runRepo, progress,
+                new ru.allstreets.developer.metrics.TaskMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                30, 1, 30);
+        var result = client.runAgent("developer", "промпт", "/work/slot-0", "task-1");
+
+        assertEquals("success", result.status());
+        verify(progress).recordStepFinish("task-1", 30L, 0.001, "stop");
+    }
+
+    private static OpenCodeApi.MessageEnvelope userMessage(String id) {
+        var info = new OpenCodeApi.MessageInfo(id, "user",
+                new OpenCodeApi.TimeInfo(1L, null), null, null, null, null, null);
+        return new OpenCodeApi.MessageEnvelope(info, List.of(new OpenCodeApi.Part("text", "промпт", null)));
     }
 
     private static OpenCodeApi.MessageEnvelope stepWithTools(String parentId) {
