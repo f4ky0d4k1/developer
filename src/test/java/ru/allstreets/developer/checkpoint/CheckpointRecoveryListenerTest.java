@@ -67,6 +67,18 @@ class CheckpointRecoveryListenerTest {
     }
 
     @Test
+    void orphanCheckpoint_isNotResumed_andCleaned() {
+        // Legacy-задача (напр. старый pr-* от PrCommentMonitor): checkpoint есть, строки в agent_tasks нет —
+        // ни closeTask, ни cancelTask её не видят, а recovery иначе «оживлял» бы её на каждом рестарте.
+        when(taskRepo.findById(RUN_ID)).thenReturn(Optional.empty());
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        verify(checkpointService).cleanup(RUN_ID);
+    }
+
+    @Test
     void runningTask_isResumedThroughTaskLauncher() {
         listener.recoverUnfinishedTasks();
 

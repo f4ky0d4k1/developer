@@ -89,7 +89,9 @@ public class CheckpointRecoveryListener {
         }
     }
 
-    /** Достать chatId из восстановленного контекста; null — если checkpoint повреждён или chatId отсутствует. */
+    /**
+     * Достать chatId из восстановленного контекста; null — если checkpoint повреждён или chatId отсутствует.
+     */
     private Long restoreChatId(String runId) {
         try {
             var restoredCtx = checkpointService.restoreCheckpoint(runId);
