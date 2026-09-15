@@ -72,6 +72,8 @@ public class TesterNode implements Agent {
         }
         String workDir = sessionPool.getSlotWorkDir(slot);
 
+        String branchName = branch != null && !branch.isBlank() ? branch : "feature/new-task";
+
         String prompt = """
                 Напиши тесты для следующего ТЗ:
                 
@@ -83,7 +85,7 @@ public class TesterNode implements Agent {
                 Запусти тесты и убедись, что они падают (RED — реализации ещё нет либо она неполная):
                 ./mvnw test (или ./mvnw test -Dtest=<ИмяТеста>).
                 После написания — закоммить в текущую ветку.
-                """.formatted(spec, branch != null && !branch.isBlank() ? branch : "feature/new-task");
+                """.formatted(spec, branchName);
 
         var result = openCode.runAgent("tester", prompt, workDir, taskId);
 
@@ -101,6 +103,8 @@ public class TesterNode implements Agent {
         taskRepo.findById(taskId).ifPresent(task -> {
             task.setTestsWritten(true);
             task.setTestingDone(true);
+            // Ветка задачи — ключ, по которому PrCommentMonitor находит задачу для PR-доработки.
+            task.setGitBranch(branchName);
             taskRepo.save(task);
         });
 

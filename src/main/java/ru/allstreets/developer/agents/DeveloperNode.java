@@ -103,6 +103,8 @@ public class DeveloperNode implements Agent {
 
         taskRepo.findById(taskId).ifPresent(task -> {
             task.setDevelopmentDone(true);
+            // Ветка задачи — ключ, по которому PrCommentMonitor находит задачу для PR-доработки.
+            task.setGitBranch(branchName);
             taskRepo.save(task);
         });
 
