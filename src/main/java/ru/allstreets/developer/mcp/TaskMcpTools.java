@@ -283,14 +283,14 @@ public class TaskMcpTools {
         return null;
     }
 
-    @Tool(description = "Create a NEW task on top of the context of an OLD one (its description, Tracker issue, " +
-            "chat history are carried over). Use ONLY when there is a contextual need to start a fresh task " +
-            "based on a previous one — NOT to continue the same task. To continue/fix a task that already has " +
-            "a PR just leave a comment there (PR comments rework the SAME task automatically); to free its slot " +
-            "use closeTask. taskId can be partial (first 8 chars are enough).")
+    @Tool(description = "Restart/continue the SAME task. Resumes from its checkpoint if one exists, otherwise " +
+            "re-runs it from the analyst with the additional context appended — always the SAME taskId. Use when " +
+            "the user says 'перезапусти задачу' / 'возобнови задачу'. Create a NEW task from an old one's context " +
+            "ONLY if the user explicitly wants a fresh task (that's launch_task with priorTaskId). " +
+            "taskId can be partial (first 8 chars are enough).")
     public String restartTask(
-            @ToolParam(description = "Task ID of the base (prior) task (full or first 8 characters)") String taskId,
-            @ToolParam(description = "Extra context/instructions for the new task (optional, can be null)") String additionalContext
+            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
+            @ToolParam(description = "Additional context/instructions for the retry (optional, can be null)") String additionalContext
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
@@ -299,27 +299,18 @@ public class TaskMcpTools {
 
         Long chatId = taskRegistry.getChatIdForTask(fullTaskId);
         if (chatId == null) {
-            return "Cannot start a new task: no chatId associated with task " + fullTaskId.substring(0, 8);
-        }
-        TaskEntity task = taskRepo.findById(fullTaskId).orElse(null);
-        if (task == null) {
-            return "Task not found: " + taskId;
-        }
-        String repo = task.getRepo();
-        if (repo == null || repo.isBlank()) {
-            return "Cannot start a new task: base task " + fullTaskId.substring(0, 8) + " has no repo.";
+            return "Cannot restart: no chatId associated with task " + fullTaskId.substring(0, 8);
         }
 
-        String description = (task.getDescription() != null && !task.getDescription().isBlank())
-                ? task.getDescription() : task.getTitle();
-        if (additionalContext != null && !additionalContext.isBlank()) {
-            description = description + "\n\nДополнительно: " + additionalContext;
+        // 1) Есть checkpoint — продолжаем ту же задачу с упавшего/прерванного узла.
+        if (taskLauncher.restart(fullTaskId, chatId, additionalContext)) {
+            return "Task " + fullTaskId.substring(0, 8) + " restarted from checkpoint (same task).";
         }
-
-        log.info("MCP restartTask -> NEW task from prior {}: repo={}", fullTaskId.substring(0, 8), repo);
-        taskLauncher.launch(description, chatId, repo, fullTaskId);
-        return "Started a NEW task based on " + fullTaskId.substring(0, 8)
-                + " (context carried over). The original task is untouched.";
+        // 2) Чекпоинта нет (завершена/чистая) — перезапуск ТОЙ ЖЕ задачи с аналитика.
+        if (taskLauncher.rework(fullTaskId, chatId, additionalContext)) {
+            return "Task " + fullTaskId.substring(0, 8) + " re-run from analyst (same task).";
+        }
+        return "Failed to restart task " + fullTaskId.substring(0, 8) + ".";
     }
 
     @Tool(description = "Get the last task for a Telegram chat. Returns taskId (first 8 chars), status, description, " +
