@@ -186,7 +186,7 @@ public class TaskMcpTools {
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
-            return "Task not found: " + taskId;
+            return cancelOrphanRun(taskId);
         }
 
         log.info("MCP cancelTask: taskId={}", fullTaskId);
@@ -230,7 +230,7 @@ public class TaskMcpTools {
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
-            return "Task not found: " + taskId;
+            return cancelOrphanRun(taskId);
         }
         log.info("MCP closeTask: taskId={}", fullTaskId);
 
@@ -242,6 +242,22 @@ public class TaskMcpTools {
         }
         return "Task " + fullTaskId.substring(0, 8) + " closed (CLOSED)"
                 + (wasRunning ? ", running run cancelled" : "") + ". Slot freed.";
+    }
+
+    /**
+     * Отменить осиротевший run: строки в agent_tasks нет (напр. legacy pr-* от старого
+     * PrCommentMonitor, который запускал граф напрямую без регистрации), но есть checkpoint
+     * по этому runId. Останавливаем ран и чистим checkpoint — иначе recovery «оживлял» бы его.
+     */
+    private String cancelOrphanRun(String runId) {
+        var cp = checkpointRepo.findTopByRunIdOrderByCreatedAtDesc(runId).orElse(null);
+        if (cp == null) {
+            return "Task not found: " + runId;
+        }
+        log.info("MCP cancelTask: осиротевший run {} (нет в agent_tasks) — отменяю и чищу checkpoint", runId);
+        taskLauncher.cancel(runId);
+        checkpointRepo.deleteByRunId(runId);
+        return "Orphan run " + runId + " cancelled and its checkpoint removed.";
     }
 
     /**

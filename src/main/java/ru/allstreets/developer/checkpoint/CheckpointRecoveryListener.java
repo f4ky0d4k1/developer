@@ -55,8 +55,19 @@ public class CheckpointRecoveryListener {
             String runId = checkpoint.getRunId();
             String lastNode = checkpoint.getNodeName();
 
+            // Осиротевший checkpoint (нет задачи в реестре) — не поднимаем и чистим: такие остались
+            // от legacy-задач (напр. старые pr-* от PrCommentMonitor, запускавшиеся напрямую без
+            // регистрации в agent_tasks), их нельзя ни закрыть, ни отменить, а recovery иначе
+            // «оживлял» бы их на каждом рестарте.
+            TaskEntity task = taskRepo.findById(runId).orElse(null);
+            if (task == null) {
+                log.warn("Пропуск восстановления runId={}: нет задачи в реестре (осиротевший checkpoint) — чищу", runId);
+                checkpointService.cleanup(runId);
+                continue;
+            }
+
             // Не поднимаем задачу, которая уже завершилась (устаревший RUNNING-checkpoint).
-            String status = taskRepo.findById(runId).map(TaskEntity::getStatus).orElse(null);
+            String status = task.getStatus();
             if ("COMPLETED".equalsIgnoreCase(status)) {
                 log.warn("Пропуск восстановления runId={}: задача уже COMPLETED — чищу устаревший checkpoint", runId);
                 checkpointService.cleanup(runId);
