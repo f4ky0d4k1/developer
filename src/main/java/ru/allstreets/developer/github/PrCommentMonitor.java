@@ -15,9 +15,8 @@ import ru.allstreets.developer.telegram.ActiveTaskRegistry;
 import ru.allstreets.developer.telegram.ChatMemoryService;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -26,13 +25,21 @@ import java.util.concurrent.Executors;
  * Периодически опрашивает GitHub на предмет новых комментариев.
  * При обнаружении нового комментария запускает агентный граф с инструкцией из комментария.
  * <p>
- * Фильтрация: обрабатываются комментарии от любого пользователя (включая bot-login),
- * но только ещё не обработанные (по ID комментария).
+ * PR задачи живёт в ЕЁ целевом репозитории (owner/name), поэтому опрашиваются репозитории
+ * задач из реестра ({@link TaskRepository#findDistinctRepos}), а {@code github.monitor-repo}
+ * остаётся лишь fallback'ом — иначе PR в целевом репо не виден (инцидент 15.09: монитор
+ * смотрел на f4ky0d4k1/developer, а PR был в iamponamarev/allstreets-spring).
+ * <p>
+ * Дедуп — persistent ({@link ProcessedPrCommentEntity}): обработанный комментарий не
+ * запускается повторно после рестарта приложения или на другом инстансе.
  */
 @Component
 public class PrCommentMonitor {
 
     private static final Logger log = LoggerFactory.getLogger(PrCommentMonitor.class);
+
+    /** Сколько репозиториев задач максимум опрашивать за один тик (свежие первыми). */
+    private static final int MONITOR_REPO_LIMIT = 20;
 
     private final GitHubService github;
     private final AgentGraphRunner graphRunner;
@@ -40,15 +47,13 @@ public class PrCommentMonitor {
     private final ChatMemoryService chatMemory;
     private final ActiveTaskRegistry taskRegistry;
     private final TaskRepository taskRepo;
+    private final ProcessedPrCommentRepository processedComments;
     private final ExecutorService executor = Executors.newCachedThreadPool();
-
-    // Отслеживание обработанных комментариев: commentId → prNumber
-    private final Map<Long, Integer> processedComments = new ConcurrentHashMap<>();
 
     // fallback chatId для уведомлений (берётся из whitelist — первый)
     private final long fallbackNotifyChatId;
 
-    // Репозиторий для мониторинга PR (настройка мониторинга, не задачи агента)
+    // Репозиторий для мониторинга PR (fallback, если у задач репозиторий не заполнен)
     private final String monitorRepo;
 
     public PrCommentMonitor(
@@ -58,6 +63,7 @@ public class PrCommentMonitor {
             ChatMemoryService chatMemory,
             ActiveTaskRegistry taskRegistry,
             TaskRepository taskRepo,
+            ProcessedPrCommentRepository processedComments,
             @Value("${telegram.allowed-chat-ids:}") String allowedChatIds,
             @Value("${github.monitor-repo:}") String monitorRepo
     ) {
@@ -67,6 +73,7 @@ public class PrCommentMonitor {
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
         this.taskRepo = taskRepo;
+        this.processedComments = processedComments;
         this.monitorRepo = monitorRepo;
 
         long chatId = 0;
@@ -104,45 +111,68 @@ public class PrCommentMonitor {
      */
     @Scheduled(fixedDelay = 60000, initialDelay = 15000)
     public void monitorPullRequests() {
-        if (monitorRepo == null || monitorRepo.isBlank()) {
+        List<String> repos = reposToMonitor();
+        if (repos.isEmpty()) {
+            log.debug("Мониторинг PR: нет репозиториев для опроса (ни задач с repo, ни github.monitor-repo)");
             return;
         }
-        try {
-            List<GitHubService.PrInfo> prs = github.listAgentPullRequests(monitorRepo);
-            if (prs.isEmpty()) {
-                return;
-            }
 
-            log.debug("Мониторинг: найдено {} открытых agent PR", prs.size());
+        for (String repo : repos) {
+            try {
+                List<GitHubService.PrInfo> prs = github.listAgentPullRequests(repo);
+                if (prs.isEmpty()) {
+                    continue;
+                }
 
-            for (GitHubService.PrInfo pr : prs) {
-                processPrComments(pr);
+                log.debug("Мониторинг: найдено {} открытых agent PR в {}", prs.size(), repo);
+
+                for (GitHubService.PrInfo pr : prs) {
+                    processPrComments(repo, pr);
+                }
+            } catch (Exception e) {
+                log.error("Ошибка мониторинга PR в {}: {}", repo, e.getMessage(), e);
             }
-        } catch (Exception e) {
-            log.error("Ошибка мониторинга PR: {}", e.getMessage(), e);
         }
     }
 
-    private void processPrComments(GitHubService.PrInfo pr) {
+    /**
+     * Репозитории для мониторинга: целевые репозитории задач (свежие первыми, дедуп) плюс
+     * {@code github.monitor-repo} как fallback. PR задачи живёт в её репозитории, поэтому
+     * одного сконфигурированного репо недостаточно.
+     */
+    List<String> reposToMonitor() {
+        var repos = new LinkedHashSet<String>();
         try {
-            List<GitHubService.PrComment> comments = github.listPrComments(monitorRepo, pr.number());
+            repos.addAll(taskRepo.findDistinctRepos(MONITOR_REPO_LIMIT));
+        } catch (Exception e) {
+            log.warn("Мониторинг: не удалось получить репозитории задач: {}", e.getMessage());
+        }
+        if (monitorRepo != null && !monitorRepo.isBlank()) {
+            repos.add(monitorRepo.trim());
+        }
+        return List.copyOf(repos);
+    }
+
+    private void processPrComments(String repo, GitHubService.PrInfo pr) {
+        try {
+            List<GitHubService.PrComment> comments = github.listPrComments(repo, pr.number());
             if (comments.isEmpty()) {
                 return;
             }
 
             for (GitHubService.PrComment comment : comments) {
-                if (processedComments.containsKey(comment.id())) {
+                if (processedComments.existsById(comment.id())) {
                     continue;
                 }
 
                 // Пропускаем пустые комментарии
                 if (comment.body() == null || comment.body().isBlank()) {
-                    processedComments.put(comment.id(), pr.number());
+                    markProcessed(comment.id(), pr.number(), repo);
                     continue;
                 }
 
-                log.info("Новый комментарий в PR #{} от {}: {}",
-                        pr.number(), comment.author(),
+                log.info("Новый комментарий в PR #{} ({}) от {}: {}",
+                        pr.number(), repo, comment.author(),
                         comment.body().length() > 100 ? comment.body().substring(0, 100) + "..." : comment.body());
 
                 // Уведомление в ТГ
@@ -156,21 +186,34 @@ public class PrCommentMonitor {
                 }
 
                 // Запуск агентного графа с инструкцией из комментария
-                launchFromPrComment(pr, comment);
+                launchFromPrComment(repo, pr, comment);
 
-                processedComments.put(comment.id(), pr.number());
+                markProcessed(comment.id(), pr.number(), repo);
             }
         } catch (Exception e) {
-            log.error("Ошибка обработки комментариев PR #{}: {}", pr.number(), e.getMessage(), e);
+            log.error("Ошибка обработки комментариев PR #{} в {}: {}", pr.number(), repo, e.getMessage(), e);
         }
     }
 
-    private void launchFromPrComment(GitHubService.PrInfo pr, GitHubService.PrComment comment) {
+    /**
+     * Пометить комментарий обработанным. Сбой записи не должен ронять тик мониторинга:
+     * в худшем случае комментарий обработается ещё раз (как было до persistent-дедупа).
+     */
+    private void markProcessed(long commentId, int prNumber, String repo) {
+        try {
+            processedComments.save(new ProcessedPrCommentEntity(commentId, prNumber, repo));
+        } catch (Exception e) {
+            log.warn("Мониторинг: не удалось сохранить обработанный комментарий {} ({}): {}",
+                    commentId, repo, e.getMessage());
+        }
+    }
+
+    private void launchFromPrComment(String repo, GitHubService.PrInfo pr, GitHubService.PrComment comment) {
         String taskId = "pr-" + pr.number() + "-" + comment.id();
         String instruction = """
                 Комментарий в PR #%d от %s:
                 %s
-                
+
                 Ветка: %s
                 URL PR: %s
                 """.formatted(pr.number(), comment.author(), comment.body(), pr.headBranch(), pr.htmlUrl());
@@ -181,7 +224,7 @@ public class PrCommentMonitor {
                         .with(TaskState.TASK_ID, taskId)
                         .with(TaskState.TG_CHAT_ID, String.valueOf(resolveNotifyChatId(taskId, pr.headBranch())))
                         .with(TaskState.GIT_BRANCH, pr.headBranch())
-                        .with(TaskState.TARGET_REPO, monitorRepo)
+                        .with(TaskState.TARGET_REPO, repo)
                         .with(TaskState.REWORK_COUNT, 0);
 
                 AgentResult result = graphRunner.run(ctx);

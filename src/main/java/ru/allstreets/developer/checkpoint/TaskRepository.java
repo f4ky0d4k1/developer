@@ -56,4 +56,25 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
             LIMIT :limit
             """, nativeQuery = true)
     List<Object[]> findChatProjects(@Param("chatId") long chatId, @Param("limit") int limit);
+
+    /**
+     * Уникальные целевые репозитории не удалённых задач (для мониторинга PR-комментариев) —
+     * свежие первыми, не более {@code limit}. PR задачи живёт в ЕЁ репозитории, поэтому
+     * монитор должен опрашивать именно их, а не один сконфигурированный репозиторий.
+     */
+    @Query(value = """
+            SELECT repo_norm
+            FROM (
+                SELECT LOWER(TRIM(repo)) AS repo_norm,
+                       MAX(COALESCE(updated_at, created_at)) AS last_used
+                FROM agent_tasks
+                WHERE deleted = false
+                  AND repo IS NOT NULL
+                  AND TRIM(repo) <> ''
+                GROUP BY LOWER(TRIM(repo))
+            ) sub
+            ORDER BY last_used DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<String> findDistinctRepos(@Param("limit") int limit);
 }
