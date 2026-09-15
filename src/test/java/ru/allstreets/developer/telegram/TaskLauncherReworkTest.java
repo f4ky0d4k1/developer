@@ -60,7 +60,7 @@ class TaskLauncherReworkTest {
                 executor, mock(ChatClient.class), mock(PriorTaskContextBuilder.class),
                 new ru.allstreets.developer.metrics.TaskMetrics(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
-                taskRepo);
+                taskRepo, mock(ru.allstreets.developer.checkpoint.TaskLockService.class));
     }
 
     @AfterEach

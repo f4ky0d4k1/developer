@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.CheckpointService;
+import ru.allstreets.developer.checkpoint.TaskLockService;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
@@ -39,6 +40,7 @@ public class TaskLauncher {
     private final PriorTaskContextBuilder priorTaskContextBuilder;
     private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final TaskRepository taskRepo;
+    private final TaskLockService taskLockService;
 
     // taskId → running future (для interrupt)
     private final Map<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
@@ -52,7 +54,8 @@ public class TaskLauncher {
                         @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                         PriorTaskContextBuilder priorTaskContextBuilder,
                         ru.allstreets.developer.metrics.TaskMetrics metrics,
-                        TaskRepository taskRepo) {
+                        TaskRepository taskRepo,
+                        TaskLockService taskLockService) {
         this.graphRunner = graphRunner;
         this.telegram = telegram;
         this.taskRegistry = taskRegistry;
@@ -64,6 +67,7 @@ public class TaskLauncher {
         this.priorTaskContextBuilder = priorTaskContextBuilder;
         this.metrics = metrics;
         this.taskRepo = taskRepo;
+        this.taskLockService = taskLockService;
     }
 
     /**
@@ -293,6 +297,22 @@ public class TaskLauncher {
     }
 
     /**
+     * Дождаться, пока старый ран задачи отпустит advisory-lock (иначе новый run получит
+     * «Task already locked»). {@link #cancel} лишь интерраптит поток, а unlock происходит
+     * в finally графа — поэтому короткий поллинг до 5 секунд.
+     */
+    private void awaitLockReleased(String taskId) {
+        for (int i = 0; i < 50 && taskLockService.isLocked(taskId); i++) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /**
      * Закрыть задачу: RUNNING — прервать ран (это отмена), затем статус CLOSED и освобождение
      * слота. worktree задачи чистится ТОЛЬКО здесь (CLOSED) — до закрытия слот неприкосновен,
      * иначе нельзя (guard в пуле). Для COMPLETED/FAILED — просто перевод в CLOSED.
@@ -332,6 +352,7 @@ public class TaskLauncher {
         }
         // Прерываем текущий ран (если идёт) и освобождаем слот/чекпоинт, затем запускаем заново.
         cancel(taskId);
+        awaitLockReleased(taskId);
 
         String description = (task.getDescription() != null && !task.getDescription().isBlank())
                 ? task.getDescription() : task.getTitle();
