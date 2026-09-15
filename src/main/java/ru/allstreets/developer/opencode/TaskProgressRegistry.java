@@ -75,28 +75,44 @@ public class TaskProgressRegistry {
 
     @Transactional
     public void recordToolCall(String taskId, String toolName) {
-        repo.appendToolCall(taskId, toolName, "tool: " + toolName, System.currentTimeMillis());
+        int affected = repo.appendToolCall(taskId, toolName, "tool: " + toolName, System.currentTimeMillis());
+        warnIfNoRow(taskId, "recordToolCall", affected);
     }
 
     @Transactional
     public void recordStepFinish(String taskId, long tokens, double cost, String reason) {
-        repo.appendStepFinish(taskId, tokens, cost,
+        int affected = repo.appendStepFinish(taskId, tokens, cost,
                 "step done (reason=" + reason + ", tokens=" + tokens + ")", System.currentTimeMillis());
+        warnIfNoRow(taskId, "recordStepFinish", affected);
     }
 
     @Transactional
     public void recordText(String taskId, String text) {
-        repo.appendText(taskId, text, "text: " + preview(text), System.currentTimeMillis());
+        int affected = repo.appendText(taskId, text, "text: " + preview(text), System.currentTimeMillis());
+        warnIfNoRow(taskId, "recordText", affected);
     }
 
     @Transactional
     public void recordError(String taskId, String error) {
-        repo.appendError(taskId, error, "error: " + error, System.currentTimeMillis());
+        int affected = repo.appendError(taskId, error, "error: " + error, System.currentTimeMillis());
+        warnIfNoRow(taskId, "recordError", affected);
     }
 
     @Transactional
     public void markFinished(String taskId) {
-        repo.markFinished(taskId, System.currentTimeMillis());
+        int affected = repo.markFinished(taskId, System.currentTimeMillis());
+        warnIfNoRow(taskId, "markFinished", affected);
+    }
+
+    /**
+     * Диагностика: если UPDATE затронул 0 строк — строки прогресса в БД нет (не был вызван
+     * {@link #start} или упал create), поэтому все шаги/токены молча теряются. Логируем явно.
+     */
+    private void warnIfNoRow(String taskId, String operation, int affectedRows) {
+        if (affectedRows == 0) {
+            log.warn("TaskProgressRegistry: {} затронул 0 строк (нет строки task_progress для {}) — прогресс теряется",
+                    operation, taskId);
+        }
     }
 
     private String preview(String text) {
@@ -117,6 +133,8 @@ public class TaskProgressRegistry {
         p.setLastText(e.getLastText());
         p.setError(e.getError());
         p.setFinished(e.isFinished());
+        p.setStartTimeMs(e.getStartTimeMs());
+        p.setLastUpdateMs(e.getLastUpdateMs());
         parseCsv(e.getToolCalls()).forEach(p.getToolCalls()::add);
         lastN(parseLines(e.getRecentEvents()), MAX_EVENTS).forEach(p.getRecentEvents()::add);
         return p;

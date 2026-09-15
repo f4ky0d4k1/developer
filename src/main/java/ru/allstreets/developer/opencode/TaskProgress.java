@@ -21,7 +21,7 @@ public class TaskProgress {
     private int stepCount;
     private String lastText;
     private String error;
-    private final long startTimeMs;
+    private long startTimeMs;
     private long lastUpdateMs;
     private boolean finished;
 

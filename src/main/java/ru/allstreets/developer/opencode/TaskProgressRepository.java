@@ -26,10 +26,10 @@ public interface TaskProgressRepository extends JpaRepository<TaskProgressEntity
                 last_update_ms = :now
             WHERE task_id = :taskId
             """, nativeQuery = true)
-    void appendToolCall(@Param("taskId") String taskId,
-                        @Param("tool") String tool,
-                        @Param("event") String event,
-                        @Param("now") long now);
+    int appendToolCall(@Param("taskId") String taskId,
+                       @Param("tool") String tool,
+                       @Param("event") String event,
+                       @Param("now") long now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
@@ -41,11 +41,11 @@ public interface TaskProgressRepository extends JpaRepository<TaskProgressEntity
                 last_update_ms = :now
             WHERE task_id = :taskId
             """, nativeQuery = true)
-    void appendStepFinish(@Param("taskId") String taskId,
-                          @Param("tokens") long tokens,
-                          @Param("cost") double cost,
-                          @Param("event") String event,
-                          @Param("now") long now);
+    int appendStepFinish(@Param("taskId") String taskId,
+                         @Param("tokens") long tokens,
+                         @Param("cost") double cost,
+                         @Param("event") String event,
+                         @Param("now") long now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
@@ -55,10 +55,10 @@ public interface TaskProgressRepository extends JpaRepository<TaskProgressEntity
                 last_update_ms = :now
             WHERE task_id = :taskId
             """, nativeQuery = true)
-    void appendText(@Param("taskId") String taskId,
-                    @Param("text") String text,
-                    @Param("event") String event,
-                    @Param("now") long now);
+    int appendText(@Param("taskId") String taskId,
+                   @Param("text") String text,
+                   @Param("event") String event,
+                   @Param("now") long now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
@@ -68,14 +68,14 @@ public interface TaskProgressRepository extends JpaRepository<TaskProgressEntity
                 last_update_ms = :now
             WHERE task_id = :taskId
             """, nativeQuery = true)
-    void appendError(@Param("taskId") String taskId,
-                     @Param("error") String error,
-                     @Param("event") String event,
-                     @Param("now") long now);
+    int appendError(@Param("taskId") String taskId,
+                    @Param("error") String error,
+                    @Param("event") String event,
+                    @Param("now") long now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = "UPDATE task_progress SET finished = true, last_update_ms = :now WHERE task_id = :taskId",
             nativeQuery = true)
-    void markFinished(@Param("taskId") String taskId, @Param("now") long now);
+    int markFinished(@Param("taskId") String taskId, @Param("now") long now);
 
 }
