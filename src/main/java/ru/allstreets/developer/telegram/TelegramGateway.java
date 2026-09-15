@@ -97,6 +97,51 @@ public class TelegramGateway {
     }
 
     /**
+     * Отправить сообщение с inline-клавиатурой (кнопки). {@code inlineKeyboard} — список рядов,
+     * каждый ряд — список кнопок вида {@code Map.of("text", label, "callback_data", data)}.
+     */
+    public void sendMessageWithKeyboard(long chatId, String text,
+                                        java.util.List<java.util.List<java.util.Map<String, String>>> inlineKeyboard,
+                                        String taskId) {
+        String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
+        log.info("Отправка кнопок в ТГ chatId={} ({} рядов)", chatId, inlineKeyboard.size());
+        try {
+            var body = new java.util.HashMap<String, Object>();
+            body.put("chat_id", chatId);
+            body.put("text", outgoing);
+            body.put("parse_mode", "Markdown");
+            body.put("reply_markup", Map.of("inline_keyboard", inlineKeyboard));
+            api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
+            chatMemory.recordBotMessage(chatId, outgoing, taskId);
+        } catch (Exception e) {
+            log.error("Ошибка отправки кнопок в ТГ chatId={}: {}", chatId, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Кнопка inline-клавиатуры.
+     */
+    public static java.util.Map<String, String> button(String label, String callbackData) {
+        return Map.of("text", label, "callback_data", callbackData);
+    }
+
+    /**
+     * Подтвердить нажатие кнопки (убирает «часики» в клиенте).
+     */
+    public void answerCallbackQuery(String callbackQueryId, String text) {
+        try {
+            var body = new java.util.HashMap<String, Object>();
+            body.put("callback_query_id", callbackQueryId);
+            if (text != null && !text.isBlank()) {
+                body.put("text", text);
+            }
+            api.post().uri("/answerCallbackQuery").body(body).retrieve().toEntity(String.class);
+        } catch (Exception e) {
+            log.warn("Ошибка answerCallbackQuery {}: {}", callbackQueryId, e.getMessage());
+        }
+    }
+
+    /**
      * Экранирует underscores между буквенно-цифровыми символами (NEW_LEAD → NEW\_LEAD),
      * чтобы Telegram Markdown не интерпретировал их как italic-маркеры.
      * Markdown-форматирование вида _italic_ (подчёркивание между пробелами/границами) сохраняется.
@@ -194,7 +239,19 @@ public class TelegramGateway {
 
     public record Update(
             int update_id,
-            Message message
+            Message message,
+            CallbackQuery callback_query
+    ) {
+    }
+
+    /**
+     * Нажатие inline-кнопки.
+     */
+    public record CallbackQuery(
+            String id,
+            User from,
+            Message message,
+            String data
     ) {
     }
 

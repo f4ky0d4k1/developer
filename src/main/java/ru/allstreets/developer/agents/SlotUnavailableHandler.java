@@ -5,15 +5,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanLoopService;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
+import ru.allstreets.developer.telegram.TelegramGateway;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Обработка нехватки слотов OpenCode: вместо 10-минутного ожидания и падения узел спрашивает
- * пользователя, какие задачи можно закрыть, и уходит в HITL-паузу ({@code HITL_SLOT}). После
- * закрытия задач (closeTask) задача возобновляется с того же узла и повторяет захват слота.
+ * пользователя, какие задачи закрыть, inline-кнопками (тап по задаче → close → слот
+ * освобождается), и уходит в HITL-паузу ({@code HITL_SLOT}). После закрытия задач задача
+ * возобновляется с того же узла и повторяет захват слота.
  */
 @Component
 public class SlotUnavailableHandler {
@@ -23,40 +30,50 @@ public class SlotUnavailableHandler {
     private final OpenCodeSessionPool sessionPool;
     private final HumanLoopService humanLoop;
     private final TaskRepository taskRepo;
+    private final TelegramGateway telegram;
 
     public SlotUnavailableHandler(OpenCodeSessionPool sessionPool, HumanLoopService humanLoop,
-                                  TaskRepository taskRepo) {
+                                  TaskRepository taskRepo, TelegramGateway telegram) {
         this.sessionPool = sessionPool;
         this.humanLoop = humanLoop;
         this.taskRepo = taskRepo;
+        this.telegram = telegram;
     }
 
     /**
-     * Задать пользователю вопрос об освобождении слотов и уйти в HITL-паузу.
+     * Задать пользователю вопрос об освобождении слотов (с кнопками-задачами) и уйти в HITL.
      *
      * @param role роль узла (analyst/developer/tester/validator) — для state
      */
     public AgentResult askToFreeSlots(String taskId, long chatId, String role) {
-        var held = sessionPool.heldTasks();
-        StringBuilder sb = new StringBuilder();
-        sb.append("⚠️ Свободных слотов OpenCode нет — задача ").append(shortId(taskId))
-                .append(" ждёт. Закрой ненужные задачи, чтобы освободить слот (скажи «закрой <id>»).\n")
-                .append("Слоты держат (").append(held.size()).append("):\n");
+        List<String> held = sessionPool.heldTasks();
+
+        String question = "⚠️ Свободных слотов OpenCode нет — задача " + shortId(taskId) + " ждёт.\n"
+                + "Нажми на задачу, чтобы закрыть её и освободить слот (" + held.size() + " занято):";
+
+        List<List<Map<String, String>>> keyboard = new ArrayList<>();
         for (String t : held) {
-            var e = taskRepo.findById(t).orElse(null);
-            sb.append("- ").append(shortId(t));
+            TaskEntity e = taskRepo.findById(t).orElse(null);
+            String label = shortId(t);
             if (e != null && e.getTitle() != null && !e.getTitle().isBlank()) {
-                sb.append(" — ").append(e.getTitle());
+                label += " — " + e.getTitle();
             }
-            sb.append(e != null ? " (" + e.getStatus() + ")" : " (нет в БД)").append("\n");
+            if (e != null) {
+                label += " (" + e.getStatus() + ")";
+            }
+            String btnLabel = label.length() > 60 ? label.substring(0, 60) + "…" : label;
+            keyboard.add(List.of(TelegramGateway.button(btnLabel, "close:" + t)));
         }
-        String question = sb.toString();
+        keyboard.add(List.of(TelegramGateway.button("✅ Готово", "slot:done")));
+
         log.warn("Слоты исчерпаны, задача {} уходит в HITL_SLOT (держат: {})", shortId(taskId), held);
-        humanLoop.askHuman(taskId, chatId, question);
+
+        humanLoop.registerPending(taskId, chatId, question);
+        telegram.sendMessageWithKeyboard(chatId, question, keyboard, taskId);
 
         return AgentResult.builder()
                 .text("Awaiting free OpenCode slot")
-                .stateUpdates(java.util.Map.of(TaskState.AGENT_ROLE, role))
+                .stateUpdates(Map.of(TaskState.AGENT_ROLE, role))
                 .interrupt("HITL_SLOT")
                 .completed(false)
                 .build();

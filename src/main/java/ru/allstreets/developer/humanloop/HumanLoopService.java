@@ -39,4 +39,12 @@ public class HumanLoopService {
         telegram.sendMessage(chatId, "❓ [" + taskId.substring(0, 8) + "] " + question);
         registry.registerPending(taskId, chatId, question);
     }
+
+    /**
+     * Зарегистрировать pending-вопрос БЕЗ отправки сообщения — когда узел сам отправит его
+     * с inline-кнопками. Ответ пользователя всё так же возобновит задачу.
+     */
+    public void registerPending(String taskId, long chatId, String question) {
+        registry.registerPending(taskId, chatId, question);
+    }
 }

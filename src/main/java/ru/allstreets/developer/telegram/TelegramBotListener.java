@@ -123,6 +123,31 @@ public class TelegramBotListener {
         return sb.toString();
     }
 
+    /**
+     * Нажатие inline-кнопки: {@code close:<taskId>} — закрыть задачу (освобождает слот).
+     */
+    private void handleCallbackQuery(TelegramGateway.CallbackQuery cq) {
+        long chatId = (cq.message() != null && cq.message().chat() != null) ? cq.message().chat().id() : 0;
+        String data = cq.data();
+        log.info("TG callback: chat={} data={}", chatId, data);
+        if (data == null || data.isBlank()) {
+            telegram.answerCallbackQuery(cq.id(), null);
+            return;
+        }
+        try {
+            if (data.startsWith("close:")) {
+                String taskId = data.substring("close:".length());
+                boolean closed = taskLauncher.close(taskId, chatId);
+                telegram.answerCallbackQuery(cq.id(), closed ? "Задача закрыта" : "Не удалось закрыть");
+            } else {
+                telegram.answerCallbackQuery(cq.id(), "Ок");
+            }
+        } catch (Exception e) {
+            log.error("TG callback: ошибка data={}: {}", data, e.getMessage(), e);
+            telegram.answerCallbackQuery(cq.id(), "Ошибка");
+        }
+    }
+
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
     public void poll() {
         int offset = lastUpdateId.get() + 1;
@@ -143,6 +168,11 @@ public class TelegramBotListener {
         for (var update : updates.result()) {
             lastUpdateId.set(update.update_id());
             log.info("TG poll: обработка update_id={}", update.update_id());
+
+            if (update.callback_query() != null) {
+                handleCallbackQuery(update.callback_query());
+                continue;
+            }
 
             if (update.message() == null) {
                 log.debug("TG poll: update_id={} — message=null", update.update_id());
