@@ -23,6 +23,12 @@ fi
 
 cd "$WORK_DIR"
 
+# Освободить место ДО pull: старые dangling-образы/кэш копятся и могут забить диск (pull упадёт).
+echo "=== Очистка перед pull ==="
+docker container prune -f >/dev/null 2>&1 || true
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f >/dev/null 2>&1 || true
+
 echo "=== Логин в Docker Hub (через прокси Timeweb) ==="
 for i in 1 2 3; do
   if echo "${DOCKER_PASSWORD}" | docker login dockerhub.timeweb.cloud -u "${DOCKER_USERNAME}" --password-stdin; then
@@ -74,7 +80,32 @@ echo "=== Проверка запуска ==="
 chmod +x healthcheck.sh
 ./healthcheck.sh
 
-docker system prune -f
+echo "=== Очистка Docker-мусора (диск VPS) ==="
+# Иммутабельные теги (dev-*/oc-*/alloy-*) и testcontainers-образы копятся после каждого
+# деплоя; образы, используемые контейнерами (в т.ч. остановленными), не трогаются.
+docker container prune -f || true
+# -a: удалить ВСЕ образы, на которые не ссылается ни один контейнер (старые теги + testcontainers)
+docker image prune -a -f || true
+# весь build cache
+docker builder prune -a -f || true
+# неиспользуемые анонимные тома
+docker volume prune -f || true
+# неиспользуемые сети
+docker network prune -f || true
+
+# max-size/ротация применится только к НОВЫМ контейнерам — уже разросшиеся json-логи
+# (DEBUG opencode) обрезаем явно.
+for cid in $(docker ps -q); do
+  log_path="$(docker inspect --format '{{.LogPath}}' "$cid" 2>/dev/null || true)"
+  if [ -n "$log_path" ] && [ -f "$log_path" ]; then
+    : > "$log_path" 2>/dev/null || true
+  fi
+done
+
+echo "--- Диск после очистки ---"
+df -h / || true
+docker system df || true
+
 docker logout
 echo "✅ Деплой завершён"
 exit 0

@@ -1,3 +1,11 @@
+# Единый лимит docker-логов (json-file): DEBUG-логи opencode без ограничения
+# забивали диск VPS. max-size на контейнер, max-file — число ротаций.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
 
   # ─── Agent runtime (Spring Boot + spring-agent-flow) ───
@@ -8,6 +16,7 @@ services:
       dockerfile: Dockerfile
     container_name: developer
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "8080:8080"   # API
       - "8081:8081"   # Actuator/management (Prometheus scrape)
@@ -34,6 +43,7 @@ services:
     working_dir: /work
     command: [ "--print-logs", "--log-level", "${OPENCODE_LOG_LEVEL:-DEBUG}", "serve", "--port", "4096", "--hostname", "0.0.0.0" ]
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - repo-data:/work               # Git репозиторий проекта
       - opencode-data:/root/.local/share/opencode  # сессии/состояние OpenCode — переживают пересоздание контейнера
@@ -86,6 +96,7 @@ services:
     image: postgres:18
     container_name: developer-postgres
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: agent_state
       POSTGRES_USER: ${POSTGRES_USER:-developer}
@@ -107,6 +118,7 @@ services:
       dockerfile: Dockerfile
     container_name: grafana_alloy
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     environment:
