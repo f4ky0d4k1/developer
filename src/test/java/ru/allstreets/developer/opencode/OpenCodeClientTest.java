@@ -222,6 +222,18 @@ class OpenCodeClientTest extends PostgresTestBase {
         assertTrue(result.error().contains("Таймаут"), "ожидали таймаут бюджета, не stall: " + result.error());
     }
 
+    @Test
+    void runAgent_envError_failsFast() {
+        // Агент сам проверил окружение и остановился с ENV-ERROR — это провал, а не «успех» с текстом.
+        transformer.envError = true;
+
+        var result = client().runAgent("tester", "промпт", "/work/slot-0", "task-1");
+
+        assertEquals("error", result.status());
+        assertTrue(result.error() != null && result.error().contains("ENV-ERROR"),
+                "ожидали env-error: " + result.error());
+    }
+
     // ---------------------------------------------------------------------
 
     /**
@@ -239,6 +251,7 @@ class OpenCodeClientTest extends PostgresTestBase {
         private boolean emptyAssistant;
         private boolean partialAssistant;
         private boolean multiStep;
+        private boolean envError;
         private int listCalls;
 
         void reset() {
@@ -247,6 +260,7 @@ class OpenCodeClientTest extends PostgresTestBase {
             emptyAssistant = false;
             partialAssistant = false;
             multiStep = false;
+            envError = false;
             listCalls = 0;
         }
 
@@ -276,6 +290,11 @@ class OpenCodeClientTest extends PostgresTestBase {
                 if (partialAssistant) {
                     // Ассистент есть, текст копится, но сообщение никогда не завершается.
                     return jsonList(response, List.of(assistant(messageId, "частичный вывод", false)));
+                }
+                if (envError) {
+                    // Агент сам обнаружил нехватку окружения и остановился с ENV-ERROR.
+                    return jsonList(response, List.of(assistant(messageId,
+                            "ENV-ERROR: JDK 21 не найден (java -version упал)", true)));
                 }
                 if (multiStep) {
                     // Реальный контракт: отдельное assistant-сообщение на КАЖДЫЙ шаг, все с

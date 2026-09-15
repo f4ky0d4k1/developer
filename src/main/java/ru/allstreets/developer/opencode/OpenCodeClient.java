@@ -347,6 +347,16 @@ public class OpenCodeClient {
                 OpenCodeApi.MessageEnvelope last = replies.isEmpty() ? null : replies.getLast();
                 if (last != null && last.isCompleted()) {
                     if (isFinalFinish(last.info().finish())) {
+                        // Агент сам проверил окружение и остановился с «ENV-ERROR: …» — это провал
+                        // прогона (нехватка окружения), а не «успех» с текстом ошибки: иначе задача
+                        // молча «завершается», хотя сборка/тесты не состоялись.
+                        if (isEnvError(full)) {
+                            log.error("[OpenCode:{}] агент сообщил о нехватке окружения: {}", agentName, full);
+                            run.setStatus(OpenCodeRunStatus.FAILED);
+                            run.setError(full);
+                            runRepo.save(run);
+                            return fail(taskId, agentName, full, sessionId, "env-error");
+                        }
                         log.info("Агент {} завершил работу. session={}, шагов={}, текст={} символов, finish={}, parts={}",
                                 agentName, sessionId, replies.size(), full.length(),
                                 last.info().finish(), last.partTypes());
@@ -457,6 +467,14 @@ public class OpenCodeClient {
      */
     private static boolean isFinalFinish(String finish) {
         return !"tool-calls".equalsIgnoreCase(finish);
+    }
+
+    /**
+     * Агент остановился с сигналом нехватки окружения: финальный вывод начинается с
+     * {@code ENV-ERROR} (см. секцию «ПРОВЕРКА ОКРУЖЕНИЯ» в промптах агентов).
+     */
+    private static boolean isEnvError(String text) {
+        return text != null && text.stripLeading().toUpperCase(java.util.Locale.ROOT).startsWith("ENV-ERROR");
     }
 
     /**

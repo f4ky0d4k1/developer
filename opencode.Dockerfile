@@ -1,8 +1,9 @@
 FROM ghcr.io/anomalyco/opencode
 
 # uvx для MCP stdio transport (yandex-tracker, grafana) + docker CLI для GitHub MCP
+# + JDK 21 для сборки/тестов целевых Java-проектов (Maven подтягивается через ./mvnw)
 # ca-certificates обновляем для фикс TLS ошибок с Cloudflare
-RUN apk add --no-cache --update ca-certificates python3 py3-pip curl docker-cli git nodejs npm && \
+RUN apk add --no-cache --update ca-certificates python3 py3-pip curl docker-cli git nodejs npm openjdk21 && \
     update-ca-certificates && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv && \
