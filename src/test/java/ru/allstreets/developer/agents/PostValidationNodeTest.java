@@ -4,6 +4,7 @@ import io.github.asekka.springai.agents.core.AgentContext;
 import io.github.asekka.springai.agents.core.AgentResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.state.TaskState;
@@ -29,20 +30,19 @@ import static org.mockito.Mockito.when;
  */
 class PostValidationNodeTest {
 
-    private TaskRepository taskRepo;
     private ValidatorService validator;
     private StructuredOutputHelper structuredOutput;
     private PostValidationNode node;
 
     @BeforeEach
     void setUp() {
-        taskRepo = mock(TaskRepository.class);
+        TaskRepository taskRepo = mock(TaskRepository.class);
         validator = mock(ValidatorService.class);
         structuredOutput = mock(StructuredOutputHelper.class);
         when(taskRepo.findById(anyString())).thenReturn(Optional.empty());
         node = new PostValidationNode(
                 mock(ChatClient.class), mock(ChatClient.class), mock(TelegramGateway.class),
-                structuredOutput, taskRepo, validator);
+                structuredOutput, taskRepo, validator, "agent-generated");
     }
 
     private AgentContext baseCtx() {
@@ -138,5 +138,21 @@ class PostValidationNodeTest {
         AgentResult result = node.applyDecision(decision, 1, 1L, "task-1");
 
         assertTrue(result.hasError(), "неопределённое решение — fail, а не само-возврат в post_validation");
+    }
+
+    @Test
+    void validatorPrompt_requiresPrLabel() {
+        var ctx = baseCtx()
+                .with(TaskState.REQUIRES_DEVELOPMENT, true)
+                .with(TaskState.DEVELOPMENT_DONE, true);
+        validatorReturnsDecision(new AgentResponses.PostValidationDecision(
+                "https://github.com/x/y/pull/1", null, null, "ok"));
+
+        node.execute(ctx);
+
+        var promptCaptor = ArgumentCaptor.forClass(String.class);
+        verify(validator).run(promptCaptor.capture(), anyLong(), any(), anyString());
+        assertTrue(promptCaptor.getValue().contains("agent-generated"),
+                "промпт валидатора должен требовать метку PR из GITHUB_PR_LABEL: " + promptCaptor.getValue());
     }
 }

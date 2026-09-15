@@ -21,11 +21,13 @@ public class TelegramGateway {
     private final RestClient api;
     private final RateLimiter rateLimiter;
     private final ChatMemoryService chatMemory;
+    private final ActiveTaskRegistry taskRegistry;
     private final ChatClient fastChatClient;
 
     public TelegramGateway(@Value("${telegram.bot-token}") String botToken,
                            RateLimiterRegistry rateLimiterRegistry,
                            ChatMemoryService chatMemory,
+                           ActiveTaskRegistry taskRegistry,
                            @Qualifier("fallbackChatClient") ChatClient fastChatClient) {
         this.api = RestClient.builder()
                 .baseUrl("https://api.telegram.org/bot" + botToken)
@@ -33,6 +35,7 @@ public class TelegramGateway {
                 .build();
         this.rateLimiter = rateLimiterRegistry.rateLimiter("telegram");
         this.chatMemory = chatMemory;
+        this.taskRegistry = taskRegistry;
         this.fastChatClient = fastChatClient;
     }
 
@@ -41,15 +44,39 @@ public class TelegramGateway {
     }
 
     public void sendMessage(long chatId, String text, String taskId) {
-        log.info("Отправка в ТГ chatId={}: {}", chatId, text.length() > 100 ? text.substring(0, 100) + "..." : text);
+        String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
+        log.info("Отправка в ТГ chatId={}: {}", chatId, outgoing.length() > 100 ? outgoing.substring(0, 100) + "..." : outgoing);
         try {
-            String escaped = escapeMarkdownUnderscores(text);
+            String escaped = escapeMarkdownUnderscores(outgoing);
             sendWithRetry(chatId, escaped, "Markdown");
             log.debug("sendMessage: успешно отправлено chatId={}", chatId);
-            chatMemory.recordBotMessage(chatId, text, taskId);
+            chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
         }
+    }
+
+    private String titleOf(String taskId) {
+        if (taskId == null || taskId.isBlank()) return null;
+        try {
+            return taskRegistry.titleOf(taskId);
+        } catch (Exception e) {
+            log.debug("sendMessage: title для task={} недоступен: {}", taskId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Заголовок к сообщению задачи: {@code 📋 <название> (<id8>)}. Название опускается,
+     * если неизвестно; при пустом {@code taskId} текст не меняется.
+     */
+    static String withTaskHeader(String text, String title, String taskId) {
+        if (taskId == null || taskId.isBlank()) return text;
+        // Стартовое сообщение задачи само несёт «📋 title (ID: …)» — не дублируем.
+        if (text != null && text.stripLeading().startsWith("📋")) return text;
+        String shortId = taskId.length() > 8 ? taskId.substring(0, 8) : taskId;
+        String label = (title != null && !title.isBlank()) ? title + " " : "";
+        return "📋 " + label + "(" + shortId + ")\n" + text;
     }
 
     /**
@@ -59,10 +86,11 @@ public class TelegramGateway {
      * кликабельным сам, поэтому ссылку достаточно передать голым адресом.
      */
     public void sendPlainMessage(long chatId, String text, String taskId) {
-        log.info("Отправка plain в ТГ chatId={}: {}", chatId, text.length() > 100 ? text.substring(0, 100) + "..." : text);
+        String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
+        log.info("Отправка plain в ТГ chatId={}: {}", chatId, outgoing.length() > 100 ? outgoing.substring(0, 100) + "..." : outgoing);
         try {
-            sendWithRetry(chatId, text, null);
-            chatMemory.recordBotMessage(chatId, text, taskId);
+            sendWithRetry(chatId, outgoing, null);
+            chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки plain в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
         }

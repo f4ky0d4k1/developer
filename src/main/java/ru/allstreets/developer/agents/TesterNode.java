@@ -57,7 +57,7 @@ public class TesterNode implements Agent {
 
         log.info("Тестировщик: начало работы, ветка {}, repo {}", branch, targetRepo);
 
-        telegram.sendMessage(Long.parseLong(chatId), "🧪 Тестировщик пишет тесты...");
+        telegram.sendMessage(Long.parseLong(chatId), "🧪 Тестировщик пишет тесты...", taskId);
 
         int slot = sessionPool.acquire(600);
         if (slot < 0) {
@@ -91,7 +91,7 @@ public class TesterNode implements Agent {
             log.info("Тестировщик: завершено. Файлов: {}", result.files() != null ? result.files().size() : 0);
 
             telegram.sendMessage(Long.parseLong(chatId),
-                    "✅ Тесты написаны. Файлов: " + (result.files() != null ? result.files().size() : 0));
+                    "✅ Тесты написаны. Файлов: " + (result.files() != null ? result.files().size() : 0), taskId);
 
             taskRepo.findById(taskId).ifPresent(task -> {
                 task.setTestsWritten(true);

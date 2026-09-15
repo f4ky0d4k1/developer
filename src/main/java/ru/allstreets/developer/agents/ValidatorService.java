@@ -38,7 +38,7 @@ public class ValidatorService {
     public String run(String prompt, long chatIdLong, String repoUrl, String taskId) {
         int slot = sessionPool.acquire(600);
         if (slot < 0) {
-            telegram.sendMessage(chatIdLong, "❌ Таймаут ожидания слота OpenCode");
+            telegram.sendMessage(chatIdLong, "❌ Таймаут ожидания слота OpenCode", taskId);
             return null;
         }
         try {
@@ -56,7 +56,7 @@ public class ValidatorService {
             throw e;
         } catch (Exception e) {
             log.error("Post-validation: ошибка OpenCode: {}", e.getMessage(), e);
-            telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + e.getMessage());
+            telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + e.getMessage(), taskId);
             return null;
         } finally {
             sessionPool.cleanupSlot(slot);

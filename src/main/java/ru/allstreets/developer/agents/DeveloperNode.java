@@ -58,7 +58,7 @@ public class DeveloperNode implements Agent {
 
         log.info("Разработчик: начало работы, ветка {}, repo {}", branch, targetRepo);
 
-        telegram.sendMessage(Long.parseLong(chatId), "👨‍💻 Разработчик реализует задачу...");
+        telegram.sendMessage(Long.parseLong(chatId), "👨‍💻 Разработчик реализует задачу...", taskId);
 
         int slot = sessionPool.acquire(600);
         if (slot < 0) {
@@ -92,10 +92,9 @@ public class DeveloperNode implements Agent {
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("developer", new RuntimeException("Ошибка разработчика: " + result.error())));
             }
 
-            log.info("Разработчик: завершено. Коммит: {}", result.commitHash());
+            log.info("Разработчик: завершено. Файлов: {}", result.files() != null ? result.files().size() : 0);
 
-            telegram.sendMessage(Long.parseLong(chatId),
-                    "✅ Реализация завершена. Коммит: " + result.commitHash());
+            telegram.sendMessage(Long.parseLong(chatId), "✅ Реализация завершена.", taskId);
 
             taskRepo.findById(taskId).ifPresent(task -> {
                 task.setDevelopmentDone(true);

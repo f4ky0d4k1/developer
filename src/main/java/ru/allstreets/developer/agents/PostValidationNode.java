@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.checkpoint.TaskRepository;
@@ -43,17 +44,20 @@ public class PostValidationNode implements Agent {
     private final StructuredOutputHelper structuredOutput;
     private final TaskRepository taskRepo;
     private final ValidatorService validator;
+    private final String prLabel;
 
     public PostValidationNode(@Qualifier("postValidationChatClient") ChatClient chatClient,
                               @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
-                              TaskRepository taskRepo, ValidatorService validator) {
+                              TaskRepository taskRepo, ValidatorService validator,
+                              @Value("${github.pr-label:agent-generated}") String prLabel) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.telegram = telegram;
         this.structuredOutput = structuredOutput;
         this.taskRepo = taskRepo;
         this.validator = validator;
+        this.prLabel = prLabel;
     }
 
     @Override
@@ -88,22 +92,22 @@ public class PostValidationNode implements Agent {
         if (isRequiredNotDone(ctx, TaskState.REQUIRES_DEVELOPMENT, TaskState.DEVELOPMENT_DONE)) {
             log.warn("Post-validation: требуется разработка, но developmentDone=false. Возврат к developer.");
             return reroute(chatIdLong, "developer", reworkCount,
-                    "❌ Требуется разработка, но она не выполнена. Возврат к разработчику.");
+                    "❌ Требуется разработка, но она не выполнена. Возврат к разработчику.", taskId);
         }
         if (isRequiredNotDone(ctx, TaskState.REQUIRES_TESTING, TaskState.TESTS_WRITTEN)) {
             log.warn("Post-validation: требуется тестирование, но testsWritten=false. Возврат к tester.");
             return reroute(chatIdLong, "tester", reworkCount,
-                    "❌ Требуются тесты, но они не написаны. Возврат к тестировщику.");
+                    "❌ Требуются тесты, но они не написаны. Возврат к тестировщику.", taskId);
         }
 
-        telegram.sendMessage(chatIdLong, "🔍 Post-validation: валидатор проверяет результат...");
+        telegram.sendMessage(chatIdLong, "🔍 Post-validation: валидатор проверяет результат...", taskId);
         String openCodeOutput = validator.run(buildValidatorPrompt(ctx, reworkCount), chatIdLong, repoUrl, taskId);
         if (openCodeOutput == null) {
             return AgentResult.failed(AgentError.of("post_validation",
                     new RuntimeException("Ошибка OpenCode при валидации")));
         }
 
-        AgentResponses.PostValidationDecision decision = parseDecision(openCodeOutput, chatIdLong);
+        AgentResponses.PostValidationDecision decision = parseDecision(openCodeOutput, chatIdLong, taskId);
         if (decision == null) {
             return AgentResult.failed(AgentError.of("post_validation",
                     new RuntimeException("Пустой ответ LLM")));
@@ -120,8 +124,8 @@ public class PostValidationNode implements Agent {
         return required && !done;
     }
 
-    private AgentResult reroute(long chatIdLong, String target, int reworkCount, String message) {
-        telegram.sendMessage(chatIdLong, message);
+    private AgentResult reroute(long chatIdLong, String target, int reworkCount, String message, String taskId) {
+        telegram.sendMessage(chatIdLong, message, taskId);
         int newReworkCount = reworkCount + 1;
         log.info("Post-validation: возврат к узлу '{}' (reworkCount={})", target, newReworkCount);
         return AgentResult.builder()
@@ -177,12 +181,14 @@ public class PostValidationNode implements Agent {
                 4. Тесты НЕ запускай — их уже написали (`tester`) и добились зелёного прогона (`developer`).
                    Если видишь, что тестов нет или покрытие не соответствует AC — это повод вернуть tester.
                 5. Решение:
-                   - всё выполнено → создай PR через GitHub MCP (head — текущая ветка, base — main);
+                   - всё выполнено → создай PR через GitHub MCP (head — текущая ветка, base — main)
+                     и повесь на него метку «%s» (если такой метки в репозитории нет — создай её
+                     через GitHub MCP, затем повесь);
                    - не хватает реализации → reroute "developer";
                    - не хватает/неверны тесты → reroute "tester";
                    - проблема в ТЗ/требованиях, нужен пересмотр → reroute "analyst";
                    - задача невыполнима → failed.
-                
+
                 В конце ответа выведи СТРОГО JSON:
                 ```json
                 {
@@ -192,7 +198,7 @@ public class PostValidationNode implements Agent {
                   "summary": "кратко: что сделано и почему такое решение"
                 }
                 ```
-                """);
+                """.formatted(prLabel));
 
         sb.append("\n## Контекст задачи\n");
         appendSection(sb, "ТЗ / спека", ctx.get(TaskState.SPEC), SPEC_LIMIT);
@@ -231,7 +237,7 @@ public class PostValidationNode implements Agent {
         return text.length() > maxLen ? text.substring(0, maxLen) + "..." : text;
     }
 
-    private AgentResponses.PostValidationDecision parseDecision(String openCodeOutput, long chatIdLong) {
+    private AgentResponses.PostValidationDecision parseDecision(String openCodeOutput, long chatIdLong, String taskId) {
         try {
             String parsePrompt = """
                     Извлеки JSON из ответа post-validation и верни как structured output.
@@ -246,13 +252,13 @@ public class PostValidationNode implements Agent {
 
             if (decision == null) {
                 log.error("Post-validation: пустой ответ LLM");
-                telegram.sendMessage(chatIdLong, "❌ Post-validation: пустой ответ от LLM");
+                telegram.sendMessage(chatIdLong, "❌ Post-validation: пустой ответ от LLM", taskId);
             }
 
             return decision;
         } catch (Exception e) {
             log.error("Post-validation: ошибка парсинга: {}", e.getMessage(), e);
-            telegram.sendMessage(chatIdLong, "❌ Ошибка post-validation: " + e.getMessage());
+            telegram.sendMessage(chatIdLong, "❌ Ошибка post-validation: " + e.getMessage(), taskId);
             return null;
         }
     }
@@ -264,7 +270,7 @@ public class PostValidationNode implements Agent {
 
         if (decision.prUrl() != null && !decision.prUrl().isBlank()) {
             log.info("Post-validation: PR создан — {}", decision.prUrl());
-            telegram.sendMessage(chatIdLong, "✅ PR создан: " + decision.prUrl());
+            telegram.sendMessage(chatIdLong, "✅ PR создан: " + decision.prUrl(), taskId);
             taskRepo.findById(taskId).ifPresent(task -> {
                 task.setPrCreated(true);
                 taskRepo.save(task);
@@ -285,7 +291,7 @@ public class PostValidationNode implements Agent {
             int newReworkCount = reworkCount + 1;
             log.info("Post-validation: LLM решила вернуться к узлу '{}' (reworkCount={})", decision.reroute(), newReworkCount);
             telegram.sendMessage(chatIdLong,
-                    "🔄 Возврат к узлу: " + decision.reroute() + " (попытка " + newReworkCount + "/3)");
+                    "🔄 Возврат к узлу: " + decision.reroute() + " (попытка " + newReworkCount + "/3)", taskId);
             return AgentResult.builder()
                     .text(summary)
                     .stateUpdates(java.util.Map.of(
@@ -298,7 +304,7 @@ public class PostValidationNode implements Agent {
 
         if (decision.failed() != null && !decision.failed().isBlank()) {
             log.warn("Post-validation: LLM сообщила FAILED — {}", decision.failed());
-            telegram.sendMessage(chatIdLong, "❌ " + decision.failed());
+            telegram.sendMessage(chatIdLong, "❌ " + decision.failed(), taskId);
             return AgentResult.failed(AgentError.of("post_validation",
                     new RuntimeException(decision.failed())));
         }
@@ -307,7 +313,7 @@ public class PostValidationNode implements Agent {
         // отсутствие URL PR при заявленном создании — ошибка, а не повод крутить граф.
         log.warn("Post-validation: LLM не выдала prUrl/reroute/failed, summary={}", decision.summary());
         String fallbackMsg = summary.isBlank() ? "Решение не определено" : summary;
-        telegram.sendMessage(chatIdLong, "⚠️ Post-validation: " + fallbackMsg);
+        telegram.sendMessage(chatIdLong, "⚠️ Post-validation: " + fallbackMsg, taskId);
         return AgentResult.failed(AgentError.of("post_validation",
                 new RuntimeException("Post-validation: решение не определено — " + fallbackMsg)));
     }

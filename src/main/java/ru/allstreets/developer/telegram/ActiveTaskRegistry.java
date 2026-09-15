@@ -115,6 +115,15 @@ public class ActiveTaskRegistry {
                 .orElse(null);
     }
 
+    /**
+     * Название задачи (для заголовка сообщений в ТГ); null — если задача неизвестна.
+     */
+    public String titleOf(String taskId) {
+        return taskRepo.findById(taskId)
+                .map(TaskEntity::getTitle)
+                .orElse(null);
+    }
+
     @Transactional
     public void unregister(String taskId) {
         taskChatRepo.deleteByTaskId(taskId);

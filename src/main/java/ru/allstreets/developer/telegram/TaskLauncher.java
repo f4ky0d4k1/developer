@@ -62,10 +62,6 @@ public class TaskLauncher {
         this.metrics = metrics;
     }
 
-    public void launch(String taskDescription, long chatId, String targetRepo) {
-        launch(taskDescription, chatId, targetRepo, null);
-    }
-
     /**
      * @param priorTaskId id предыдущего прогона при ретрае через НОВУЮ задачу (чекпоинта нет);
      *                    его описание/Tracker/переписка переносятся в контекст новой задачи.
@@ -208,14 +204,8 @@ public class TaskLauncher {
 
             String resultMsg;
             if (!result.hasError()) {
-                String resultText = result.text() != null ? result.text() : "";
-                if (resultText.startsWith("http")) {
-                    resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена. PR: " + resultText;
-                } else if (resultText.isBlank() || "Готово".equals(resultText)) {
-                    resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
-                } else {
-                    resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
-                }
+                // Ссылку на PR уже отправила пост-валидация («✅ PR создан: …») — здесь не дублируем.
+                resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
                 taskRegistry.markCompleted(taskId);
                 metrics.taskOutcome("completed");
             } else {

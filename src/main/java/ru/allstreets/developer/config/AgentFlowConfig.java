@@ -40,29 +40,13 @@ public class AgentFlowConfig {
                 .addNode("tester", tester)
                 .addNode("developer", developer)
                 .addNode("post_validation", postValidation)
-                // analyst → роутинг через NEXT_STEP (LLM-driven)
-                // "developer" — задача требует кодинга
-                .addEdge(Edge.onResult(
-                        "analyst",
-                        (ctx, result) -> !result.hasError() && "developer".equals(ctx.get(TaskState.NEXT_STEP)),
-                        "developer"
-                ))
-                // "tester" — сначала тесты (TDD)
-                .addEdge(Edge.onResult(
-                        "analyst",
-                        (ctx, result) -> !result.hasError() && "tester".equals(ctx.get(TaskState.NEXT_STEP)),
-                        "tester"
-                ))
-                // "done" или null — аналитическая задача, сразу к пост-валидации
-                .addEdge(Edge.onResult(
-                        "analyst",
-                        (ctx, result) -> {
-                            if (result.hasError()) return false;
-                            String next = ctx.get(TaskState.NEXT_STEP);
-                            return next == null || "done".equals(next);
-                        },
-                        "post_validation"
-                ))
+                // analyst → роутинг по ФЛАГАМ задачи, а не по nextStep: если нужны тесты —
+                // всегда сначала tester (TDD), затем tester → developer. Защита от ошибки
+                // аналитика, который ставит nextStep=developer, игнорируя requiresTesting
+                // (инцидент ec0a2004: developer запускался раньше tester).
+                .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToTester, "tester"))
+                .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToDeveloper, "developer"))
+                .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToPostValidation, "post_validation"))
                 // developer → post_validation (всегда — валидация и PR)
                 .addEdge(Edge.onResult(
                         "developer",
@@ -112,6 +96,41 @@ public class AgentFlowConfig {
             cur = cur.getCause();
         }
         return false;
+    }
+
+    /**
+     * Аналитик не принял решения о коде/тестах (nextStep=done/null) — аналитическая задача.
+     */
+    private static boolean isAnalystDone(AgentContext ctx) {
+        String next = ctx.get(TaskState.NEXT_STEP);
+        return next == null || "done".equals(next);
+    }
+
+    /**
+     * analyst → tester: задача требует тестов (TDD — тесты раньше реализации).
+     */
+    static boolean analystGoesToTester(AgentContext ctx, AgentResult result) {
+        return !result.hasError() && !isAnalystDone(ctx)
+                && Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING));
+    }
+
+    /**
+     * analyst → developer: код нужен, но тесты не требуются.
+     */
+    static boolean analystGoesToDeveloper(AgentContext ctx, AgentResult result) {
+        return !result.hasError() && !isAnalystDone(ctx)
+                && !Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING))
+                && Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_DEVELOPMENT));
+    }
+
+    /**
+     * analyst → post_validation: аналитическая задача либо нечего делать.
+     */
+    static boolean analystGoesToPostValidation(AgentContext ctx, AgentResult result) {
+        if (result.hasError()) return false;
+        if (isAnalystDone(ctx)) return true;
+        return !Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_DEVELOPMENT))
+                && !Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING));
     }
 
     private static boolean shouldReroute(AgentContext ctx, AgentResult result, String target) {

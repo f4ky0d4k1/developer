@@ -125,11 +125,7 @@ public class AnalystNode implements Agent {
             String repoUrl = toRepoUrl(targetRepo);
 
             log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
-            String title = ctx.get(TaskState.TASK_TITLE);
-            String taskLabel = (title != null && !title.isBlank())
-                    ? title + " (" + taskId.substring(0, 8) + ")"
-                    : taskId.substring(0, 8);
-            telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу над задачей: " + taskLabel);
+            telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу", taskId);
 
             slot = sessionPool.acquire(600);
             if (slot < 0) {
@@ -152,7 +148,7 @@ public class AnalystNode implements Agent {
 
                 if (ocResult.error() != null && !ocResult.error().isEmpty()) {
                     log.error("Аналитик: ошибка OpenCode: {}", ocResult.error());
-                    telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + ocResult.error());
+                    telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + ocResult.error(), taskId);
                     return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
                             new RuntimeException("OpenCode error: " + ocResult.error())));
                 }
