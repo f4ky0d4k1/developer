@@ -84,6 +84,32 @@ class WorktreeManagerTest {
         assertEquals("", git(slot, "status", "--porcelain"));
     }
 
+    @Test
+    void reuseSlot_withDirtyWorktree_doesNotDiscardChanges() throws Exception {
+        assumeTrue(gitAvailable(), "git недоступен");
+        Path repo = createSourceRepo(TRACKED_REPO_CONFIG);
+        WorktreeManager m = manager();
+
+        m.prepareSlot(0, repo.toString());
+        Path slot = workDir.resolve("slot-0");
+
+        // Остатки от прошлого упавшего агента: накоммитил на feature-ветке, затем оставил
+        // незакоммиченное изменение tracked-файла. `git checkout main` в таком состоянии
+        // падает с "Your local changes would be overwritten" (инцидент 0f9e5fa2).
+        git(slot, "checkout", "-b", "feature/leftover");
+        Files.writeString(slot.resolve("README.md"), "committed-on-feature\n");
+        git(slot, "add", "-A");
+        git(slot, "commit", "-m", "feature work");
+        Files.writeString(slot.resolve("README.md"), "dirty-uncommitted\n");
+
+        // Подготовка не должна фейлить задачу и НЕ должна сбрасывать работу агента —
+        // грязное дерево оставляем агенту (он по промпту закоммитит/stash и разрешит конфликт).
+        assertDoesNotThrow(() -> m.prepareSlot(0, repo.toString()));
+
+        assertTrue(Files.readString(slot.resolve("README.md")).startsWith("dirty-uncommitted"),
+                "незакоммиченная работа агента должна сохраниться");
+    }
+
     private Path createSourceRepo(String opencodeJson) throws Exception {
         Path repo = workDir.resolve("source-repo");
         Files.createDirectories(repo);

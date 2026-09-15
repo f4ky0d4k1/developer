@@ -86,16 +86,23 @@ public class WorktreeManager {
 
         try {
             if (isGitRepo(slotDir)) {
-                // Уже клонировано — обновляем main (с retry на случай TLS ошибок).
-                // Снимаем прошлую подмену конфига, иначе она мешает fetch/checkout/pull.
+                // Уже клонировано — снимаем прошлую подмену конфига и обновляем remote-ссылки
+                // (с retry на случай TLS ошибок). Ветки НЕ сбрасываем принудительно: если в дереве
+                // осталась незакоммиченная работа агента, `git checkout main` упадёт — не фейлим
+                // задачу, оставляем агенту (по промпту он сам закоммитит/stash и разрешит конфликт).
                 clearProjectConfigOverride(slotDir);
                 runCommand(slotDir, "git", "config", "http.sslVerify", "false");
                 runCommandWithRetry(slotDir, 3, "git", "fetch", "origin");
-                runCommand(slotDir, "git", "checkout", "main");
-                runCommandWithRetry(slotDir, 3, "git", "pull", "origin", "main");
+                try {
+                    runCommand(slotDir, "git", "checkout", "main");
+                    runCommandWithRetry(slotDir, 3, "git", "pull", "origin", "main");
+                } catch (RuntimeException e) {
+                    log.warn("Слот {} не удалось обновить до main (грязное дерево?) — оставляю агенту: {}",
+                            slotIndex, e.getMessage());
+                }
                 linkOpencodeConfig(slotDir);
                 applyOpencodeProjectConfig(slotDir);
-                log.info("Слот {} обновлён на main", slotIndex);
+                log.info("Слот {} подготовлен", slotIndex);
                 return;
             }
 

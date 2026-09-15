@@ -72,6 +72,10 @@ SDD-навыки (skills) также уже загружены в контекс
 
 - Перед началом работы переключись на нужную ветку: `git checkout -b <branch>` (имя ветки передано в промпте)
 - Если ветка уже существует удалённо: `git fetch origin && git checkout <branch>`
+- Если `git checkout`/`git checkout -b` падает с "local changes would be overwritten" — в дереве остались
+  незакоммиченные правки прошлого (упавшего) запуска. НЕ теряй их: `git add -A && git commit -m "wip"` (или
+  `git stash`), затем повтори checkout. Если `git pull`/`git merge` даёт конфликт — разреши его (открой
+  конфликтные файлы, убери маркеры <<<<<<< / ======= / >>>>>>>, закоммить).
 - НЕ коммить в main! Только в feature-ветку.
 - После написания кода — закоммить: `git add -A && git commit -m "описание"`
 - Запушь ветку: `git push origin <branch>` (если ветка новая — `git push -u origin <branch>`)
