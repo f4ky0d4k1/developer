@@ -250,7 +250,7 @@ public class PostValidationNode implements Agent {
         }
     }
 
-    private AgentResult applyDecision(AgentResponses.PostValidationDecision decision, int reworkCount, long chatIdLong, String taskId) {
+    AgentResult applyDecision(AgentResponses.PostValidationDecision decision, int reworkCount, long chatIdLong, String taskId) {
         log.info("Post-validation: решение — prUrl={}, reroute={}, failed={}",
                 decision.prUrl(), decision.reroute(), decision.failed());
         String summary = decision.summary() != null ? decision.summary() : "";
@@ -266,7 +266,10 @@ public class PostValidationNode implements Agent {
                     .text(decision.prUrl())
                     .stateUpdates(java.util.Map.of(
                             TaskState.AGENT_ROLE, "post_validation",
-                            TaskState.PR_CREATED, true))
+                            TaskState.PR_CREATED, true,
+                            // Сброс: иначе устаревший REROUTE_TARGET (напр. "tester" с прошлой
+                            // блокировки «тесты не написаны») уводит граф в старый узел после PR.
+                            TaskState.REROUTE_TARGET, ""))
                     .completed(true)
                     .build();
         }
@@ -313,7 +316,8 @@ public class PostValidationNode implements Agent {
         return AgentResult.builder()
                 .text(fallbackMsg)
                 .stateUpdates(java.util.Map.of(
-                        TaskState.AGENT_ROLE, "post_validation"))
+                        TaskState.AGENT_ROLE, "post_validation",
+                        TaskState.REROUTE_TARGET, ""))
                 .completed(true)
                 .build();
     }
