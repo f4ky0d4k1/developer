@@ -84,28 +84,4 @@ public final class AgentResponses {
             String summary
     ) {
     }
-
-    /**
-     * DTO для парсинга JSON-отчёта от OpenCode валидатора.
-     */
-    public record ValidatorReportDto(
-            String status,
-            int total,
-            int passed,
-            int failed,
-            java.util.List<ValidatorFailureDto> failures,
-            @com.fasterxml.jackson.annotation.JsonProperty("coverage_gaps") java.util.List<String> coverageGaps
-    ) {
-    }
-
-    /**
-     * DTO для элемента failures в отчёте валидатора.
-     */
-    public record ValidatorFailureDto(
-            String test,
-            String type,
-            String message,
-            String details
-    ) {
-    }
 }

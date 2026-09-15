@@ -22,7 +22,6 @@ public final class TaskState {
     public static final StateKey<String> TEST_PLAN = StateKey.of("testPlan", String.class);
     public static final StateKey<String> IMPLEMENTATION = StateKey.of("implementation", String.class);
     public static final StateKey<String> COMMIT_HASH = StateKey.of("commitHash", String.class);
-    public static final StateKey<ValidationReport> VALIDATION = StateKey.of("validation", ValidationReport.class);
 
     // ─── SDD-поля спеки (передаются от аналитика к разработчику) ───
     public static final StateKey<String> USER_STORY = StateKey.of("userStory", String.class);

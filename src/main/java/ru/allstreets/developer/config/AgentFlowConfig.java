@@ -75,9 +75,9 @@ public class AgentFlowConfig {
                         (ctx, result) -> !result.hasError(),
                         "developer"
                 ))
-                // post_validation → reroute (LLM-driven via REROUTE_TARGET, до 3 раз)
-                .addEdge(Edge.onResult("post_validation",
-                        (ctx, result) -> shouldReroute(ctx, result, "post_validation"), "post_validation"))
+                // post_validation → reroute (LLM-driven via REROUTE_TARGET, до 3 раз).
+                // Само-возврат post_validation → post_validation убран: «PR без URL» — это fail,
+                // а не повод крутить узел (инцидент 0f9e5fa2).
                 .addEdge(Edge.onResult("post_validation",
                         (ctx, result) -> shouldReroute(ctx, result, "developer"), "developer"))
                 .addEdge(Edge.onResult("post_validation",

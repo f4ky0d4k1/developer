@@ -76,6 +76,8 @@ public class TesterNode implements Agent {
                     Переключись на ветку: git checkout -b %s
                     Используй JUnit5, MockMvc, Testcontainers.
                     Покрой: позитивные сценарии, 4xx ошибки, граничные случаи.
+                    Запусти тесты и убедись, что они падают (RED — реализации ещё нет либо она неполная):
+                    ./mvnw test (или ./mvnw test -Dtest=<ИмяТеста>).
                     После написания — закоммить в текущую ветку.
                     """.formatted(spec, branch != null && !branch.isBlank() ? branch : "feature/new-task");
 
@@ -93,6 +95,7 @@ public class TesterNode implements Agent {
 
             taskRepo.findById(taskId).ifPresent(task -> {
                 task.setTestsWritten(true);
+                task.setTestingDone(true);
                 taskRepo.save(task);
             });
 
@@ -101,7 +104,8 @@ public class TesterNode implements Agent {
                     .stateUpdates(java.util.Map.of(
                             TaskState.TEST_PLAN, result.output() != null ? result.output() : "",
                             TaskState.AGENT_ROLE, "tester",
-                            TaskState.TESTS_WRITTEN, true))
+                            TaskState.TESTS_WRITTEN, true,
+                            TaskState.TESTING_DONE, true))
                     .completed(true)
                     .build();
 

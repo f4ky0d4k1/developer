@@ -336,7 +336,6 @@ public class AnalystNode implements Agent {
         String branch = ctx.get(TaskState.GIT_BRANCH);
         String trackerIssue = ctx.get(TaskState.TRACKER_ISSUE);
         Integer reworkCount = ctx.get(TaskState.REWORK_COUNT);
-        var validation = ctx.get(TaskState.VALIDATION);
         var feedback = ctx.get(TaskState.FEEDBACK);
 
         Boolean analysisDone = ctx.get(TaskState.ANALYSIS_DONE);
@@ -381,20 +380,6 @@ public class AnalystNode implements Agent {
 
         if (testPlan != null && !testPlan.isBlank()) {
             ctxSb.append("\n### План тестов:\n").append(truncate(testPlan, 1000)).append("\n");
-        }
-
-        if (validation != null) {
-            ctxSb.append("\n### Результат валидации:\n");
-            ctxSb.append("Статус: ").append(validation.status()).append("\n");
-            ctxSb.append("Тестов: ").append(validation.total())
-                    .append(", прошло: ").append(validation.passed())
-                    .append(", упало: ").append(validation.failed()).append("\n");
-            if (!validation.failures().isEmpty()) {
-                ctxSb.append("Ошибки:\n");
-                for (var f : validation.failures()) {
-                    ctxSb.append("- ").append(f.test()).append(": ").append(f.message()).append("\n");
-                }
-            }
         }
 
         if (feedback != null && !feedback.isEmpty()) {
@@ -502,7 +487,9 @@ public class AnalystNode implements Agent {
         return candidates;
     }
 
-    /** Последний сбалансированный JSON-объект в тексте (учёт строк и экранирования). */
+    /**
+     * Последний сбалансированный JSON-объект в тексте (учёт строк и экранирования).
+     */
     private static String lastBalancedObject(String text) {
         int start = text.lastIndexOf('{');
         if (start < 0) {

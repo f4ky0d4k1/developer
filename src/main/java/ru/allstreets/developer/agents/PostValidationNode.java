@@ -2,6 +2,7 @@ package ru.allstreets.developer.agents;
 
 import io.github.asekka.springai.agents.core.Agent;
 import io.github.asekka.springai.agents.core.AgentContext;
+import io.github.asekka.springai.agents.core.AgentError;
 import io.github.asekka.springai.agents.core.AgentResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,55 +12,58 @@ import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.state.TaskState;
-import ru.allstreets.developer.state.ValidationReport;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
 import java.util.List;
 
 /**
- * Post-Validation — объединяет валидацию (запуск тестов) и пост-обработку (PR / reroute).
- * Если VALIDATION в state нет — запускает тесты через OpenCode.
- * Если тесты прошли и есть ветка — создаёт PR через OpenCode.
- * Если тесты упали — LLM решает куда вернуться (reroute).
- * Если аналитическая задача (нет ветки) — формирует итоговый отчёт.
+ * Post-Validation — LLM-driven контроль результата задачи.
+ * <p>
+ * Тесты здесь НЕ запускаются: их пишет и гоняет агент {@code tester}, доводит до зелёного
+ * {@code developer} (у обоих есть полное окружение). Узел только:
+ * <ol>
+ *   <li>fail-fast границы: required-разработка/тесты не завершены → возврат к developer/tester;</li>
+ *   <li>вызывает агента {@code validator} с полным контекстом задачи — тот инспектирует worktree
+ *       и решает: создать PR либо вернуть к analyst/tester/developer (LLM-driven, куда угодно).</li>
+ * </ol>
  */
 @Component
 public class PostValidationNode implements Agent {
 
     private static final Logger log = LoggerFactory.getLogger(PostValidationNode.class);
 
+    /**
+     * Ограничение на длину вырезаемого куска контекста в промпте валидатора.
+     */
+    private static final int SPEC_LIMIT = 3000;
+
     private final ChatClient chatClient;
     private final ChatClient fallbackChatClient;
     private final TelegramGateway telegram;
     private final StructuredOutputHelper structuredOutput;
     private final TaskRepository taskRepo;
-    private final TestExecutionService testExecution;
-    private final PullRequestCreationService prCreation;
+    private final ValidatorService validator;
 
     public PostValidationNode(@Qualifier("postValidationChatClient") ChatClient chatClient,
                               @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
-                              TaskRepository taskRepo, TestExecutionService testExecution,
-                              PullRequestCreationService prCreation) {
+                              TaskRepository taskRepo, ValidatorService validator) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.telegram = telegram;
         this.structuredOutput = structuredOutput;
         this.taskRepo = taskRepo;
-        this.testExecution = testExecution;
-        this.prCreation = prCreation;
+        this.validator = validator;
     }
 
     @Override
     public AgentResult execute(AgentContext ctx) {
-        var validation = ctx.get(TaskState.VALIDATION);
         Integer reworkCountRaw = ctx.get(TaskState.REWORK_COUNT);
         int reworkCount = reworkCountRaw != null ? reworkCountRaw : 0;
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
         String branch = ctx.get(TaskState.GIT_BRANCH);
         String spec = ctx.get(TaskState.SPEC);
         String agentRole = ctx.get(TaskState.AGENT_ROLE);
-
         String nextStep = ctx.get(TaskState.NEXT_STEP);
 
         log.info("Post-validation: start. reworkCount={}, branch={}, agentRole={}, nextStep={}",
@@ -79,82 +83,55 @@ public class PostValidationNode implements Agent {
         }
 
         String taskId = ctx.get(TaskState.TASK_ID);
-        Boolean requiresDev = ctx.get(TaskState.REQUIRES_DEVELOPMENT);
-        Boolean requiresTest = ctx.get(TaskState.REQUIRES_TESTING);
-        Boolean devDone = ctx.get(TaskState.DEVELOPMENT_DONE);
-        Boolean testsWritten = ctx.get(TaskState.TESTS_WRITTEN);
 
-        boolean needsDev = requiresDev != null && requiresDev;
-        boolean needsTest = requiresTest != null && requiresTest;
-        boolean isDevDone = devDone != null && devDone;
-        boolean isTestsWritten = testsWritten != null && testsWritten;
-
-        // Проверка: если требуется разработка, но она не проведена — блокируем
-        if (needsDev && !isDevDone) {
-            log.warn("Post-validation: требуется разработка, но developmentDone=false. Блокировка.");
-            telegram.sendMessage(chatIdLong,
-                    "❌ Невозможно продолжить: требуется разработка, но она не выполнена. Возврат к разработчику.");
-            return AgentResult.builder()
-                    .text("Blocked: development not done")
-                    .stateUpdates(java.util.Map.of(
-                            TaskState.REWORK_COUNT, reworkCount + 1,
-                            TaskState.REROUTE_TARGET, "developer",
-                            TaskState.AGENT_ROLE, "post_validation"))
-                    .completed(true)
-                    .build();
+        // Fail-fast границы: PR нельзя выпускать, если required-этапы не завершены.
+        if (isRequiredNotDone(ctx, TaskState.REQUIRES_DEVELOPMENT, TaskState.DEVELOPMENT_DONE)) {
+            log.warn("Post-validation: требуется разработка, но developmentDone=false. Возврат к developer.");
+            return reroute(chatIdLong, "developer", reworkCount,
+                    "❌ Требуется разработка, но она не выполнена. Возврат к разработчику.");
+        }
+        if (isRequiredNotDone(ctx, TaskState.REQUIRES_TESTING, TaskState.TESTS_WRITTEN)) {
+            log.warn("Post-validation: требуется тестирование, но testsWritten=false. Возврат к tester.");
+            return reroute(chatIdLong, "tester", reworkCount,
+                    "❌ Требуются тесты, но они не написаны. Возврат к тестировщику.");
         }
 
-        // Проверка: если требуется тестирование, но тесты не написаны — блокируем
-        if (needsTest && !isTestsWritten) {
-            log.warn("Post-validation: требуется тестирование, но testsWritten=false. Блокировка.");
-            telegram.sendMessage(chatIdLong,
-                    "❌ Невозможно продолжить: требуются тесты, но они не написаны. Возврат к тестировщику.");
-            return AgentResult.builder()
-                    .text("Blocked: tests not written")
-                    .stateUpdates(java.util.Map.of(
-                            TaskState.REWORK_COUNT, reworkCount + 1,
-                            TaskState.REROUTE_TARGET, "tester",
-                            TaskState.AGENT_ROLE, "post_validation"))
-                    .completed(true)
-                    .build();
-        }
-
-        if (validation == null && needsTest) {
-            telegram.sendMessage(chatIdLong, "🔬 Запускаю тесты...");
-            validation = testExecution.runTests(branch, chatIdLong, repoUrl, taskId);
-            if (validation == null) {
-                log.warn("Post-validation: не удалось распарсить отчёт тестов, считаем pass");
-                validation = new ValidationReport(
-                        ValidationReport.Status.PASS, 0, 0, 0,
-                        List.of(), List.of());
-            }
-            // Отмечаем testingDone
-            taskRepo.findById(taskId).ifPresent(task -> {
-                task.setTestingDone(true);
-                taskRepo.save(task);
-            });
-        }
-
-        telegram.sendMessage(chatIdLong, "🔍 Post-validation: анализ результатов...");
-
-        String openCodeOutput;
-        if (validation != null && validation.isPass()) {
-            openCodeOutput = prCreation.createPullRequest(branch, spec, chatIdLong, repoUrl, taskId);
-            if (openCodeOutput == null) {
-                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("post_validation",
-                        new RuntimeException("Ошибка OpenCode при создании PR")));
-            }
-        } else {
-            openCodeOutput = buildReroutePrompt(spec, branch, validation, reworkCount);
+        telegram.sendMessage(chatIdLong, "🔍 Post-validation: валидатор проверяет результат...");
+        String openCodeOutput = validator.run(buildValidatorPrompt(ctx, reworkCount), chatIdLong, repoUrl, taskId);
+        if (openCodeOutput == null) {
+            return AgentResult.failed(AgentError.of("post_validation",
+                    new RuntimeException("Ошибка OpenCode при валидации")));
         }
 
         AgentResponses.PostValidationDecision decision = parseDecision(openCodeOutput, chatIdLong);
         if (decision == null) {
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("post_validation",
+            return AgentResult.failed(AgentError.of("post_validation",
                     new RuntimeException("Пустой ответ LLM")));
         }
 
         return applyDecision(decision, reworkCount, chatIdLong, taskId);
+    }
+
+    private static boolean isRequiredNotDone(AgentContext ctx,
+                                             io.github.asekka.springai.agents.core.StateKey<Boolean> requiredKey,
+                                             io.github.asekka.springai.agents.core.StateKey<Boolean> doneKey) {
+        boolean required = Boolean.TRUE.equals(ctx.get(requiredKey));
+        boolean done = Boolean.TRUE.equals(ctx.get(doneKey));
+        return required && !done;
+    }
+
+    private AgentResult reroute(long chatIdLong, String target, int reworkCount, String message) {
+        telegram.sendMessage(chatIdLong, message);
+        int newReworkCount = reworkCount + 1;
+        log.info("Post-validation: возврат к узлу '{}' (reworkCount={})", target, newReworkCount);
+        return AgentResult.builder()
+                .text(message)
+                .stateUpdates(java.util.Map.of(
+                        TaskState.REWORK_COUNT, newReworkCount,
+                        TaskState.REROUTE_TARGET, target,
+                        TaskState.AGENT_ROLE, "post_validation"))
+                .completed(true)
+                .build();
     }
 
     private AgentResult skipResult() {
@@ -182,46 +159,76 @@ public class PostValidationNode implements Agent {
                 .build();
     }
 
-    private String buildReroutePrompt(String spec, String branch, ValidationReport validation, int reworkCount) {
-        String validationSummary;
-        if (validation != null) {
-            validationSummary = "pass=%b, codeBugs=%b, logicBugs=%b, testBugs=%b, total=%d, passed=%d, failed=%d, failures=%s".formatted(
-                    validation.isPass(),
-                    validation.hasCodeBugs(),
-                    validation.hasLogicBugs(),
-                    validation.hasTestBugs(),
-                    validation.total(),
-                    validation.passed(),
-                    validation.failed(),
-                    validation.failures() != null ? validation.failures().toString() : "[]");
-        } else {
-            validationSummary = "validation=null (тесты не запускались)";
-        }
-
-        return """
-                Контекст пост-валидации:
-                - ТЗ: %s
-                - Ветка: %s
-                - Отчёт валидатора: %s
-                - Счётчик доработок: %d/3
+    /**
+     * Промпт валидатора: полный контекст задачи + границы решения. Валидатор сам решает,
+     * куда вернуться (analyst/tester/developer), либо создаёт PR.
+     */
+    private String buildValidatorPrompt(AgentContext ctx, int reworkCount) {
+        var sb = new StringBuilder();
+        sb.append("""
+                Ты — валидатор. Проверь результат выполнения задачи и прими решение:
+                создать Pull Request либо вернуть работу на доработку.
                 
-                Тесты упали. Реши, куда вернуться: developer, analyst или tester.
-                Если лимит доработок превышен (>=3) — сообщи failed.
+                Порядок работы:
+                1. Переключись на нужную ветку, если она указана ниже.
+                2. Изучи, что реально сделано: `git log --oneline -10`, `git diff main...HEAD`
+                   (либо `git status`), прочитай изменённые файлы.
+                3. Сверь результат с ТЗ и acceptance criteria.
+                4. Тесты НЕ запускай — их уже написали (`tester`) и добились зелёного прогона (`developer`).
+                   Если видишь, что тестов нет или покрытие не соответствует AC — это повод вернуть tester.
+                5. Решение:
+                   - всё выполнено → создай PR через GitHub MCP (head — текущая ветка, base — main);
+                   - не хватает реализации → reroute "developer";
+                   - не хватает/неверны тесты → reroute "tester";
+                   - проблема в ТЗ/требованиях, нужен пересмотр → reroute "analyst";
+                   - задача невыполнима → failed.
                 
-                Выведи JSON:
+                В конце ответа выведи СТРОГО JSON:
                 ```json
                 {
-                  "prUrl": null,
-                  "reroute": "developer",
-                  "failed": null,
-                  "summary": "Возврат к разработчику"
+                  "prUrl": "https://.../pull/N — если PR создан, иначе null",
+                  "reroute": "analyst | tester | developer — если нужна доработка, иначе null",
+                  "failed": "причина — если задача невыполнима, иначе null",
+                  "summary": "кратко: что сделано и почему такое решение"
                 }
                 ```
-                """.formatted(
-                spec != null ? spec.substring(0, Math.min(500, spec.length())) : "N/A",
-                branch != null ? branch : "N/A",
-                validationSummary,
-                reworkCount);
+                """);
+
+        sb.append("\n## Контекст задачи\n");
+        appendSection(sb, "ТЗ / спека", ctx.get(TaskState.SPEC), SPEC_LIMIT);
+        appendSection(sb, "User Story", ctx.get(TaskState.USER_STORY), 1000);
+        appendSection(sb, "Acceptance Criteria", join(ctx.get(TaskState.ACCEPTANCE_CRITERIA)), 2000);
+        appendSection(sb, "Out of scope", join(ctx.get(TaskState.OUT_OF_SCOPE)), 1000);
+        appendSection(sb, "Constraints", join(ctx.get(TaskState.CONSTRAINTS)), 1000);
+        appendSection(sb, "Context links", join(ctx.get(TaskState.CONTEXT_LINKS)), 1000);
+        appendSection(sb, "План тестов", ctx.get(TaskState.TEST_PLAN), 1500);
+        appendSection(sb, "Что реализовано", ctx.get(TaskState.IMPLEMENTATION), 2000);
+        appendSection(sb, "Ветка", ctx.get(TaskState.GIT_BRANCH), 200);
+        appendSection(sb, "Последний коммит", ctx.get(TaskState.COMMIT_HASH), 200);
+
+        sb.append("\n## Статус выполнения\n");
+        sb.append("- requiresDevelopment: ").append(Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_DEVELOPMENT))).append("\n");
+        sb.append("- developmentDone: ").append(Boolean.TRUE.equals(ctx.get(TaskState.DEVELOPMENT_DONE))).append("\n");
+        sb.append("- requiresTesting: ").append(Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING))).append("\n");
+        sb.append("- testsWritten: ").append(Boolean.TRUE.equals(ctx.get(TaskState.TESTS_WRITTEN))).append("\n");
+        sb.append("- prCreated: ").append(Boolean.TRUE.equals(ctx.get(TaskState.PR_CREATED))).append("\n");
+        sb.append("- итерация доработок: ").append(reworkCount).append("/3\n");
+
+        return sb.toString();
+    }
+
+    private static void appendSection(StringBuilder sb, String title, String value, int maxLen) {
+        if (value == null || value.isBlank()) return;
+        sb.append("\n### ").append(title).append(":\n").append(truncate(value, maxLen)).append("\n");
+    }
+
+    private static String join(List<String> items) {
+        if (items == null || items.isEmpty()) return null;
+        return String.join("\n- ", items);
+    }
+
+    private static String truncate(String text, int maxLen) {
+        return text.length() > maxLen ? text.substring(0, maxLen) + "..." : text;
     }
 
     private AgentResponses.PostValidationDecision parseDecision(String openCodeOutput, long chatIdLong) {
@@ -292,34 +299,17 @@ public class PostValidationNode implements Agent {
         if (decision.failed() != null && !decision.failed().isBlank()) {
             log.warn("Post-validation: LLM сообщила FAILED — {}", decision.failed());
             telegram.sendMessage(chatIdLong, "❌ " + decision.failed());
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("post_validation",
+            return AgentResult.failed(AgentError.of("post_validation",
                     new RuntimeException(decision.failed())));
         }
 
-        // PR был создан, но URL не получен — просим агента вернуть ссылку
-        if (reworkCount < 3) {
-            log.warn("Post-validation: PR создан без URL, reroute к post_validation за ссылкой (reworkCount={})", reworkCount);
-            telegram.sendMessage(chatIdLong, "⚠️ PR создан, но ссылка не получена. Запрашиваю URL...");
-            return AgentResult.builder()
-                    .text(summary)
-                    .stateUpdates(java.util.Map.of(
-                            TaskState.REWORK_COUNT, reworkCount + 1,
-                            TaskState.REROUTE_TARGET, "post_validation",
-                            TaskState.AGENT_ROLE, "post_validation"))
-                    .completed(true)
-                    .build();
-        }
-
+        // Ни prUrl, ни reroute, ни failed — решение не определено. Само-возврат убран:
+        // отсутствие URL PR при заявленном создании — ошибка, а не повод крутить граф.
         log.warn("Post-validation: LLM не выдала prUrl/reroute/failed, summary={}", decision.summary());
-        String fallbackMsg = decision.summary() != null ? decision.summary() : "Решение не определено";
+        String fallbackMsg = summary.isBlank() ? "Решение не определено" : summary;
         telegram.sendMessage(chatIdLong, "⚠️ Post-validation: " + fallbackMsg);
-        return AgentResult.builder()
-                .text(fallbackMsg)
-                .stateUpdates(java.util.Map.of(
-                        TaskState.AGENT_ROLE, "post_validation",
-                        TaskState.REROUTE_TARGET, ""))
-                .completed(true)
-                .build();
+        return AgentResult.failed(AgentError.of("post_validation",
+                new RuntimeException("Post-validation: решение не определено — " + fallbackMsg)));
     }
 
     private static String toRepoUrl(String repo) {

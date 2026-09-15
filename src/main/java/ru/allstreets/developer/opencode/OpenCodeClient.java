@@ -33,7 +33,7 @@ import java.util.stream.Collectors;
  * </ul>
  * Публичный контракт {@code runAgent(...)} и {@link OpenCodeResult} сохранён — узлы
  * графа ({@code AnalystNode}, {@code DeveloperNode}, {@code TesterNode},
- * {@code TestExecutionService}, {@code PullRequestCreationService}) не меняются.
+ * {@code ValidatorService}) не меняются.
  */
 @Component
 public class OpenCodeClient {
