@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
+import ru.allstreets.developer.opencode.OpenCodeTransientException;
 import ru.allstreets.developer.state.ValidationReport;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
@@ -62,7 +63,7 @@ public class TestExecutionService {
 
             String prompt = getTestPrompt(branch);
 
-            var result = openCode.runAgent("post_validation", prompt, workDir, taskId);
+            var result = openCode.runAgent("validator", prompt, workDir, taskId);
 
             if (result.error() != null && !result.error().isEmpty()) {
                 log.error("Post-validation: ошибка запуска тестов: {}", result.error());
@@ -94,6 +95,11 @@ public class TestExecutionService {
 
             return report;
 
+        } catch (OpenCodeTransientException e) {
+            // Транзиентный стопор sidecar (stall) — пробрасываем, чтобы граф ретраил узел,
+            // а не молча «считали pass»/падали (инцидент 0f9e5fa2).
+            log.warn("Post-validation: транзиентная ошибка OpenCode (ретрай графом): {}", e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error("Post-validation: ошибка запуска тестов: {}", e.getMessage(), e);
             return null;

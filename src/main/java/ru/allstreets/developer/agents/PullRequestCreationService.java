@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
+import ru.allstreets.developer.opencode.OpenCodeTransientException;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
 /**
@@ -43,10 +44,15 @@ public class PullRequestCreationService {
             String workDir = sessionPool.getSlotWorkDir(slot);
             String ocPrompt = getPrPrompt(branch, spec);
 
-            var ocResult = openCode.runAgent("post_validation", ocPrompt, workDir, taskId);
+            var ocResult = openCode.runAgent("validator", ocPrompt, workDir, taskId);
             String output = ocResult.output() != null ? ocResult.output() : "";
             log.info("Post-validation: OpenCode завершён. output: {} символов", output.length());
             return output;
+        } catch (OpenCodeTransientException e) {
+            // Транзиентный стопор sidecar (stall) — пробрасываем, чтобы граф ретраил узел
+            // (инцидент 0f9e5fa2: PR не создавался, задача падала без ретрая).
+            log.warn("Post-validation: транзиентная ошибка OpenCode (ретрай графом): {}", e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error("Post-validation: ошибка OpenCode: {}", e.getMessage(), e);
             telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + e.getMessage());
