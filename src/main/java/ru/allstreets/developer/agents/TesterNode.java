@@ -23,6 +23,11 @@ public class TesterNode implements Agent {
 
     private static final Logger log = LoggerFactory.getLogger(TesterNode.class);
 
+    /**
+     * Сколько ждать свободный слот, прежде чем спросить пользователя (HITL_SLOT).
+     */
+    private static final long SLOT_WAIT_SECONDS = 30;
+
     private final OpenCodeClient openCode;
     private final OpenCodeSessionPool sessionPool;
     private final TelegramGateway telegram;
@@ -61,7 +66,7 @@ public class TesterNode implements Agent {
 
         telegram.sendMessage(Long.parseLong(chatId), "🧪 Тестировщик пишет тесты...", taskId);
 
-        int slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
+        int slot = sessionPool.acquireForTask(taskId, repoUrl, SLOT_WAIT_SECONDS);
         if (slot < 0) {
             return slotHandler.askToFreeSlots(taskId, Long.parseLong(chatId), "tester");
         }

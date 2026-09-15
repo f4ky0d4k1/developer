@@ -51,6 +51,21 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
   RUNNING ones through `TaskLauncher.resumeAfterRestart` (taskExecutor + `runningTasks`), not a synchronous
   `graphRunner.resume` on the startup thread. A FAILED task's checkpoint is **kept** (not cleaned) so a manual restart
   resumes from the failed node; only COMPLETED/stale RUNNING checkpoints are cleaned.
+- **Slot ownership = CLOSED**: an OpenCode slot is bound to a task for its whole lifetime (`OpenCodeSessionPool.
+  acquireForTask`) and freed **only** on `CLOSED` (or task deletion) via `releaseForTask` — nodes must NOT release it
+  per node. Pool = 10 (`opencode.slots`). `closeTask` frees the slot; `restartTask` only starts a **new** task from an
+  old one's context (`priorTaskId`), never "continues" the same task. Slot exhaustion → HITL (`HITL_SLOT` + inline
+  buttons `close:<taskId>`), not a timeout-fail.
+- **PR comment = rework of the same task**: `PrCommentMonitor` never creates `pr-*` tasks — new PR comments find the
+  original task by PR branch (`findByGitBranch`) and `TaskLauncher.rework` it (re-run from analyst with the comments
+  appended, same taskId). Polled repos = task target repos (`findDistinctRepos`), `monitor-repo` is only a fallback;
+  processed comments are deduped persistently (`agent_processed_pr_comments`). The validator must tag created PRs with
+  `GITHUB_PR_LABEL` (`agent-generated`), otherwise the monitor can't see them.
+- **Validator doesn't run tests**: tests are the tester's (TDD red) and developer's (green) job. `post_validation`
+  inspects the worktree and decision-routes (PR / reroute to analyst|tester|developer) — it does not execute tests.
+- **Analyst routing is deterministic by flags, not `nextStep`**: `requiresTesting` → `tester` first (TDD), else
+  `requiresDevelopment` → `developer`, else → `post_validation`. Guards against the analyst setting
+  `nextStep=developer` while `requiresTesting=true`.
 
 ## Conventions
 

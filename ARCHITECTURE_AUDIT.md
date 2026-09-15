@@ -420,3 +420,79 @@ tool-call (`steps=0, tokens=0`), без JSON-решения. Пайплайн в
 Тесты: `AnalystNodeDecisionGuardTest` (4) — пустой ответ + безуспешный нудж → ошибка; нудж довёл до решения → успех;
 решение есть, но разбор упал → ошибка; решение есть и распарсено → успех. (Старый `AnalystNodeFallbackTest` фиксировал
 как раз багованное «нет JSON → done».)
+
+## 30. Слот закреплён за задачей; CLOSED/closeTask; restartTask переосмыслен
+
+**Статус: DONE**
+
+Раньше слот OpenCode брался на время узла и освобождался сразу (`finally`). Следствия: слот «утекал» на долгих/
+зависших ранах, освободить слот задачи иначе как прервать узел было нельзя, а исчерпание пула = 10 минут ожидания
+и падение задачи.
+
+Исправлено:
+
+- **пул 10** (`opencode.slots: 10`); `OpenCodeSessionPool.acquireForTask(taskId, repoUrl, timeout)` закрепляет слот
+  за задачей на всё её время жизни (готовит worktree только при первом закреплении), `releaseForTask(taskId)`
+  освобождает;
+- **статус `CLOSED`** (`ActiveTaskRegistry.markClosed`); `TaskLauncher.close(taskId, chatId)`: RUNNING — прервать ран
+  (отмена), затем `CLOSED` + `releaseForTask`. Только CLOSED (или удаление задачи) освобождает слот задачи;
+- **MCP `closeTask`** — закрытие из оркестратора; `cancelTask` (удаление) тоже освобождает слот;
+- `TaskLauncher.cancel` слот НЕ трогает (реворк отменяет ран, но слот задачи сохраняет — та же задача продолжается);
+- **`restartTask` переосмыслен**: больше не «resume из checkpoint», а создание НОВОЙ задачи из контекста старой
+  (`priorTaskId`) — только когда контекстно нужно начать заново. Продолжение той же задачи — PR-комментарий/closeTask.
+
+Тесты: `TaskLauncherReworkTest` (rework под тем же taskId; close → CLOSED + releaseForTask; unknown task).
+
+## 31. Исчерпание слотов — HITL с inline-кнопками (а не таймаут-фейл)
+
+**Статус: DONE**
+
+После перехода на «слот до CLOSED» завершённые задачи держат слоты, и пул исчерпывается. Раньше задача ждала
+10 минут и падала («Таймаут ожидания слота OpenCode»), без диалога.
+
+Исправлено:
+
+- `SLOT_WAIT_SECONDS=30`: короткое ожидание; нет слота → `SlotUnavailableHandler.askToFreeSlots(...)` — вопрос в чат
+  со списком задач-держателей и **inline-кнопками** (`close:<taskId>` на каждую + «Готово»), регистрация pending и
+  `interrupt("HITL_SLOT")`;
+- `TelegramGateway.sendMessageWithKeyboard/answerCallbackQuery` + `Update.callback_query`; `TelegramBotListener` по
+  `close:<taskId>` закрывает задачу (освобождает слот) и подтверждает нажатие;
+- валидатор (возвращает String) бросает `SlotUnavailableException`, `PostValidationNode` ловит → тот же HITL.
+
+Поток: задача без слота → вопрос с кнопками → тап → слот свободен → waiting-задача возобновляется с того же узла.
+
+Тесты: `SlotUnavailableHandlerTest`.
+
+## 32. PR-комментарий возвращает в работу исходную задачу (не плодит задачи)
+
+**Статус: DONE**
+
+Инцидент 15.09: комментарии в PR создавали отдельные `pr-<n>-<id>` задачи, каждая заново гоняла аналитика и
+Tracker — вместо доработки той же задачи.
+
+Исправлено (`PrCommentMonitor`):
+
+- опрашивает **целевые репозитории задач** (`TaskRepository.findDistinctRepos`) + `monitor-repo` как fallback
+  (был баг: смотрел на свой репозиторий `f4ky0d4k1/developer`, а PR жил в целевом);
+- новые комментарии PR → находит **исходную задачу по ветке** (`findByGitBranch`) и `TaskLauncher.rework(...)`
+  (перезапуск с аналитика с добавленными вводными, тот же taskId);
+- persistent-дедуп обработанных комментариев (`agent_processed_pr_comments`) — не повторяется после рестарта;
+- валидатор вешает метку `GITHUB_PR_LABEL` (`agent-generated`) при создании PR, иначе монитор PR не видит.
+
+Тесты: `PrCommentMonitorTest`, `TaskLauncherReworkTest`.
+
+## 33. TDD-порядок и «программно-первый»: роутинг аналитика, валидатор без прогона тестов, заголовок задачи
+
+**Статус: DONE**
+
+- **Аналитик роутится по флагам, а не по `nextStep`**: `requiresTesting` → `tester` первым (TDD), иначе
+  `requiresDevelopment` → `developer`, иначе → `post_validation`. Защита от ошибки аналитика, который ставит
+  `nextStep=developer`, игнорируя `requiresTesting` (инцидент ec0a2004: developer раньше tester).
+- **Валидатор не запускает тесты**: прогон в `post_validation` убран (`TestExecutionService`/`ValidationReport`
+  удалены). Тесты пишет и гоняет `tester` (TDD red), доводит до зелёного `developer`; валидатор только
+  инспектирует worktree и решает PR/reroute (LLM-driven, куда угодно); «PR без URL» — fail, само-ребро
+  `post_validation → post_validation` убрано.
+- **Заголовок задачи** во всех сообщениях: `📋 <название> (<id8>)` (`TelegramGateway.withTaskHeader` +
+  `ActiveTaskRegistry.titleOf`), `taskId` прокинут во все узлы.
+
+Тесты: `AgentFlowConfigRoutingTest`, `PostValidationNodeTest`, `TelegramGatewayTest`, `ConversationFastPromptTest`.

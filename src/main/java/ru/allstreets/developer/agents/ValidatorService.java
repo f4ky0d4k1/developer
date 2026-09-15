@@ -22,6 +22,11 @@ public class ValidatorService {
 
     private static final Logger log = LoggerFactory.getLogger(ValidatorService.class);
 
+    /**
+     * Сколько ждать свободный слот, прежде чем вернуть SlotUnavailableException (→ HITL_SLOT).
+     */
+    private static final long SLOT_WAIT_SECONDS = 30;
+
     private final OpenCodeClient openCode;
     private final OpenCodeSessionPool sessionPool;
     private final TelegramGateway telegram;
@@ -38,7 +43,7 @@ public class ValidatorService {
      * или {@code null} при ошибке.
      */
     public String run(String prompt, long chatIdLong, String repoUrl, String taskId) {
-        int slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
+        int slot = sessionPool.acquireForTask(taskId, repoUrl, SLOT_WAIT_SECONDS);
         if (slot < 0) {
             throw new ru.allstreets.developer.opencode.SlotUnavailableException(
                     "Нет свободного слота OpenCode для задачи " + taskId);

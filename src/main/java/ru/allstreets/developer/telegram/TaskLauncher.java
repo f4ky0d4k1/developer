@@ -279,18 +279,17 @@ public class TaskLauncher {
         }
         runningTasks.remove(taskId);
         humanInputRegistry.cancel(taskId);
-
-        // Если задача была HITL-paused — в checkpoint есть OPENCODE_SLOT, нужно освободить
-        var checkpoint = checkpointService.loadCheckpoint(taskId).orElse(null);
-        if (checkpoint != null && checkpoint.context() != null) {
-            Integer slot = checkpoint.context().get(TaskState.OPENCODE_SLOT);
-            if (slot != null) {
-                log.info("TaskLauncher: освобождение OpenCode слота {} для отменённой HITL задачи {}", slot, taskId);
-                sessionPool.cleanupSlot(slot);
-                sessionPool.release(slot);
-            }
-        }
         checkpointService.cleanup(taskId);
+        // Слот задачи НЕ освобождаем: он закреплён за taskId и живёт до CLOSED
+        // (TaskLauncher.close / releaseSlot). Иначе семафор утечёт или рассинхронит taskSlots.
+    }
+
+    /**
+     * Освободить слот задачи (закрытие CLOSED или удаление задачи). Отдельно от {@link #cancel},
+     * т.к. реворк отменяет ран, но слот задачи сохраняет (та же задача продолжается).
+     */
+    public void releaseSlot(String taskId) {
+        sessionPool.releaseForTask(taskId);
     }
 
     /**

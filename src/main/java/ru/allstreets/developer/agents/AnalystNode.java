@@ -33,6 +33,11 @@ public class AnalystNode implements Agent {
     private static final Logger log = LoggerFactory.getLogger(AnalystNode.class);
 
     /**
+     * Сколько ждать свободный слот, прежде чем спросить пользователя (HITL_SLOT).
+     */
+    private static final long SLOT_WAIT_SECONDS = 30;
+
+    /**
      * Сколько раз нуджим агента в той же сессии, если он не вывел JSON-решение.
      */
     private static final int MAX_CONTINUE_ATTEMPTS = 1;
@@ -130,7 +135,7 @@ public class AnalystNode implements Agent {
             log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
             telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу", taskId);
 
-            slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
+            slot = sessionPool.acquireForTask(taskId, repoUrl, SLOT_WAIT_SECONDS);
             if (slot < 0) {
                 return slotHandler.askToFreeSlots(taskId, chatIdLong, "analyst");
             }

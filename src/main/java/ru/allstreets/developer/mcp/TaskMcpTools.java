@@ -196,12 +196,15 @@ public class TaskMcpTools {
         TaskEntity task = taskRepo.findById(fullTaskId).orElse(null);
         String taskDesc = task != null ? task.getDescription() : "N/A";
 
-        // Interrupt if running + clean up HITL state (OpenCode slot, checkpoint)
+        // Interrupt if running + clean up HITL state (checkpoint)
         boolean wasRunning = taskLauncher.isRunning(fullTaskId);
         taskLauncher.cancel(fullTaskId);
         if (wasRunning) {
             sb.append("Task interrupted (was running).\n");
         }
+
+        // Задача удаляется — освобождаем её слот из пула (иначе утечёт).
+        taskLauncher.releaseSlot(fullTaskId);
 
         // Unlock
         taskLockService.cleanup(fullTaskId);
