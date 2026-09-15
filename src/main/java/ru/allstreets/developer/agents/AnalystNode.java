@@ -127,18 +127,13 @@ public class AnalystNode implements Agent {
             log.info("Аналитик: начало работы над задачей (repo: {})", targetRepo);
             telegram.sendMessage(chatIdLong, "🔍 Аналитик начал работу", taskId);
 
-            slot = sessionPool.acquire(600);
+            slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
             if (slot < 0) {
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst",
                         new RuntimeException("Таймаут ожидания слота OpenCode")));
             }
 
-            // Слот освобождается здесь только при ошибке/пустом выводе. При успехе он
-            // намеренно остаётся зарезервированным — либо будет освобождён общим кодом
-            // ниже (после structured output), либо сохранён в checkpoint при HITL-паузе.
-            boolean releaseSlotOnExit = true;
             try {
-                sessionPool.prepareSlot(slot, repoUrl);
                 String workDir = sessionPool.getSlotWorkDir(slot);
                 String prompt = buildAnalystPrompt(ctx, taskDescription);
 
@@ -186,16 +181,10 @@ public class AnalystNode implements Agent {
 
                 log.info("Аналитик: OpenCode завершён. output: {} символов, session={}",
                         currentOutput.length(), currentSessionId);
-                releaseSlotOnExit = false;
 
             } catch (Exception e) {
                 log.error("Аналитик: ошибка OpenCode: {}", e.getMessage(), e);
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst", e));
-            } finally {
-                if (releaseSlotOnExit) {
-                    sessionPool.cleanupSlot(slot);
-                    sessionPool.release(slot);
-                }
             }
         }
 
@@ -229,9 +218,7 @@ public class AnalystNode implements Agent {
             log.warn("Аналитик: достигнут лимит HITL-уточнений ({}), выходим", maxClarifications);
         }
 
-        // === Analysis complete — release slot and return ===
-        sessionPool.cleanupSlot(slot);
-        sessionPool.release(slot);
+        // Слот остаётся закреплён за задачей — освободится только при CLOSED.
 
         // Не даём пустому/нераспарсенному ответу молча закрыть задачу как «готово»
         // (инцидент 3c7b33db: аналитик выдал вводную фразу без решения, задача «завершилась»).

@@ -48,7 +48,8 @@ class TaskLauncherResumeAfterRestartTest {
                 mock(HumanInputRegistry.class), checkpointService, mock(OpenCodeSessionPool.class),
                 executor, mock(ChatClient.class), mock(PriorTaskContextBuilder.class),
                 new ru.allstreets.developer.metrics.TaskMetrics(
-                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+                        new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
+                mock(ru.allstreets.developer.checkpoint.TaskRepository.class));
     }
 
     @AfterEach

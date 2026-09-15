@@ -16,7 +16,7 @@ import ru.allstreets.developer.telegram.TelegramGateway;
 /**
  * Разработчик — вызывается через OpenCode sidecar.
  * Реализует задачу по ТЗ, коммитит в ветку.
- * Использует пул слотов для параллельного выполнения.
+ * Слот закреплён за задачей на всё её время жизни и освобождается только при CLOSED.
  */
 @Component
 public class DeveloperNode implements Agent {
@@ -60,62 +60,56 @@ public class DeveloperNode implements Agent {
 
         telegram.sendMessage(Long.parseLong(chatId), "👨‍💻 Разработчик реализует задачу...", taskId);
 
-        int slot = sessionPool.acquire(600);
+        int slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
         if (slot < 0) {
-            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("developer", new RuntimeException("Таймаут ожидания слота OpenCode")));
+            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("developer",
+                    new RuntimeException("Таймаут ожидания слота OpenCode")));
+        }
+        String workDir = sessionPool.getSlotWorkDir(slot);
+
+        String branchName = branch != null && !branch.isBlank()
+                ? branch
+                : trackerIssue != null && !trackerIssue.isBlank()
+                  ? "feature/" + trackerIssue
+                  : "feature/" + java.util.UUID.randomUUID().toString().substring(0, 8);
+
+        String prompt = """
+                Реализуй задачу по следующему ТЗ:
+                
+                %s
+                
+                Переключись на ветку: git checkout -b %s
+                Следуй conventions.md проекта.
+                После реализации — закоммить и убедись что проект компилируется.
+                """.formatted(spec, branchName);
+
+        var result = openCode.runAgent("developer", prompt, workDir, taskId);
+
+        if (result.error() != null && !result.error().isEmpty()) {
+            log.error("Разработчик: ошибка OpenCode: {}", result.error());
+            return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("developer",
+                    new RuntimeException("Ошибка разработчика: " + result.error())));
         }
 
-        try {
-            sessionPool.prepareSlot(slot, repoUrl);
-            String workDir = sessionPool.getSlotWorkDir(slot);
+        log.info("Разработчик: завершено. Файлов: {}", result.files() != null ? result.files().size() : 0);
 
-            String branchName = branch != null && !branch.isBlank()
-                    ? branch
-                    : trackerIssue != null && !trackerIssue.isBlank()
-                      ? "feature/" + trackerIssue
-                      : "feature/" + java.util.UUID.randomUUID().toString().substring(0, 8);
+        telegram.sendMessage(Long.parseLong(chatId), "✅ Реализация завершена.", taskId);
 
-            String prompt = """
-                    Реализуй задачу по следующему ТЗ:
-                    
-                    %s
-                    
-                    Переключись на ветку: git checkout -b %s
-                    Следуй conventions.md проекта.
-                    После реализации — закоммить и убедись что проект компилируется.
-                    """.formatted(spec, branchName);
+        taskRepo.findById(taskId).ifPresent(task -> {
+            task.setDevelopmentDone(true);
+            taskRepo.save(task);
+        });
 
-            var result = openCode.runAgent("developer", prompt, workDir, taskId);
-
-            if (result.error() != null && !result.error().isEmpty()) {
-                log.error("Разработчик: ошибка OpenCode: {}", result.error());
-                return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("developer", new RuntimeException("Ошибка разработчика: " + result.error())));
-            }
-
-            log.info("Разработчик: завершено. Файлов: {}", result.files() != null ? result.files().size() : 0);
-
-            telegram.sendMessage(Long.parseLong(chatId), "✅ Реализация завершена.", taskId);
-
-            taskRepo.findById(taskId).ifPresent(task -> {
-                task.setDevelopmentDone(true);
-                taskRepo.save(task);
-            });
-
-            return AgentResult.builder()
-                    .text(result.output())
-                    .stateUpdates(java.util.Map.of(
-                            TaskState.IMPLEMENTATION, result.output() != null ? result.output() : "",
-                            TaskState.COMMIT_HASH, result.commitHash() != null ? result.commitHash() : "",
-                            TaskState.GIT_BRANCH, branchName,
-                            TaskState.AGENT_ROLE, "developer",
-                            TaskState.DEVELOPMENT_DONE, true))
-                    .completed(true)
-                    .build();
-
-        } finally {
-            sessionPool.cleanupSlot(slot);
-            sessionPool.release(slot);
-        }
+        return AgentResult.builder()
+                .text(result.output())
+                .stateUpdates(java.util.Map.of(
+                        TaskState.IMPLEMENTATION, result.output() != null ? result.output() : "",
+                        TaskState.COMMIT_HASH, result.commitHash() != null ? result.commitHash() : "",
+                        TaskState.GIT_BRANCH, branchName,
+                        TaskState.AGENT_ROLE, "developer",
+                        TaskState.DEVELOPMENT_DONE, true))
+                .completed(true)
+                .build();
     }
 
     private static String toRepoUrl(String repo) {

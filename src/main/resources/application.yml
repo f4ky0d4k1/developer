@@ -83,7 +83,7 @@ opencode:
   # долгие tool-вызовы (mvn test и т.п.).
   stall-timeout-seconds: ${OPENCODE_STALL_TIMEOUT_SECONDS:300}
   model: ${OPENCODE_MODEL:deepseek/deepseek-flash}
-  slots: 5
+  slots: 10
   max-clarifications: 10
 
 # Telegram bot

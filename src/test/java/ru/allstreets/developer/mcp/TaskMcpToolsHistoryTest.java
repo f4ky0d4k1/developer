@@ -37,7 +37,6 @@ class TaskMcpToolsHistoryTest {
                 mock(ActiveTaskRegistry.class),
                 mock(TaskRepository.class),
                 mock(CheckpointRepository.class),
-                mock(CheckpointService.class),
                 mock(TaskLockService.class),
                 mock(TaskLauncher.class),
                 mock(HumanInputRegistry.class),

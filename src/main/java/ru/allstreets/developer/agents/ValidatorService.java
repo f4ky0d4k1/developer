@@ -13,7 +13,9 @@ import ru.allstreets.developer.telegram.TelegramGateway;
  * Запуск агента-валидатора через OpenCode. Валидатор получает полный контекст задачи,
  * инспектирует worktree (git log/diff/файлы) и решает: создать PR либо вернуть работу
  * к analyst/tester/developer. Тесты валидатор НЕ запускает — их пишет tester и доводит
- * до зелёного developer (у обоих есть полное окружение).
+ * до зелёного developer.
+ * <p>
+ * Слот закреплён за задачей на всё её время жизни (освобождается только при CLOSED).
  */
 @Component
 public class ValidatorService {
@@ -36,15 +38,14 @@ public class ValidatorService {
      * или {@code null} при ошибке.
      */
     public String run(String prompt, long chatIdLong, String repoUrl, String taskId) {
-        int slot = sessionPool.acquire(600);
+        int slot = sessionPool.acquireForTask(taskId, repoUrl, 600);
         if (slot < 0) {
             telegram.sendMessage(chatIdLong, "❌ Таймаут ожидания слота OpenCode", taskId);
             return null;
         }
-        try {
-            sessionPool.prepareSlot(slot, repoUrl);
-            String workDir = sessionPool.getSlotWorkDir(slot);
+        String workDir = sessionPool.getSlotWorkDir(slot);
 
+        try {
             var ocResult = openCode.runAgent("validator", prompt, workDir, taskId);
             String output = ocResult.output() != null ? ocResult.output() : "";
             log.info("Post-validation: валидатор завершён. output: {} символов", output.length());
@@ -58,9 +59,6 @@ public class ValidatorService {
             log.error("Post-validation: ошибка OpenCode: {}", e.getMessage(), e);
             telegram.sendMessage(chatIdLong, "❌ Ошибка OpenCode: " + e.getMessage(), taskId);
             return null;
-        } finally {
-            sessionPool.cleanupSlot(slot);
-            sessionPool.release(slot);
         }
     }
 }

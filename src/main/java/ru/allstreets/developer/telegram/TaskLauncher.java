@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.CheckpointService;
+import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
@@ -37,6 +38,7 @@ public class TaskLauncher {
     private final ChatClient fallbackChatClient;
     private final PriorTaskContextBuilder priorTaskContextBuilder;
     private final ru.allstreets.developer.metrics.TaskMetrics metrics;
+    private final TaskRepository taskRepo;
 
     // taskId → running future (для interrupt)
     private final Map<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
@@ -49,7 +51,8 @@ public class TaskLauncher {
                         @Qualifier("taskExecutor") ThreadPoolExecutor executor,
                         @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                         PriorTaskContextBuilder priorTaskContextBuilder,
-                        ru.allstreets.developer.metrics.TaskMetrics metrics) {
+                        ru.allstreets.developer.metrics.TaskMetrics metrics,
+                        TaskRepository taskRepo) {
         this.graphRunner = graphRunner;
         this.telegram = telegram;
         this.taskRegistry = taskRegistry;
@@ -60,6 +63,7 @@ public class TaskLauncher {
         this.fallbackChatClient = fallbackChatClient;
         this.priorTaskContextBuilder = priorTaskContextBuilder;
         this.metrics = metrics;
+        this.taskRepo = taskRepo;
     }
 
     /**
@@ -287,6 +291,70 @@ public class TaskLauncher {
             }
         }
         checkpointService.cleanup(taskId);
+    }
+
+    /**
+     * Закрыть задачу: RUNNING — прервать ран (это отмена), затем статус CLOSED и освобождение
+     * слота. worktree задачи чистится ТОЛЬКО здесь (CLOSED) — до закрытия слот неприкосновен,
+     * иначе нельзя (guard в пуле). Для COMPLETED/FAILED — просто перевод в CLOSED.
+     *
+     * @return true — задача закрыта; false — задача не найдена
+     */
+    public boolean close(String taskId, long chatId) {
+        var task = taskRepo.findById(taskId).orElse(null);
+        if (task == null) {
+            log.warn("TaskLauncher: close — задача {} не найдена", taskId);
+            return false;
+        }
+        if (isRunning(taskId)) {
+            log.info("TaskLauncher: close — задача {} RUNNING, отменяю ран", taskId.substring(0, 8));
+            telegram.sendMessage(chatId, "🛑 Задача " + taskId.substring(0, 8) + " отменена и закрыта.", taskId);
+        }
+        cancel(taskId);                        // interrupt + освобождение HITL-слота/чекпоинта
+        taskRegistry.markClosed(taskId);
+        sessionPool.releaseForTask(taskId);    // слот задачи освобождается только при CLOSED
+        log.info("TaskLauncher: задача {} закрыта (CLOSED), слот освобождён", taskId.substring(0, 8));
+        return true;
+    }
+
+    /**
+     * Вернуть задачу в работу с новыми вводными (например, замечаниями из PR-комментариев):
+     * прервать текущий ран (если идёт), добавить вводные к описанию и перезапустить граф
+     * С АНАЛИТИКА — он из вводных сам решает, что дописать (тесты/код). Одна и та же задача
+     * (тот же taskId) и для RUNNING, и для COMPLETED/FAILED — новых задач не создаём.
+     *
+     * @return true — задача поставлена в работу; false — задача неизвестна или executor перегружен
+     */
+    public boolean rework(String taskId, long chatId, String additionalInput) {
+        ru.allstreets.developer.checkpoint.TaskEntity task = taskRepo.findById(taskId).orElse(null);
+        if (task == null) {
+            log.warn("TaskLauncher: rework — задача {} не найдена", taskId);
+            return false;
+        }
+        // Прерываем текущий ран (если идёт) и освобождаем слот/чекпоинт, затем запускаем заново.
+        cancel(taskId);
+
+        String description = (task.getDescription() != null && !task.getDescription().isBlank())
+                ? task.getDescription() : task.getTitle();
+        String merged = (additionalInput == null || additionalInput.isBlank())
+                ? description
+                : description + "\n\n## Новые вводные (замечания из PR)\n" + additionalInput;
+
+        taskRegistry.markRunning(taskId);
+        telegram.sendMessage(chatId, "🔄 Возвращаю задачу " + taskId.substring(0, 8)
+                + " в работу (реитерация с аналитика)...", taskId);
+
+        try {
+            Future<?> future = executor.submit(() ->
+                    runTask(taskId, merged, chatId, task.getTitle(), task.getRepo(), null, null));
+            runningTasks.put(taskId, future);
+            return true;
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            log.error("TaskLauncher: rework задачи {} отклонён (backpressure): {}",
+                    taskId.substring(0, 8), e.getMessage());
+            telegram.sendMessage(chatId, "⏳ Система перегружена — попробуйте позже.", taskId);
+            return false;
+        }
     }
 
     /**

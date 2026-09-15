@@ -36,7 +36,6 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
                 mock(ActiveTaskRegistry.class),
                 taskRepo,
                 mock(CheckpointRepository.class),
-                mock(CheckpointService.class),
                 mock(TaskLockService.class),
                 mock(TaskLauncher.class),
                 mock(HumanInputRegistry.class),

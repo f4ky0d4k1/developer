@@ -37,20 +37,20 @@ public class TaskMcpTools {
     private final ActiveTaskRegistry taskRegistry;
     private final TaskRepository taskRepo;
     private final CheckpointRepository checkpointRepo;
-    private final CheckpointService checkpointService;
     private final TaskLockService taskLockService;
     private final TaskLauncher taskLauncher;
     private final HumanInputRegistry humanInputRegistry;
     private final TaskProgressRegistry progressRegistry;
     private final ChatMessageRepository chatMessageRepo;
-    /** Кто имеет право запускать задачи (deny-by-default, если список пуст). */
+    /**
+     * Кто имеет право запускать задачи (deny-by-default, если список пуст).
+     */
     private final Set<String> triggerUsers;
 
     public TaskMcpTools(
             ActiveTaskRegistry taskRegistry,
             TaskRepository taskRepo,
             CheckpointRepository checkpointRepo,
-            CheckpointService checkpointService,
             TaskLockService taskLockService,
             TaskLauncher taskLauncher,
             HumanInputRegistry humanInputRegistry,
@@ -61,7 +61,6 @@ public class TaskMcpTools {
         this.taskRegistry = taskRegistry;
         this.taskRepo = taskRepo;
         this.checkpointRepo = checkpointRepo;
-        this.checkpointService = checkpointService;
         this.taskLockService = taskLockService;
         this.taskLauncher = taskLauncher;
         this.humanInputRegistry = humanInputRegistry;
@@ -219,6 +218,29 @@ public class TaskMcpTools {
         return sb.toString();
     }
 
+    @Tool(description = "Close a task (finalize it). If it is RUNNING — the run is cancelled (this counts as " +
+            "task cancellation); the task's OpenCode slot/worktree is freed ONLY for CLOSED tasks, so use this " +
+            "to free slots when they run out. Use when user says 'закрой задачу', 'заверши задачу', " +
+            "'освободи слот'. taskId can be partial (first 8 chars). Returns confirmation message.")
+    public String closeTask(
+            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
+    ) {
+        String fullTaskId = resolveTaskId(taskId);
+        if (fullTaskId == null) {
+            return "Task not found: " + taskId;
+        }
+        log.info("MCP closeTask: taskId={}", fullTaskId);
+
+        Long chatId = taskRegistry.getChatIdForTask(fullTaskId);
+        boolean wasRunning = taskLauncher.isRunning(fullTaskId);
+        boolean closed = taskLauncher.close(fullTaskId, chatId != null ? chatId : 0L);
+        if (!closed) {
+            return "Failed to close task " + fullTaskId.substring(0, 8) + ".";
+        }
+        return "Task " + fullTaskId.substring(0, 8) + " closed (CLOSED)"
+                + (wasRunning ? ", running run cancelled" : "") + ". Slot freed.";
+    }
+
     /**
      * Resolve partial taskId (first 8 chars) to full taskId.
      */
@@ -242,45 +264,43 @@ public class TaskMcpTools {
         return null;
     }
 
-    @Tool(description = "Restart a failed task from its checkpoint. Resumes execution from the last saved state " +
-            "with the same taskId. Optionally accepts additional context from the user to augment the task. " +
-            "Use when user says 'перезапусти задачу' or 'возобнови задачу' or wants to retry a failed task " +
-            "without losing previous progress. taskId can be partial (first 8 chars are enough). " +
-            "If user says 'перезапусти ПОСЛЕДНЮЮ задачу' without taskId — FIRST call getLastTaskForChat to get the taskId, THEN call restartTask.")
+    @Tool(description = "Create a NEW task on top of the context of an OLD one (its description, Tracker issue, " +
+            "chat history are carried over). Use ONLY when there is a contextual need to start a fresh task " +
+            "based on a previous one — NOT to continue the same task. To continue/fix a task that already has " +
+            "a PR just leave a comment there (PR comments rework the SAME task automatically); to free its slot " +
+            "use closeTask. taskId can be partial (first 8 chars are enough).")
     public String restartTask(
-            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
-            @ToolParam(description = "Additional context from user to augment the task (optional, can be null)") String additionalContext
+            @ToolParam(description = "Task ID of the base (prior) task (full or first 8 characters)") String taskId,
+            @ToolParam(description = "Extra context/instructions for the new task (optional, can be null)") String additionalContext
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
             return "Task not found: " + taskId;
         }
 
-        log.info("MCP restartTask: taskId={}, additionalContext={}", fullTaskId,
-                additionalContext != null ? additionalContext.length() + " chars" : "null");
-
-        // Get chatId for this task
         Long chatId = taskRegistry.getChatIdForTask(fullTaskId);
         if (chatId == null) {
-            // Try from task-chat repo
-            return "Cannot restart: no chatId associated with task " + fullTaskId.substring(0, 8);
+            return "Cannot start a new task: no chatId associated with task " + fullTaskId.substring(0, 8);
+        }
+        TaskEntity task = taskRepo.findById(fullTaskId).orElse(null);
+        if (task == null) {
+            return "Task not found: " + taskId;
+        }
+        String repo = task.getRepo();
+        if (repo == null || repo.isBlank()) {
+            return "Cannot start a new task: base task " + fullTaskId.substring(0, 8) + " has no repo.";
         }
 
-        // Check checkpoint exists
-        var checkpoint = checkpointService.getLatestCheckpoint(fullTaskId);
-        if (checkpoint == null) {
-            return "Cannot restart: no checkpoint found for task " + fullTaskId.substring(0, 8) +
-                    ". The task may have completed successfully (checkpoints are cleaned up after success).";
+        String description = (task.getDescription() != null && !task.getDescription().isBlank())
+                ? task.getDescription() : task.getTitle();
+        if (additionalContext != null && !additionalContext.isBlank()) {
+            description = description + "\n\nДополнительно: " + additionalContext;
         }
 
-        boolean started = taskLauncher.restart(fullTaskId, chatId, additionalContext);
-        if (started) {
-            return "Task " + fullTaskId.substring(0, 8) + " restarted from checkpoint (node: " +
-                    checkpoint.getNodeName() + "). The task will resume with its previous state" +
-                    (additionalContext != null ? " plus the new context provided." : ".");
-        } else {
-            return "Failed to restart task " + fullTaskId.substring(0, 8) + ".";
-        }
+        log.info("MCP restartTask -> NEW task from prior {}: repo={}", fullTaskId.substring(0, 8), repo);
+        taskLauncher.launch(description, chatId, repo, fullTaskId);
+        return "Started a NEW task based on " + fullTaskId.substring(0, 8)
+                + " (context carried over). The original task is untouched.";
     }
 
     @Tool(description = "Get the last task for a Telegram chat. Returns taskId (first 8 chars), status, description, " +
@@ -398,7 +418,7 @@ public class TaskMcpTools {
             @ToolParam(description = "Telegram chat ID") long chatId,
             @ToolParam(description = "How many recent messages to return (1..50)") int limit
     ) {
-        int n = Math.max(1, Math.min(limit, 50));
+        int n = Math.clamp(limit, 1, 50);
         log.info("MCP getChatHistory: chatId={}, limit={}", chatId, n);
 
         var messages = chatMessageRepo.findByChatIdOrderByCreatedAtDesc(chatId, org.springframework.data.domain.PageRequest.of(0, n));

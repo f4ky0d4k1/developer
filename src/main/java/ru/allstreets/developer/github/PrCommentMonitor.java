@@ -1,54 +1,55 @@
 package ru.allstreets.developer.github;
 
-import io.github.asekka.springai.agents.core.AgentContext;
-import io.github.asekka.springai.agents.core.AgentResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
-import ru.allstreets.developer.config.AgentGraphRunner;
-import ru.allstreets.developer.state.TaskState;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
 import ru.allstreets.developer.telegram.ChatMemoryService;
+import ru.allstreets.developer.telegram.TaskLauncher;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 /**
  * Мониторинг комментариев в agent-generated PR.
- * Периодически опрашивает GitHub на предмет новых комментариев.
- * При обнаружении нового комментария запускает агентный граф с инструкцией из комментария.
  * <p>
- * PR задачи живёт в ЕЁ целевом репозитории (owner/name), поэтому опрашиваются репозитории
- * задач из реестра ({@link TaskRepository#findDistinctRepos}), а {@code github.monitor-repo}
- * остаётся лишь fallback'ом — иначе PR в целевом репо не виден (инцидент 15.09: монитор
- * смотрел на f4ky0d4k1/developer, а PR был в iamponamarev/allstreets-spring).
+ * Новые комментарии НЕ создают отдельную задачу: они возвращают в работу ИСХОДНУЮ задачу PR
+ * (её находят по ветке PR — {@link TaskRepository#findByGitBranch}). {@link TaskLauncher#rework}
+ * прерывает текущий ран (если он идёт) и перезапускает граф с аналитика, добавив комментарии
+ * к описанию задачи — аналитик из вводных сам решает, что дописать (тесты/код). Один PR = одна
+ * задача, без плодения новых и без дублей Tracker.
  * <p>
- * Дедуп — persistent ({@link ProcessedPrCommentEntity}): обработанный комментарий не
- * запускается повторно после рестарта приложения или на другом инстансе.
+ * Опрашиваются репозитории задач ({@link TaskRepository#findDistinctRepos}) — PR задачи живёт
+ * в её репозитории, {@code github.monitor-repo} лишь fallback (инцидент 15.09: монитор смотрел
+ * f4ky0d4k1/developer, а PR был в iamponamarev/allstreets-spring).
+ * <p>
+ * Дедуп — persistent ({@link ProcessedPrCommentEntity}): комментарий помечается обработанным
+ * только если реитерация реально поставлена; между рестартами не повторяется.
  */
 @Component
 public class PrCommentMonitor {
 
     private static final Logger log = LoggerFactory.getLogger(PrCommentMonitor.class);
 
-    /** Сколько репозиториев задач максимум опрашивать за один тик (свежие первыми). */
+    /**
+     * Сколько репозиториев задач максимум опрашивать за один тик (свежие первыми).
+     */
     private static final int MONITOR_REPO_LIMIT = 20;
 
     private final GitHubService github;
-    private final AgentGraphRunner graphRunner;
+    private final TaskLauncher taskLauncher;
     private final TelegramGateway telegram;
     private final ChatMemoryService chatMemory;
     private final ActiveTaskRegistry taskRegistry;
     private final TaskRepository taskRepo;
     private final ProcessedPrCommentRepository processedComments;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
 
     // fallback chatId для уведомлений (берётся из whitelist — первый)
     private final long fallbackNotifyChatId;
@@ -58,7 +59,7 @@ public class PrCommentMonitor {
 
     public PrCommentMonitor(
             GitHubService github,
-            AgentGraphRunner graphRunner,
+            TaskLauncher taskLauncher,
             TelegramGateway telegram,
             ChatMemoryService chatMemory,
             ActiveTaskRegistry taskRegistry,
@@ -68,7 +69,7 @@ public class PrCommentMonitor {
             @Value("${github.monitor-repo:}") String monitorRepo
     ) {
         this.github = github;
-        this.graphRunner = graphRunner;
+        this.taskLauncher = taskLauncher;
         this.telegram = telegram;
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
@@ -155,40 +156,42 @@ public class PrCommentMonitor {
 
     private void processPrComments(String repo, GitHubService.PrInfo pr) {
         try {
-            List<GitHubService.PrComment> comments = github.listPrComments(repo, pr.number());
-            if (comments.isEmpty()) {
+            List<GitHubService.PrComment> fresh = github.listPrComments(repo, pr.number()).stream()
+                    .filter(c -> !processedComments.existsById(c.id()))
+                    .filter(c -> c.body() != null && !c.body().isBlank())
+                    .toList();
+            if (fresh.isEmpty()) {
                 return;
             }
 
-            for (GitHubService.PrComment comment : comments) {
-                if (processedComments.existsById(comment.id())) {
-                    continue;
+            // Исходная задача PR — по ветке. Доработка идёт в НЕЁ, а не в новую задачу.
+            TaskEntity task = taskRepo.findByGitBranch(pr.headBranch()).orElse(null);
+            if (task == null) {
+                log.warn("Мониторинг: для ветки {} (PR #{}) не найдена задача — новые комментарии оставлены "
+                        + "необработанными до появления задачи", pr.headBranch(), pr.number());
+                return;
+            }
+
+            String commentsText = fresh.stream()
+                    .map(c -> "- %s: %s".formatted(c.author(), c.body()))
+                    .collect(Collectors.joining("\n"));
+
+            log.info("Новые комментарии в PR #{} ({}) — возвращаю задачу {} в работу ({} шт.)",
+                    pr.number(), repo, task.getTaskId().substring(0, 8), fresh.size());
+
+            long chatId = resolveNotifyChatId(task.getTaskId(), pr.headBranch());
+            if (chatId > 0) {
+                String msg = "💬 Новые комментарии в PR #%d (%s) — возвращаю задачу %s в работу:\n%s".formatted(
+                        pr.number(), pr.htmlUrl(), task.getTaskId().substring(0, 8), commentsText);
+                telegram.sendMessage(chatId, msg, task.getTaskId());
+                chatMemory.recordBotMessage(chatId, msg, task.getTaskId());
+            }
+
+            boolean started = taskLauncher.rework(task.getTaskId(), chatId, commentsText);
+            if (started) {
+                for (GitHubService.PrComment c : fresh) {
+                    markProcessed(c.id(), pr.number(), repo);
                 }
-
-                // Пропускаем пустые комментарии
-                if (comment.body() == null || comment.body().isBlank()) {
-                    markProcessed(comment.id(), pr.number(), repo);
-                    continue;
-                }
-
-                log.info("Новый комментарий в PR #{} ({}) от {}: {}",
-                        pr.number(), repo, comment.author(),
-                        comment.body().length() > 100 ? comment.body().substring(0, 100) + "..." : comment.body());
-
-                // Уведомление в ТГ
-                long notifyId = resolveNotifyChatId(null, pr.headBranch());
-                if (notifyId > 0) {
-                    String msg = "💬 Новый комментарий в PR #%d (%s)\nОт: %s\n%s".formatted(
-                            pr.number(), pr.htmlUrl(), comment.author(),
-                            comment.body().length() > 500 ? comment.body().substring(0, 500) + "..." : comment.body());
-                    telegram.sendMessage(notifyId, msg);
-                    chatMemory.recordBotMessage(notifyId, msg);
-                }
-
-                // Запуск агентного графа с инструкцией из комментария
-                launchFromPrComment(repo, pr, comment);
-
-                markProcessed(comment.id(), pr.number(), repo);
             }
         } catch (Exception e) {
             log.error("Ошибка обработки комментариев PR #{} в {}: {}", pr.number(), repo, e.getMessage(), e);
@@ -206,44 +209,5 @@ public class PrCommentMonitor {
             log.warn("Мониторинг: не удалось сохранить обработанный комментарий {} ({}): {}",
                     commentId, repo, e.getMessage());
         }
-    }
-
-    private void launchFromPrComment(String repo, GitHubService.PrInfo pr, GitHubService.PrComment comment) {
-        String taskId = "pr-" + pr.number() + "-" + comment.id();
-        String instruction = """
-                Комментарий в PR #%d от %s:
-                %s
-
-                Ветка: %s
-                URL PR: %s
-                """.formatted(pr.number(), comment.author(), comment.body(), pr.headBranch(), pr.htmlUrl());
-
-        executor.submit(() -> {
-            try {
-                var ctx = AgentContext.of(instruction)
-                        .with(TaskState.TASK_ID, taskId)
-                        .with(TaskState.TG_CHAT_ID, String.valueOf(resolveNotifyChatId(taskId, pr.headBranch())))
-                        .with(TaskState.GIT_BRANCH, pr.headBranch())
-                        .with(TaskState.TARGET_REPO, repo)
-                        .with(TaskState.REWORK_COUNT, 0);
-
-                AgentResult result = graphRunner.run(ctx);
-
-                String resultMsg;
-                if (!result.hasError()) {
-                    resultMsg = "✅ Задача по комментарию PR #" + pr.number() + " завершена.";
-                } else {
-                    resultMsg = "❌ Задача по комментарию PR #" + pr.number() + " не завершена: " + result.error();
-                }
-
-                long notifyId = resolveNotifyChatId(taskId, pr.headBranch());
-                if (notifyId > 0) {
-                    telegram.sendMessage(notifyId, resultMsg);
-                    chatMemory.recordBotMessage(notifyId, resultMsg);
-                }
-            } catch (Exception e) {
-                log.error("Ошибка выполнения задачи по комментарию PR #{}: {}", pr.number(), e.getMessage(), e);
-            }
-        });
     }
 }

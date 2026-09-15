@@ -46,7 +46,6 @@ class TaskMcpToolsLaunchTaskTest {
                 taskRegistry,
                 mock(TaskRepository.class),
                 mock(CheckpointRepository.class),
-                mock(CheckpointService.class),
                 mock(TaskLockService.class),
                 taskLauncher,
                 mock(HumanInputRegistry.class),

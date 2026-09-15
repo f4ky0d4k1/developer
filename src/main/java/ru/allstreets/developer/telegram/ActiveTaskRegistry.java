@@ -39,7 +39,7 @@ public class ActiveTaskRegistry {
         this.taskChatRepo = taskChatRepo;
     }
 
-    public enum TaskStatus {RUNNING, COMPLETED, FAILED}
+    public enum TaskStatus {RUNNING, COMPLETED, FAILED, CLOSED}
 
     @Transactional
     public void register(long chatId, String taskId, String description, String title, String repo) {
@@ -68,6 +68,15 @@ public class ActiveTaskRegistry {
     @Transactional
     public void markFailed(String taskId) {
         setStatus(taskId, "FAILED");
+    }
+
+    /**
+     * CLOSED — задача закрыта пользователем (в т.ч. отменена из RUNNING). Только задачи в
+     * этом статусе разрешено чистить (worktree/слот), см. guard в TaskLauncher.close.
+     */
+    @Transactional
+    public void markClosed(String taskId) {
+        setStatus(taskId, "CLOSED");
     }
 
     private void setStatus(String taskId, String status) {

@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -25,6 +27,11 @@ public class OpenCodeSessionPool {
     private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final int slotCount;
     private final AtomicBoolean[] slotOccupied;
+
+    /**
+     * taskId → slot: слот закреплён за задачей на всё её время жизни и освобождается только при CLOSED.
+     */
+    private final Map<String, Integer> taskSlots = new ConcurrentHashMap<>();
 
     public OpenCodeSessionPool(WorktreeManager worktreeManager, ru.allstreets.developer.metrics.TaskMetrics metrics) {
         this.worktreeManager = worktreeManager;
@@ -73,6 +80,65 @@ public class OpenCodeSessionPool {
             log.error("Прервано ожидание слота OpenCode");
             return -1;
         }
+    }
+
+    /**
+     * Занять слот ДЛЯ ЗАДАЧИ: если за задачей слот уже закреплён — вернуть его (сессия/worktree
+     * живут всё время задачи), иначе занять свободный, закрепить и ПОДГОТОВИТЬ (clone/checkout
+     * main — только один раз, при первом закреплении; повторный prepare сбросил бы worktree).
+     * Освобождение — только {@link #releaseForTask(String)} (при закрытии задачи, статус CLOSED).
+     *
+     * @return индекс слота или -1 при таймауте
+     */
+    public int acquireForTask(String taskId, String repoUrl, long timeoutSeconds) {
+        if (taskId != null) {
+            Integer existing = taskSlots.get(taskId);
+            if (existing != null) {
+                log.info("Слот {} уже закреплён за задачей {}", existing, shortId(taskId));
+                return existing;
+            }
+        }
+        int slot = acquire(timeoutSeconds);
+        if (slot < 0) {
+            return -1;
+        }
+        if (taskId != null) {
+            taskSlots.put(taskId, slot);
+        }
+        try {
+            prepareSlot(slot, repoUrl);
+        } catch (RuntimeException e) {
+            // Не удалось подготовить — не держим слот залипшим.
+            if (taskId != null) {
+                taskSlots.remove(taskId);
+            }
+            release(slot);
+            throw e;
+        }
+        log.info("Слот {} закреплён за задачей {}", slot, taskId != null ? shortId(taskId) : "?");
+        return slot;
+    }
+
+    /**
+     * Освободить и очистить слот, закреплённый за задачей. Вызывается ТОЛЬКО при CLOSED —
+     * до этого worktree задачи неприкосновенен.
+     */
+    public void releaseForTask(String taskId) {
+        if (taskId == null) {
+            return;
+        }
+        Integer slot = taskSlots.remove(taskId);
+        if (slot == null) {
+            log.debug("releaseForTask: за задачей {} слот не закреплён", shortId(taskId));
+            return;
+        }
+        cleanupSlot(slot);
+        release(slot);
+        log.info("Слот {} освобождён (задача {} закрыта)", slot, shortId(taskId));
+    }
+
+    private static String shortId(String taskId) {
+        return taskId.length() > 8 ? taskId.substring(0, 8) : taskId;
     }
 
     /**
