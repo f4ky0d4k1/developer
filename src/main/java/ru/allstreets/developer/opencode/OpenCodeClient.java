@@ -375,9 +375,13 @@ public class OpenCodeClient {
                 // уже stallTimeout — агент завис. Раньше busy=null игнорировался, и idle-агент
                 // (opencode принял промпт, но assistant-ответ так и не появился) висел до timeout
                 // (инцидент 0f9e5fa2).
+                // Долгий tool (mvn test и т.п.): sidecar НЕ помечает сессию busy (/session/status
+                // отдаёт {}), поэтому ориентируемся на tool-парт — пока он running, работа идёт
+                // и stall не поднимаем (иначе холостые ретраи на длинном tool calling).
+                boolean toolRunning = parts.stream().anyMatch(OpenCodeClient::isToolRunning);
                 Boolean busy = sessionIsBusy(sessionId);
                 long nowMs = System.currentTimeMillis();
-                if (Boolean.TRUE.equals(busy)) {
+                if (Boolean.TRUE.equals(busy) || toolRunning) {
                     lastProgressAt = nowMs;
                 } else if (nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
                     throw abortAndThrow(run, agentName, taskId, prevText,
@@ -484,6 +488,16 @@ public class OpenCodeClient {
      */
     private static boolean isEnvError(String text) {
         return text != null && text.stripLeading().toUpperCase(java.util.Locale.ROOT).startsWith("ENV-ERROR");
+    }
+
+    /**
+     * Tool-парт ещё выполняется ({@code state.status == running}): агент занят tool-вызовом
+     * (в т.ч. долгим {@code mvn test}) — это прогресс, а не зависание.
+     */
+    private static boolean isToolRunning(OpenCodeApi.Part p) {
+        return "tool".equals(p.type())
+                && p.state() != null
+                && "running".equalsIgnoreCase(p.state().status());
     }
 
     /**

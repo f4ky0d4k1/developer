@@ -628,10 +628,24 @@ public class OpenCodeApi {
     }
 
     /**
-     * Part — union из 12 типов; нам нужны {@code text} (ответ) и {@code tool} (имя инструмента
-     * для прогресса).
+     * Part — union из 12 типов; нам нужны {@code text} (ответ), {@code tool} (имя инструмента
+     * для прогресса) и {@code state.status} tool-парта (пока {@code running} — tool ещё
+     * выполняется, в т.ч. долгий {@code mvn test}; это не зависание).
      */
-    public record Part(String type, String text, String tool) {
+    public record Part(String type, String text, String tool, ToolState state) {
+
+        /**
+         * Удобный конструктор без tool-state (парты, где состояние не важно, и тесты).
+         */
+        public Part(String type, String text, String tool) {
+            this(type, text, tool, null);
+        }
+
+        /**
+         * Состояние tool-парта: {@code status} = {@code pending|running|completed|error}.
+         */
+        public record ToolState(String status) {
+        }
     }
 
     /**
