@@ -85,6 +85,27 @@ class WorktreeManagerTest {
     }
 
     @Test
+    void prepareSlot_reNeutralizesConfigRestoredByAgent() throws Exception {
+        assumeTrue(gitAvailable(), "git недоступен");
+        Path repo = createSourceRepo(TRACKED_REPO_CONFIG);
+        WorktreeManager m = manager();
+        m.prepareSlot(0, repo.toString());
+
+        Path slot = workDir.resolve("slot-0");
+        // Агент мог выполнить `git checkout -- opencode.json` (снять нашу заглушку при checkout-конфликте) —
+        // на следующей подготовке слот должен снова её получить (нейтрализация идемпотентна).
+        git(slot, "update-index", "--no-skip-worktree", "--", "opencode.json");
+        git(slot, "checkout", "--", "opencode.json");
+        assertTrue(Files.readString(slot.resolve("opencode.json")).contains(".secrets"),
+                "подготовка теста: возвращаем исходный (битый) конфиг");
+
+        m.prepareSlot(0, repo.toString());
+
+        assertEquals(WorktreeManager.SAFE_PROJECT_CONFIG, Files.readString(slot.resolve("opencode.json")));
+        assertEquals("", git(slot, "status", "--porcelain"), "рабочее дерево снова чистое");
+    }
+
+    @Test
     void reuseSlot_withDirtyWorktree_doesNotDiscardChanges() throws Exception {
         assumeTrue(gitAvailable(), "git недоступен");
         Path repo = createSourceRepo(TRACKED_REPO_CONFIG);
