@@ -42,7 +42,8 @@ class PostValidationNodeTest {
         when(taskRepo.findById(anyString())).thenReturn(Optional.empty());
         node = new PostValidationNode(
                 mock(ChatClient.class), mock(ChatClient.class), mock(TelegramGateway.class),
-                structuredOutput, taskRepo, validator, "agent-generated", mock(SlotUnavailableHandler.class));
+                structuredOutput, taskRepo, validator, "agent-generated", "test",
+                mock(SlotUnavailableHandler.class));
     }
 
     private AgentContext baseCtx() {
@@ -154,5 +155,9 @@ class PostValidationNodeTest {
         verify(validator).run(promptCaptor.capture(), anyLong(), any(), anyString());
         assertTrue(promptCaptor.getValue().contains("agent-generated"),
                 "промпт валидатора должен требовать метку PR из GITHUB_PR_LABEL: " + promptCaptor.getValue());
+        assertTrue(promptCaptor.getValue().contains("base — test"),
+                "промпт валидатора должен указывать base-ветку из конфига: " + promptCaptor.getValue());
+        assertTrue(promptCaptor.getValue().contains("Трекера"),
+                "промпт валидатора должен требовать отчёт в Трекер: " + promptCaptor.getValue());
     }
 }

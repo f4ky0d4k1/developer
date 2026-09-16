@@ -45,6 +45,7 @@ public class PostValidationNode implements Agent {
     private final TaskRepository taskRepo;
     private final ValidatorService validator;
     private final String prLabel;
+    private final String baseBranch;
     private final SlotUnavailableHandler slotHandler;
 
     public PostValidationNode(@Qualifier("postValidationChatClient") ChatClient chatClient,
@@ -52,6 +53,7 @@ public class PostValidationNode implements Agent {
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
                               TaskRepository taskRepo, ValidatorService validator,
                               @Value("${github.pr-label:agent-generated}") String prLabel,
+                              @Value("${github.base-branch:main}") String baseBranch,
                               SlotUnavailableHandler slotHandler) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
@@ -60,6 +62,7 @@ public class PostValidationNode implements Agent {
         this.taskRepo = taskRepo;
         this.validator = validator;
         this.prLabel = prLabel;
+        this.baseBranch = baseBranch;
         this.slotHandler = slotHandler;
     }
 
@@ -189,13 +192,17 @@ public class PostValidationNode implements Agent {
                 4. Тесты НЕ запускай — их уже написали (`tester`) и добились зелёного прогона (`developer`).
                    Если видишь, что тестов нет или покрытие не соответствует AC — это повод вернуть tester.
                 5. Решение:
-                   - всё выполнено → создай PR через GitHub MCP (head — текущая ветка, base — main)
+                   - всё выполнено → создай PR через GitHub MCP (head — текущая ветка, base — %s)
                      и повесь на него метку «%s» (если такой метки в репозитории нет — создай её
                      через GitHub MCP, затем повесь);
                    - не хватает реализации → reroute "developer";
                    - не хватает/неверны тесты → reroute "tester";
                    - проблема в ТЗ/требованиях, нужен пересмотр → reroute "analyst";
                    - задача невыполнима → failed.
+                6. Отпишись о результате в задачу Трекера (issue ниже, если он есть): оставь комментарий
+                   с итогом (что сделано, ссылка на PR, статус тестов) через Tracker MCP. Если для работы
+                   с Трекером доступны навыки (skills) — используй их. Создаёт/связывает задачу Трекера
+                   АНАЛИТИК — тебе нужно только отписаться в существующую, не создавай новую.
                 
                 В конце ответа выведи СТРОГО JSON:
                 ```json
@@ -206,7 +213,7 @@ public class PostValidationNode implements Agent {
                   "summary": "кратко: что сделано и почему такое решение"
                 }
                 ```
-                """.formatted(prLabel));
+                """.formatted(baseBranch, prLabel));
 
         sb.append("\n## Контекст задачи\n");
         appendSection(sb, "ТЗ / спека", ctx.get(TaskState.SPEC), SPEC_LIMIT);
