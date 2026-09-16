@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import ru.allstreets.developer.agents.AnalystNode;
 import ru.allstreets.developer.agents.DeveloperNode;
 import ru.allstreets.developer.agents.PostValidationNode;
+import ru.allstreets.developer.agents.ReporterNode;
 import ru.allstreets.developer.agents.TesterNode;
 import ru.allstreets.developer.checkpoint.JpaCheckpointStore;
 import ru.allstreets.developer.opencode.OpenCodeTransientException;
@@ -31,6 +32,7 @@ public class AgentFlowConfig {
             AnalystNode analyst,
             TesterNode tester,
             DeveloperNode developer,
+            ReporterNode reporter,
             PostValidationNode postValidation,
             JpaCheckpointStore checkpointStore
     ) {
@@ -39,14 +41,25 @@ public class AgentFlowConfig {
                 .addNode("analyst", analyst)
                 .addNode("tester", tester)
                 .addNode("developer", developer)
+                .addNode("reporter", reporter)
                 .addNode("post_validation", postValidation)
                 // analyst → роутинг по ФЛАГАМ задачи, а не по nextStep: если нужны тесты —
                 // всегда сначала tester (TDD), затем tester → developer. Защита от ошибки
                 // аналитика, который ставит nextStep=developer, игнорируя requiresTesting
                 // (инцидент ec0a2004: developer запускался раньше tester).
+                //
+                // reporter — единственное исключение: запуском репортёра управляет АНАЛИТИК явным
+                // nextStep=reporter (текст в Трекере — не код, флагов разработки/тестов у него нет).
+                .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToReporter, "reporter"))
                 .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToTester, "tester"))
                 .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToDeveloper, "developer"))
                 .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToPostValidation, "post_validation"))
+                // reporter → post_validation: репортёр оформил текст в Трекере, дальше — валидация.
+                .addEdge(Edge.onResult(
+                        "reporter",
+                        (ctx, result) -> !result.hasError(),
+                        "post_validation"
+                ))
                 // developer → post_validation (всегда — валидация и PR)
                 .addEdge(Edge.onResult(
                         "developer",
@@ -107,6 +120,17 @@ public class AgentFlowConfig {
     }
 
     /**
+     * analyst → reporter: задача про текст в Трекере (оформление/правки отчёта, описания, комментариев).
+     * <p>
+     * Запуском репортёра управляет аналитик: он единственный ставит {@code nextStep=reporter}. Это не
+     * «код», поэтому флаги разработки/тестов здесь не участвуют и {@link #analystGoesToPostValidation}
+     * явно исключает этот nextStep.
+     */
+    static boolean analystGoesToReporter(AgentContext ctx, AgentResult result) {
+        return !result.hasError() && "reporter".equals(ctx.get(TaskState.NEXT_STEP));
+    }
+
+    /**
      * analyst → tester: задача требует тестов (TDD — тесты раньше реализации).
      */
     static boolean analystGoesToTester(AgentContext ctx, AgentResult result) {
@@ -128,6 +152,7 @@ public class AgentFlowConfig {
      */
     static boolean analystGoesToPostValidation(AgentContext ctx, AgentResult result) {
         if (result.hasError()) return false;
+        if (analystGoesToReporter(ctx, result)) return false;
         if (isAnalystDone(ctx)) return true;
         return !Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_DEVELOPMENT))
                 && !Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING));

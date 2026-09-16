@@ -20,7 +20,7 @@ public final class AgentResponses {
     }
 
     public enum NextStep {
-        DEVELOPER, TESTER, DONE
+        DEVELOPER, TESTER, REPORTER, DONE
     }
 
     public record ReformattedText(String text) {

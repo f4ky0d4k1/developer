@@ -62,6 +62,18 @@ class AgentFlowConfigRoutingTest {
     }
 
     @Test
+    void reporterNextStep_goesToReporter_onlyAnalystLaunchesIt() {
+        // Запуском репортёра управляет аналитик: nextStep=reporter, кода/тестов нет.
+        AgentContext c = ctx(null, null, "reporter");
+
+        assertTrue(AgentFlowConfig.analystGoesToReporter(c, ok()));
+        assertFalse(AgentFlowConfig.analystGoesToTester(c, ok()));
+        assertFalse(AgentFlowConfig.analystGoesToDeveloper(c, ok()));
+        assertFalse(AgentFlowConfig.analystGoesToPostValidation(c, ok()),
+                "reporter-задачу не должен перехватывать путь в post_validation");
+    }
+
+    @Test
     void errorResult_routesNowhere() {
         AgentContext c = ctx(true, true, "developer");
         AgentResult err = AgentResult.failed(AgentError.of("analyst", new RuntimeException("boom")));

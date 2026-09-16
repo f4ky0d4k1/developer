@@ -171,7 +171,7 @@ class PostValidationNodeTest {
                 "промпт валидатора должен требовать метку PR из GITHUB_PR_LABEL: " + promptCaptor.getValue());
         assertTrue(promptCaptor.getValue().contains("base — test"),
                 "промпт валидатора должен указывать base-ветку из конфига: " + promptCaptor.getValue());
-        assertTrue(promptCaptor.getValue().contains("Трекера"),
-                "промпт валидатора должен требовать отчёт в Трекер: " + promptCaptor.getValue());
+        assertTrue(promptCaptor.getValue().contains("В Трекер НЕ пиши"),
+                "валидатор в Трекер не пишет — текст ведёт репортёр: " + promptCaptor.getValue());
     }
 }
