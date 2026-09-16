@@ -18,7 +18,9 @@ import ru.allstreets.developer.telegram.TaskLauncher;
  *   <li>задача {@code FAILED} не поднимается (авто-оживания нет), но её checkpoint СОХРАНЯЕТСЯ —
  *       ручной restart возобновляется с упавшего узла, а не с нуля;</li>
  *   <li>HITL-пауза ({@code interruptReason} != null) не возобновляется — задача ждёт ответа пользователя;
- *       checkpoint сохраняется для resume по ответу;</li>
+ *       checkpoint сохраняется для resume по ответу. Решение принимается по СВЕЖЕЙШЕМУ checkpoint
+ *       runId (их в БД несколько), иначе устаревшая строка без interruptReason подняла бы задачу
+ *       без ответа (инцидент 427edb3c);</li>
  *   <li>возобновление идёт через {@link TaskLauncher#resumeAfterRestart} — на общем executor, с регистрацией
  *       в {@code runningTasks}: старт не блокируется, задачу можно остановить, а успех/провал уведомляется в Telegram.</li>
  * </ul>
@@ -49,10 +51,19 @@ public class CheckpointRecoveryListener {
             return;
         }
 
-        log.info("Найдено {} незавершённых задач. Восстановление...", unfinished.size());
+        // На один runId в БД лежит НЕСКОЛЬКО RUNNING-строк (checkpoint пишется на каждый узел и на
+        // каждую паузу) — обрабатываем runId один раз, решая по СВЕЖЕЙШЕЙ строке: именно её
+        // возьмёт resume (loadCheckpoint → findTopByRunIdOrderByCreatedAtDesc). Если решать по
+        // произвольной (устаревшей) строке, её interruptReason == null перекрывает HITL-паузу и
+        // агент стартует без ответа пользователя (инцидент 427edb3c).
+        var runIds = unfinished.stream().map(CheckpointEntity::getRunId).distinct().toList();
+        log.info("Найдено {} незавершённых задач. Восстановление...", runIds.size());
 
-        for (var checkpoint : unfinished) {
-            String runId = checkpoint.getRunId();
+        for (String runId : runIds) {
+            CheckpointEntity checkpoint = checkpointService.getLatestCheckpoint(runId);
+            if (checkpoint == null) {
+                continue;
+            }
             String lastNode = checkpoint.getNodeName();
 
             // Осиротевший checkpoint (нет задачи в реестре) — не поднимаем и чистим: такие остались

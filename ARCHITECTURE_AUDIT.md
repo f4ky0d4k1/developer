@@ -514,3 +514,22 @@ Tracker — вместо доработки той же задачи.
   уже читал репозиторий (`existsById`), поэтому расхождение и было заметно: монитор «видел» pending, а резюм — нет.
 
 Тесты: `HumanInputRegistryTest`.
+
+## 35. Recovery решает по свежему checkpoint, а не по любой RUNNING-строке
+
+**Статус: DONE**
+
+- **Инцидент 427edb3c (продолжение)**: после рестарта задача, стоявшая в HITL-паузе, была поднята
+  (`🔄 Приложение перезапущено. Возобновляю задачу из checkpoint...`), аналитик перезапустился **без ответа
+  пользователя** и упал: `Analyst produced no decision (missing nextStep)`.
+- **Причина**: `CheckpointService.getUnfinishedCheckpoints()` = `repository.findByStatus("RUNNING")` возвращает
+  **все** RUNNING-строки, а checkpoint пишется на каждый узел и на каждую паузу. Для runId их было минимум две:
+  строка узла (`interruptReason=null`) и HITL-пауза (`HITL_CLARIFICATION`). Recovery наткнулся на строку узла,
+  guard `interruptReason != null` не сработал → `resumeAfterRestart`.
+- **Фикс**: слушатель итерирует **distinct runId** и принимает решение по `getLatestCheckpoint(runId)` —
+  ровно по той строке, из которой resume и продолжит граф (`loadCheckpoint` →
+  `findTopByRunIdOrderByCreatedAtDesc`). Решение и возобновляемое состояние теперь согласованы по построению.
+- **Побочный эффект для 427edb3c**: неудачный перезапуск перезаписал HITL-checkpoint строкой узла, поэтому
+  ответ пользователя задачу уже не поднимет — её нужно перезапустить (`restartTask`).
+
+Тесты: `CheckpointRecoveryListenerTest` (2 новых: устаревшая строка не перекрывает HITL; решение одно на runId).

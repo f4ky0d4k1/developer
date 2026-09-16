@@ -36,6 +36,8 @@ class CheckpointRecoveryListenerTest {
 
         when(checkpointService.getUnfinishedCheckpoints())
                 .thenReturn(List.of(new CheckpointEntity("cp-1", RUN_ID, "analyst", "{}", "RUNNING")));
+        when(checkpointService.getLatestCheckpoint(RUN_ID))
+                .thenReturn(new CheckpointEntity("cp-1", RUN_ID, "analyst", "{}", "RUNNING"));
         when(taskRepo.findById(RUN_ID))
                 .thenReturn(Optional.of(new TaskEntity(RUN_ID, "RUNNING", "d", "t", 42L)));
         when(checkpointService.restoreCheckpoint(RUN_ID))
@@ -90,12 +92,43 @@ class CheckpointRecoveryListenerTest {
         // Инидент 330559f5: задача ждала ответа пользователя, а recovery её сам поднял.
         when(checkpointService.getUnfinishedCheckpoints()).thenReturn(List.of(
                 new CheckpointEntity("cp-1", RUN_ID, "analyst", "{}", "RUNNING", 0, "HITL_CLARIFICATION")));
+        when(checkpointService.getLatestCheckpoint(RUN_ID))
+                .thenReturn(new CheckpointEntity("cp-1", RUN_ID, "analyst", "{}", "RUNNING", 0, "HITL_CLARIFICATION"));
 
         listener.recoverUnfinishedTasks();
 
         verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
         // checkpoint НЕ чистим — он нужен для resume по ответу пользователя.
         verify(checkpointService, never()).cleanup(anyString());
+    }
+
+    @Test
+    void staleRunningRowWithoutInterrupt_doesNotOverrideHitlPause() {
+        // Инцидент 427edb3c: в БД на один runId несколько RUNNING-строк. Старая (checkpoint узла,
+        // interruptReason=null) не должна перекрывать свежую HITL-паузу — иначе recovery поднимал
+        // задачу без ответа пользователя и аналитик падал на пустом решении.
+        var staleNodeRow = new CheckpointEntity("cp-old", RUN_ID, "analyst", "{}", "RUNNING");
+        var hitlRow = new CheckpointEntity("cp-hitl", RUN_ID, "analyst", "{}", "RUNNING", 0, "HITL_CLARIFICATION");
+        when(checkpointService.getUnfinishedCheckpoints()).thenReturn(List.of(staleNodeRow, hitlRow));
+        when(checkpointService.getLatestCheckpoint(RUN_ID)).thenReturn(hitlRow);
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        verify(checkpointService, never()).cleanup(anyString());
+    }
+
+    @Test
+    void multipleRunningRowsForOneRun_decideOnce() {
+        // Несколько строк одного runId — решение одно (по свежей), resume зовём ровно раз.
+        var oldRow = new CheckpointEntity("cp-old", RUN_ID, "developer", "{}", "RUNNING");
+        var newRow = new CheckpointEntity("cp-new", RUN_ID, "analyst", "{}", "RUNNING");
+        when(checkpointService.getUnfinishedCheckpoints()).thenReturn(List.of(oldRow, newRow, oldRow));
+        when(checkpointService.getLatestCheckpoint(RUN_ID)).thenReturn(newRow);
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, times(1)).resumeAfterRestart(RUN_ID, 42L);
     }
 
     @Test
