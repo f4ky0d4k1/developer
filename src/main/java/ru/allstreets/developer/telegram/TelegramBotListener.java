@@ -73,6 +73,19 @@ public class TelegramBotListener {
     }
 
     /**
+     * Сообщение — прямой ответ (reply) на сообщение бота: такое обращено к боту без @mention.
+     * Отличаем ИМЕННО нашего бота (username совпадает с {@code telegram.bot-username}).
+     */
+    static boolean isReplyToBot(TelegramGateway.Message msg, String botUsername) {
+        var replied = msg.reply_to_message();
+        if (replied == null || replied.from() == null) return false;
+        var from = replied.from();
+        if (!from.is_bot()) return false;
+        if (botUsername == null || botUsername.isBlank()) return true;
+        return botUsername.equalsIgnoreCase(from.username());
+    }
+
+    /**
      * Проверка @mention бота в сообщении.
      * Сначала через entities[] (точное определение), затем fallback — substring search.
      */
@@ -223,7 +236,7 @@ public class TelegramBotListener {
                 continue;
             }
 
-            // @mention filtering: агент запускается только на @bot_mention
+            // @mention filtering: агент запускается на @bot_mention
             boolean hasMention = hasMention(msg, text);
 
             // Если есть pending HITL-вопросы — пропускаем без @mention
@@ -231,13 +244,18 @@ public class TelegramBotListener {
             boolean hasPendingQuestions = humanInputRegistry.hasPendingInputs(chat.id());
             // В личке (private) @mention не нужен — бот и так единственный собеседник
             boolean isPrivateChat = "private".equals(chat.type());
-            if (!hasMention && !hasPendingQuestions && !isPrivateChat) {
-                log.debug("TG poll: chatId={} — нет @mention и нет pending-вопросов, пропуск LLM вызова", chat.id());
+            // Прямой ответ (reply) на сообщение бота — тоже обращён к боту, даже без @mention.
+            boolean isReplyToBot = isReplyToBot(msg, botUsername);
+            if (!hasMention && !hasPendingQuestions && !isPrivateChat && !isReplyToBot) {
+                log.debug("TG poll: chatId={} — нет @mention, нет pending-вопросов и не reply боту, пропуск LLM вызова",
+                        chat.id());
                 continue;
             }
             if (!hasMention) {
                 log.info("TG poll: chatId={} — нет @mention, но {} → пропуск к ConversationAgent",
-                        chat.id(), isPrivateChat ? "личный чат" : "есть pending-вопросы");
+                        chat.id(), isPrivateChat ? "личный чат"
+                                : isReplyToBot ? "reply на сообщение бота"
+                                  : "есть pending-вопросы");
             }
 
             // Делегируем ConversationAgent
