@@ -43,7 +43,7 @@ class PostValidationNodeTest {
         when(taskRepo.findById(anyString())).thenReturn(Optional.empty());
         node = new PostValidationNode(
                 mock(ChatClient.class), mock(ChatClient.class), mock(TelegramGateway.class),
-                structuredOutput, taskRepo, validator, "agent-generated", "test",
+                structuredOutput, taskRepo, validator, "agent-generated",
                 mock(SlotUnavailableHandler.class));
     }
 
@@ -169,8 +169,10 @@ class PostValidationNodeTest {
         verify(validator).run(promptCaptor.capture(), anyLong(), any(), anyString());
         assertTrue(promptCaptor.getValue().contains("agent-generated"),
                 "промпт валидатора должен требовать метку PR из GITHUB_PR_LABEL: " + promptCaptor.getValue());
-        assertTrue(promptCaptor.getValue().contains("base — test"),
-                "промпт валидатора должен указывать base-ветку из конфига: " + promptCaptor.getValue());
+        assertTrue(promptCaptor.getValue().contains("тестовую ветку"),
+                "промпт валидатора должен требовать определить тестовую ветку из проекта: " + promptCaptor.getValue());
+        assertTrue(promptCaptor.getValue().contains("git ls-remote --heads origin"),
+                "промпт валидатора должен проверять существование тестовой ветки: " + promptCaptor.getValue());
         assertTrue(promptCaptor.getValue().contains("В Трекер НЕ пиши"),
                 "валидатор в Трекер не пишет — текст ведёт репортёр: " + promptCaptor.getValue());
     }

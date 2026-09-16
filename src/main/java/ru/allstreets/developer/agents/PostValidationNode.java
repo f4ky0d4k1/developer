@@ -45,7 +45,6 @@ public class PostValidationNode implements Agent {
     private final TaskRepository taskRepo;
     private final ValidatorService validator;
     private final String prLabel;
-    private final String baseBranch;
     private final SlotUnavailableHandler slotHandler;
 
     public PostValidationNode(@Qualifier("postValidationChatClient") ChatClient chatClient,
@@ -53,7 +52,6 @@ public class PostValidationNode implements Agent {
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
                               TaskRepository taskRepo, ValidatorService validator,
                               @Value("${github.pr-label:agent-generated}") String prLabel,
-                              @Value("${github.base-branch:Atest}") String baseBranch,
                               SlotUnavailableHandler slotHandler) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
@@ -62,7 +60,6 @@ public class PostValidationNode implements Agent {
         this.taskRepo = taskRepo;
         this.validator = validator;
         this.prLabel = prLabel;
-        this.baseBranch = baseBranch;
         this.slotHandler = slotHandler;
     }
 
@@ -192,13 +189,16 @@ public class PostValidationNode implements Agent {
                 4. Тесты НЕ запускай — их уже написали (`tester`) и добились зелёного прогона (`developer`).
                    Если видишь, что тестов нет или покрытие не соответствует AC — это повод вернуть tester.
                 5. Решение:
-                   - ЦЕЛЕВАЯ ВЕТКА (base) PR: дефолт — тестовая ветка `%s`. ПРОВЕРЬ через GitHub MCP,
-                     что она существует в репозитории; если тестовой ветки НЕТ — создавай PR в `main`
-                     (продовую). Если пользователь в задании ЯВНО указал другую целевую ветку — её (приоритет).
+                   - ЦЕЛЕВАЯ ВЕТКА (base) PR: определи её САМ, тестовая ветка не захардкожена. Сначала
+                     посмотри, какую тестовую ветку использует проект: прочитай conventions.md / AGENTS.md /
+                     README.md репозитория и найди упоминание тестовой ветки (Atest / test / staging / develop / …).
+                     Проверь её существование: `git ls-remote --heads origin` (или GitHub MCP list_branches).
+                     Если тестовая ветка найдена и существует — PR в неё. Если тестовой ветки НЕТ — создавай
+                     PR в `main` (продовую). Если пользователь в задании ЯВНО указал целевую ветку — её (приоритет).
                    - ПЕРЕД созданием PR проверь, не сделал ли это кто-то раньше: найди PR по твоей
                      head-ветке (GitHub MCP, state=open). Если PR уже есть — НЕ создавай дубликат, а
-                     проверь его оформление (base — %s, метка «%s», осмысленные title/body) и исправь,
-                     если что-то не так (смени base / повесь метку). Если PR нет — создай новый
+                     проверь его оформление (base — выбранная ветка, метка «%s», осмысленные title/body)
+                     и исправь, если что-то не так (смени base / повесь метку). Если PR нет — создай новый
                      через GitHub MCP;
                    - не хватает реализации → reroute "developer";
                    - не хватает/неверны тесты → reroute "tester";
@@ -220,7 +220,7 @@ public class PostValidationNode implements Agent {
                   "summary": "кратко: что сделано и почему такое решение"
                 }
                 ```
-                """.formatted(baseBranch, baseBranch, prLabel));
+                """.formatted(prLabel));
 
         sb.append("\n## Контекст задачи\n");
         appendSection(sb, "ТЗ / спека", ctx.get(TaskState.SPEC), SPEC_LIMIT);

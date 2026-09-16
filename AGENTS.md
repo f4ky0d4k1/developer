@@ -80,10 +80,10 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 - **`post_validation` has a `done` outcome**: a task that needs no code change (Tracker/documentation edits) ends
   successfully without a PR. PR stays mandatory whenever code changed — `done` covers "there is nothing to open a PR
   from". Collapsing `done` back into "unresolved decision → FAILED" is a regression (incident 427edb3c).
-- **PR target = test branch by default**: the validator opens a PR into the TEST branch (config `github.base-branch`,
-  default `Atest`). It checks the branch exists (GitHub MCP) and falls back to `main` if it does not; a branch the
-  user explicitly named always wins. Never PR straight into `main` while a test branch exists. Stated in
-  `validator.md` and the `PostValidationNode` prompt.
+- **PR target = test branch, discovered not hardcoded**: the validator opens a PR into the project's TEST branch,
+  which it discovers itself (from `conventions.md`/`AGENTS.md`/`README.md` + `git ls-remote --heads origin` / GitHub
+  MCP). If no test branch exists, it falls back to `main`; a branch the user explicitly named wins. Never PR straight
+  into `main` while a test branch exists. Stated in `validator.md` and the `PostValidationNode` prompt.
 
 ## Conventions
 
