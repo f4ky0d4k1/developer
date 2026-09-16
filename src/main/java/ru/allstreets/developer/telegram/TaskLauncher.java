@@ -303,6 +303,15 @@ public class TaskLauncher {
     }
 
     /**
+     * Полный сброс worktree слота задачи: удаляет клон и освобождает слот, чтобы следующий
+     * шаг пере-клонировался заново. Восстановление задачи, застрявшей в чужом/битом репозитории
+     * (инцидент 5d8aabf5). Возвращает false, если за задачей слот не закреплён.
+     */
+    public boolean resetSlot(String taskId) {
+        return sessionPool.resetSlotForTask(taskId) >= 0;
+    }
+
+    /**
      * Дождаться, пока старый ран задачи отпустит advisory-lock (иначе новый run получит
      * «Task already locked»). {@link #cancel} лишь интерраптит поток, а unlock происходит
      * в finally графа — поэтому короткий поллинг до 5 секунд.

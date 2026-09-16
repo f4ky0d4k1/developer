@@ -236,6 +236,23 @@ public class WorktreeManager {
         }
     }
 
+    /**
+     * Полный сброс слота: удаляем worktree целиком (включая клон репозитория).
+     * Используется для ручного восстановления задачи, застрявшей в чужом/повреждённом
+     * worktree — на следующем {@code prepareSlot} слот клонируется заново.
+     */
+    public void resetSlot(int slotIndex) {
+        Path slotDir = getSlotWorkDir(slotIndex);
+        log.info("Полный сброс слота {}: {}", slotIndex, slotDir);
+        try {
+            if (Files.exists(slotDir)) {
+                deleteRecursively(slotDir);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Не удалось сбросить слот " + slotIndex + ": " + e.getMessage(), e);
+        }
+    }
+
     private void linkOpencodeConfig(Path slotDir) {
         try {
             Path link = slotDir.resolve(".opencode");

@@ -149,6 +149,21 @@ class WorktreeManagerTest {
                 "слот должен быть пере-клонирован под запрошенный репозиторий");
     }
 
+    @Test
+    void resetSlot_deletesWorktree() throws Exception {
+        assumeTrue(gitAvailable(), "git недоступен");
+        Path repo = createSourceRepo(null);
+        WorktreeManager m = manager();
+
+        m.prepareSlot(0, repo.toString());
+        Path slot = workDir.resolve("slot-0");
+        assertTrue(Files.exists(slot.resolve(".git")), "слот должен быть клонирован");
+
+        m.resetSlot(0);
+
+        assertFalse(Files.exists(slot), "worktree слота должен быть удалён целиком");
+    }
+
     private Path createNamedRepo(String name, String readme) throws Exception {
         Path repo = workDir.resolve(name);
         Files.createDirectories(repo);

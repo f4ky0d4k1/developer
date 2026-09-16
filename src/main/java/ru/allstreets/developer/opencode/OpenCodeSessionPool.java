@@ -137,6 +137,30 @@ public class OpenCodeSessionPool {
         log.info("Слот {} освобождён (задача {} закрыта)", slot, shortId(taskId));
     }
 
+    /**
+     * Полный сброс слота задачи: удаляем worktree и освобождаем слот, чтобы на следующем
+     * шаге он пере-клонировался заново (восстановление задачи, застрявшей в чужом/битом
+     * репозитории — инцидент 5d8aabf5). В отличие от {@link #releaseForTask}, worktree
+     * УДАЛЯЕТСЯ, а не просто откатывается на main.
+     *
+     * @return индекс сброшенного слота или -1, если за задачей слот не закреплён
+     */
+    public int resetSlotForTask(String taskId) {
+        if (taskId == null) {
+            return -1;
+        }
+        Integer slot = taskSlots.remove(taskId);
+        if (slot == null) {
+            log.debug("resetSlotForTask: за задачей {} слот не закреплён", shortId(taskId));
+            return -1;
+        }
+        worktreeManager.resetSlot(slot);
+        slotOccupied[slot].set(false);
+        semaphore.release();
+        log.info("Слот {} сброшен (задача {})", slot, shortId(taskId));
+        return slot;
+    }
+
     private static String shortId(String taskId) {
         return taskId.length() > 8 ? taskId.substring(0, 8) : taskId;
     }

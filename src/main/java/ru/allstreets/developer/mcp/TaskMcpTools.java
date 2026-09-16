@@ -244,6 +244,34 @@ public class TaskMcpTools {
                 + (wasRunning ? ", running run cancelled" : "") + ". Slot freed.";
     }
 
+    @Tool(description = "Fully reset the OpenCode slot/worktree of a task: deletes its cloned repository and frees " +
+            "the slot, so the next agent step re-clones the correct repo from scratch. Use to recover a task stuck " +
+            "in a wrong or corrupted worktree (e.g. the wrong repository was cloned into its slot). " +
+            "taskId can be partial (first 8 chars). Returns confirmation.")
+    public String resetSlot(
+            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
+    ) {
+        String fullTaskId = resolveTaskId(taskId);
+        if (fullTaskId == null) {
+            return "Task not found: " + taskId;
+        }
+        log.info("MCP resetSlot: taskId={}", fullTaskId);
+
+        boolean wasRunning = taskLauncher.isRunning(fullTaskId);
+        boolean reset = taskLauncher.resetSlot(fullTaskId);
+        if (!reset) {
+            return "Task " + fullTaskId.substring(0, 8)
+                    + " has no bound slot (never acquired or already released).";
+        }
+
+        String msg = "Slot/worktree of task " + fullTaskId.substring(0, 8)
+                + " reset — next agent step will re-clone the repo from scratch.";
+        if (wasRunning) {
+            msg += " Note: the task was RUNNING — restart it to continue cleanly.";
+        }
+        return msg;
+    }
+
     /**
      * Отменить осиротевший run: строки в agent_tasks нет (напр. legacy pr-* от старого
      * PrCommentMonitor, который запускал граф напрямую без регистрации), но есть checkpoint
