@@ -92,8 +92,8 @@ telegram:
   bot-username: ${TELEGRAM_BOT_USERNAME}  # username бота без @, для @mention фильтрации
   api-url: https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}
   polling-timeout: 30
-  allowed-chat-ids: 1270746894,-1001506621216,-4578261262,-1001549425035
-  trigger-users: f4ky0d4k
+  allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS:}   # whitelist чатов, через запятую (см. .env)
+  trigger-users: ${TELEGRAM_TRIGGER_USERS:}         # логины, кому можно запускать задачи, через запятую,anton_pppp
 
 # Skills — путь внутри репозитория (по умолчанию .windsurf)
 skills:
