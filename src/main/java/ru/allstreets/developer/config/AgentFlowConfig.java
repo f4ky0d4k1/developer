@@ -54,12 +54,6 @@ public class AgentFlowConfig {
                 .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToTester, "tester"))
                 .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToDeveloper, "developer"))
                 .addEdge(Edge.onResult("analyst", AgentFlowConfig::analystGoesToPostValidation, "post_validation"))
-                // reporter → post_validation: репортёр оформил текст в Трекере, дальше — валидация.
-                .addEdge(Edge.onResult(
-                        "reporter",
-                        (ctx, result) -> !result.hasError(),
-                        "post_validation"
-                ))
                 // developer → post_validation (всегда — валидация и PR)
                 .addEdge(Edge.onResult(
                         "developer",
@@ -81,6 +75,11 @@ public class AgentFlowConfig {
                         (ctx, result) -> shouldReroute(ctx, result, "analyst"), "analyst"))
                 .addEdge(Edge.onResult("post_validation",
                         (ctx, result) -> shouldReroute(ctx, result, "tester"), "tester"))
+                // post_validation → reporter: валидатор ЗАКОНЧИЛ задачу (PR или done — доработок нет),
+                // и есть задача Трекера → репортёр пишет финальный итог. Репортёр — терминальный шаг.
+                // При reroute REROUTE_TARGET непуст → сюда не попадаем, итог пишется на финальном проходе.
+                .addEdge(Edge.onResult("post_validation",
+                        AgentFlowConfig::postValidationGoesToReporter, "reporter"))
                 .errorPolicy(ErrorPolicy.FAIL_FAST)
                 .retryPolicy(openCodeRetryPolicy())
                 .build();
@@ -164,5 +163,17 @@ public class AgentFlowConfig {
         Integer rc = ctx.get(TaskState.REWORK_COUNT);
         int reworkCount = rc != null ? rc : 0;
         return target.equals(rerouteTarget) && reworkCount < 3;
+    }
+
+    /**
+     * post_validation → reporter: валидатор ЗАКОНЧИЛ задачу (нет reroute — PR создан или done),
+     * и у задачи есть тикет Трекера, куда репортёр пишет финальный итог.
+     */
+    static boolean postValidationGoesToReporter(AgentContext ctx, AgentResult result) {
+        if (result.hasError()) return false;
+        String rerouteTarget = ctx.get(TaskState.REROUTE_TARGET);
+        if (rerouteTarget != null && !rerouteTarget.isBlank()) return false;
+        String trackerIssue = ctx.get(TaskState.TRACKER_ISSUE);
+        return trackerIssue != null && !trackerIssue.isBlank();
     }
 }

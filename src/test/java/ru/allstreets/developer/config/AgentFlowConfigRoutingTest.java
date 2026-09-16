@@ -73,6 +73,43 @@ class AgentFlowConfigRoutingTest {
                 "reporter-задачу не должен перехватывать путь в post_validation");
     }
 
+    private AgentContext postValidationCtx(String rerouteTarget, String trackerIssue) {
+        AgentContext c = AgentContext.of("задача")
+                .with(TaskState.TASK_ID, "task-1")
+                .with(TaskState.TG_CHAT_ID, "1");
+        if (rerouteTarget != null) c = c.with(TaskState.REROUTE_TARGET, rerouteTarget);
+        if (trackerIssue != null) c = c.with(TaskState.TRACKER_ISSUE, trackerIssue);
+        return c;
+    }
+
+    @Test
+    void finishedTaskWithTracker_goesToReporter() {
+        // Валидатор закончил (PR/done — reroute пуст), есть тикет → репортёр пишет итог.
+        assertTrue(AgentFlowConfig.postValidationGoesToReporter(
+                postValidationCtx("", "BACKEND-437"), ok()));
+    }
+
+    @Test
+    void reroutePending_doesNotGoToReporter() {
+        // Доработка: REROUTE_TARGET непуст — итог писать рано.
+        assertFalse(AgentFlowConfig.postValidationGoesToReporter(
+                postValidationCtx("developer", "BACKEND-437"), ok()));
+    }
+
+    @Test
+    void finishedWithoutTracker_doesNotGoToReporter() {
+        assertFalse(AgentFlowConfig.postValidationGoesToReporter(
+                postValidationCtx("", null), ok()));
+    }
+
+    @Test
+    void postValidationError_doesNotGoToReporter() {
+        AgentResult err = AgentResult.failed(AgentError.of("post_validation", new RuntimeException("boom")));
+
+        assertFalse(AgentFlowConfig.postValidationGoesToReporter(
+                postValidationCtx("", "BACKEND-437"), err));
+    }
+
     @Test
     void errorResult_routesNowhere() {
         AgentContext c = ctx(true, true, "developer");

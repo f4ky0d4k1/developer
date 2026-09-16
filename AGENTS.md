@@ -72,9 +72,11 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
   (never a PR), `validator` verifies and creates the PR — **the validator does NOT write to the Tracker**. Stated in
   every `opencode-config/agents/*.md` and enforced by `AgentPolicyConsistencyTest` (a policy known to one agent but
   not the others is a bug).
-- **Reporter is analyst-launched, not flag-routed**: `nextStep=reporter` (`NextStep.REPORTER`) is the deliberate
-  exception to "routing by flags, not `nextStep`" — Tracker text is not code, so there is no dev/test flag for it.
-  Graph: `analyst → reporter → post_validation`.
+- **Reporter is the terminal reporting step**: `reporter` runs at the END of a task — either short-circuited
+  by the analyst (`nextStep=reporter`, tracker-only work) or automatically after the validator finishes
+  (`post_validation → reporter` when there is no pending reroute and a Tracker issue exists). The итог is written
+  once, on the final pass; a reroute does NOT trigger the reporter. Graph: `analyst → tester → developer →
+  validator → reporter`.
 - **`post_validation` has a `done` outcome**: a task that needs no code change (Tracker/documentation edits) ends
   successfully without a PR. PR stays mandatory whenever code changed — `done` covers "there is nothing to open a PR
   from". Collapsing `done` back into "unresolved decision → FAILED" is a regression (incident 427edb3c).
