@@ -103,7 +103,11 @@ public class ReporterNode implements Agent {
         log.info("Репортёр: завершено. output {} символов",
                 result.output() != null ? result.output().length() : 0);
 
-        telegram.sendMessage(Long.parseLong(chatId), "✅ Текст в Трекере оформлен.", taskId);
+        String doneMsg = "✅ Текст в Трекере оформлен.";
+        if (trackerIssue != null && !trackerIssue.isBlank()) {
+            doneMsg += "\n📌 " + trackerIssue + " — https://tracker.yandex.ru/" + trackerIssue;
+        }
+        telegram.sendMessage(Long.parseLong(chatId), doneMsg, taskId);
 
         taskRepo.findById(taskId).ifPresent(task -> {
             task.setUpdatedAt(java.time.Instant.now());

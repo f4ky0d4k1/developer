@@ -32,6 +32,7 @@ class ReporterNodeTest {
     private OpenCodeClient openCode;
     private OpenCodeSessionPool sessionPool;
     private SlotUnavailableHandler slotHandler;
+    private TelegramGateway telegram;
     private ReporterNode node;
 
     @BeforeEach
@@ -39,7 +40,8 @@ class ReporterNodeTest {
         openCode = mock(OpenCodeClient.class);
         sessionPool = mock(OpenCodeSessionPool.class);
         slotHandler = mock(SlotUnavailableHandler.class);
-        node = new ReporterNode(openCode, sessionPool, mock(TelegramGateway.class),
+        telegram = mock(TelegramGateway.class);
+        node = new ReporterNode(openCode, sessionPool, telegram,
                 mock(TaskRepository.class), slotHandler);
         when(sessionPool.acquireForTask(anyString(), anyString(), anyLong())).thenReturn(0);
         when(sessionPool.getSlotWorkDir(0)).thenReturn("/work/slot-0");
@@ -64,6 +66,10 @@ class ReporterNodeTest {
         assertFalse(result.hasError());
         assertEquals("reporter", result.stateUpdates().get(TaskState.AGENT_ROLE));
         verify(openCode).runAgent(eq("reporter"), anyString(), eq("/work/slot-0"), eq("task-1"));
+        // Репортёр должен скинуть в чат ссылку на задачу Трекера (иначе её не найти после завершения).
+        verify(telegram).sendMessage(eq(1L),
+                org.mockito.ArgumentMatchers.contains("BACKEND-437"),
+                eq("task-1"));
     }
 
     @Test
