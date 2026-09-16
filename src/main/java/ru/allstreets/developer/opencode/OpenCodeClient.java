@@ -84,6 +84,12 @@ public class OpenCodeClient {
     }
 
     private OpenCodeResult runAgentInternal(String agentName, String prompt, String cwd, String taskId, String sessionId) {
+        // При СВЕЖЕМ старте (не HITL-resume) дополняем промпт предупреждением, если прошлый прогон
+        // этого агента был оборван по зависанию — модель должна пойти другим путём, а не застрять снова.
+        if (sessionId == null) {
+            prompt = withStallWarning(agentName, prompt, taskId);
+        }
+
         log.info("Запуск OpenCode агента: {} в {} (промпт: {} символов, taskId={}, session={})",
                 agentName, cwd, prompt.length(), taskId, sessionId);
 
@@ -118,6 +124,35 @@ public class OpenCodeClient {
                 progressRegistry.markFinished(taskId);
             }
         }
+    }
+
+    /**
+     * Дополняет промпт предупреждением, если предыдущий прогон этого агента был оборван
+     * по зависанию (статус ABORTED). Модель должна пойти ДРУГИМ путём, а не повторить шаг,
+     * на котором застряла (иначе stall-guard оборвёт её снова).
+     */
+    private String withStallWarning(String agentName, String prompt, String taskId) {
+        if (taskId == null) return prompt;
+        var aborted = runRepo
+                .findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(
+                        taskId, agentName, List.of(OpenCodeRunStatus.ABORTED))
+                .stream().findFirst().orElse(null);
+        if (aborted == null) return prompt;
+
+        String reason = aborted.getError() != null && !aborted.getError().isBlank()
+                ? aborted.getError()
+                : "сессия не отвечала без прогресса";
+        return """
+                ⚠️ ВНИМАНИЕ: предыдущий прогон этого агента был принудительно оборван — зависание
+                (причина: %s).
+                Работай ПО-ДРУГОМУ, чем в прошлый раз:
+                - не повторяй команду/шаг, на котором застрял прошлый прогон;
+                - не запускай долгие/широкие сканы всего репозитория (grep -r по корню, find,
+                  полный mvn): сужай область (исключай target/, .git, node_modules), разбивай на шаги;
+                - если команда может висеть дольше пары минут — не запускай её, выбери быстрый способ.
+                
+                %s
+                """.formatted(reason, prompt);
     }
 
     /**
