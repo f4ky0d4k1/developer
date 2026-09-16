@@ -86,6 +86,14 @@ public class CheckpointRecoveryListener {
             }
             // Упавшую задачу сами не поднимаем (авто-оживания нет), но чекпоинт СОХРАНЯЕМ:
             // ручной restart должен возобновиться с упавшего узла, а не с нуля (инцидент 0ad6c58f).
+            // Закрытую/отменённую задачу НЕ воскрешаем: closeTask помечает CLOSED и чистит checkpoint
+            // (cancel → cleanup). На случай рассинхрона добиваем остатки RUNNING-строки здесь — иначе
+            // редеплой «оживляет» явно остановленную задачу (инцидент 64a37d2d).
+            if ("CLOSED".equalsIgnoreCase(status)) {
+                log.warn("Пропуск восстановления runId={}: задача CLOSED (закрыта/отменена) — чищу устаревший checkpoint", runId);
+                checkpointService.cleanup(runId);
+                continue;
+            }
             if ("FAILED".equalsIgnoreCase(status)) {
                 log.info("Пропуск восстановления runId={}: задача FAILED — чекпоинт оставлен для ручного restart", runId);
                 continue;

@@ -69,6 +69,19 @@ class CheckpointRecoveryListenerTest {
     }
 
     @Test
+    void closedTask_isNotResumed_staleCheckpointCleaned() {
+        // Явно закрытая/отменённая задача не должна воскресать на редеплое (инцидент 64a37d2d:
+        // пользователь остановил задачу, а recovery её снова поднял по RUNNING-чекпоинту).
+        when(taskRepo.findById(RUN_ID))
+                .thenReturn(Optional.of(new TaskEntity(RUN_ID, "CLOSED", "d", "t", 42L)));
+
+        listener.recoverUnfinishedTasks();
+
+        verify(taskLauncher, never()).resumeAfterRestart(anyString(), anyLong());
+        verify(checkpointService).cleanup(RUN_ID);
+    }
+
+    @Test
     void orphanCheckpoint_isNotResumed_andCleaned() {
         // Legacy-задача (напр. старый pr-* от PrCommentMonitor): checkpoint есть, строки в agent_tasks нет —
         // ни closeTask, ни cancelTask её не видят, а recovery иначе «оживлял» бы её на каждом рестарте.
