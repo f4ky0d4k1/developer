@@ -13,6 +13,7 @@ import ru.allstreets.developer.telegram.TelegramGateway;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -98,7 +99,7 @@ class PostValidationNodeTest {
                 .with(TaskState.REQUIRES_TESTING, true)
                 .with(TaskState.TESTS_WRITTEN, true);
         validatorReturnsDecision(new AgentResponses.PostValidationDecision(
-                "https://github.com/x/y/pull/1", null, null, "ok"));
+                "https://github.com/x/y/pull/1", null, null, null, "ok"));
 
         AgentResult result = node.execute(ctx);
 
@@ -113,7 +114,7 @@ class PostValidationNodeTest {
                 .with(TaskState.REQUIRES_DEVELOPMENT, true)
                 .with(TaskState.DEVELOPMENT_DONE, true);
         validatorReturnsDecision(new AgentResponses.PostValidationDecision(
-                null, "analyst", null, "ТЗ неверно"));
+                null, null, "analyst", null, "ТЗ неверно"));
 
         AgentResult result = node.execute(ctx);
 
@@ -124,7 +125,7 @@ class PostValidationNodeTest {
     @Test
     void prCreated_clearsStaleRerouteTarget() {
         var decision = new AgentResponses.PostValidationDecision(
-                "https://github.com/x/y/pull/29", null, null, "ok");
+                "https://github.com/x/y/pull/29", null, null, null, "ok");
 
         AgentResult result = node.applyDecision(decision, 1, 1L, "task-1");
 
@@ -134,11 +135,24 @@ class PostValidationNodeTest {
 
     @Test
     void unresolvedDecision_failsInsteadOfSelfLoop() {
-        var decision = new AgentResponses.PostValidationDecision(null, null, null, "");
+        var decision = new AgentResponses.PostValidationDecision(null, null, null, null, "");
 
         AgentResult result = node.applyDecision(decision, 1, 1L, "task-1");
 
         assertTrue(result.hasError(), "неопределённое решение — fail, а не само-возврат в post_validation");
+    }
+
+    @Test
+    void doneWithoutPr_completesSuccessfully() {
+        // Инцидент 427edb3c: трекерная задача без изменений кода — PR не нужен вовсе, но «выполнено»
+        // должно быть валидным успехом, а не «решение не определено» (валидатор так и написал).
+        var decision = new AgentResponses.PostValidationDecision(
+                null, "Отчёт в BACKEND-437 приведён к фактической реализации", null, null, "ok");
+
+        AgentResult result = node.applyDecision(decision, 1, 1L, "task-1");
+
+        assertFalse(result.hasError(), "выполнено без PR — успех, а не ошибка");
+        assertEquals("", result.stateUpdates().get(TaskState.REROUTE_TARGET));
     }
 
     @Test
@@ -147,7 +161,7 @@ class PostValidationNodeTest {
                 .with(TaskState.REQUIRES_DEVELOPMENT, true)
                 .with(TaskState.DEVELOPMENT_DONE, true);
         validatorReturnsDecision(new AgentResponses.PostValidationDecision(
-                "https://github.com/x/y/pull/1", null, null, "ok"));
+                "https://github.com/x/y/pull/1", null, null, null, "ok"));
 
         node.execute(ctx);
 

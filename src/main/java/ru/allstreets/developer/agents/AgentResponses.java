@@ -76,9 +76,14 @@ public final class AgentResponses {
 
     /**
      * Ответ PostValidationNode — решение оркестратора пост-валидации.
+     * <p>
+     * {@code done} — отдельный успешный исход для задач, которым PR не нужен вовсе
+     * (правки только в Трекере/документации): без него законный «выполнено без PR»
+     * не выражался и падал как «решение не определено» (инцидент 427edb3c).
      */
     public record PostValidationDecision(
             String prUrl,
+            String done,
             String reroute,
             String failed,
             String summary

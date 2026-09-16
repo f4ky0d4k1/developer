@@ -200,6 +200,8 @@ public class PostValidationNode implements Agent {
                    - не хватает реализации → reroute "developer";
                    - не хватает/неверны тесты → reroute "tester";
                    - проблема в ТЗ/требованиях, нужен пересмотр → reroute "analyst";
+                   - задача ВЫПОЛНЕНА, но PR не нужен: правки только в Трекере, документации или
+                     иных местах без изменений кода (PR создавать нечего и не из чего) → done;
                    - задача невыполнима → failed.
                 6. Отпишись о результате в задачу Трекера (issue ниже, если он есть): оставь комментарий
                    с итогом (что сделано, ссылка на PR, статус тестов) через Tracker MCP. Если такой
@@ -211,6 +213,7 @@ public class PostValidationNode implements Agent {
                 ```json
                 {
                   "prUrl": "https://.../pull/N — если PR создан, иначе null",
+                  "done": "кратко: что сделано и почему PR не требуется — иначе null",
                   "reroute": "analyst | tester | developer — если нужна доработка, иначе null",
                   "failed": "причина — если задача невыполнима, иначе null",
                   "summary": "кратко: что сделано и почему такое решение"
@@ -282,8 +285,8 @@ public class PostValidationNode implements Agent {
     }
 
     AgentResult applyDecision(AgentResponses.PostValidationDecision decision, int reworkCount, long chatIdLong, String taskId) {
-        log.info("Post-validation: решение — prUrl={}, reroute={}, failed={}",
-                decision.prUrl(), decision.reroute(), decision.failed());
+        log.info("Post-validation: решение — prUrl={}, done={}, reroute={}, failed={}",
+                decision.prUrl(), decision.done(), decision.reroute(), decision.failed());
         String summary = decision.summary() != null ? decision.summary() : "";
 
         if (decision.prUrl() != null && !decision.prUrl().isBlank()) {
@@ -300,6 +303,22 @@ public class PostValidationNode implements Agent {
                             TaskState.PR_CREATED, true,
                             // Сброс: иначе устаревший REROUTE_TARGET (напр. "tester" с прошлой
                             // блокировки «тесты не написаны») уводит граф в старый узел после PR.
+                            TaskState.REROUTE_TARGET, ""))
+                    .completed(true)
+                    .build();
+        }
+
+        // Успешное завершение без PR: задача не предполагала изменений кода (правки в Трекере,
+        // документации и т.п.). Отдельный исход нужен, чтобы «выполнено» не падало как
+        // «решение не определено» (инцидент 427edb3c).
+        if (decision.done() != null && !decision.done().isBlank()) {
+            String doneMsg = decision.done();
+            log.info("Post-validation: задача выполнена без PR — {}", doneMsg);
+            telegram.sendMessage(chatIdLong, "✅ " + doneMsg, taskId);
+            return AgentResult.builder()
+                    .text(doneMsg)
+                    .stateUpdates(java.util.Map.of(
+                            TaskState.AGENT_ROLE, "post_validation",
                             TaskState.REROUTE_TARGET, ""))
                     .completed(true)
                     .build();
@@ -327,9 +346,9 @@ public class PostValidationNode implements Agent {
                     new RuntimeException(decision.failed())));
         }
 
-        // Ни prUrl, ни reroute, ни failed — решение не определено. Само-возврат убран:
+        // Ни prUrl, ни done, ни reroute, ни failed — решение не определено. Само-возврат убран:
         // отсутствие URL PR при заявленном создании — ошибка, а не повод крутить граф.
-        log.warn("Post-validation: LLM не выдала prUrl/reroute/failed, summary={}", decision.summary());
+        log.warn("Post-validation: LLM не выдала prUrl/done/reroute/failed, summary={}", decision.summary());
         String fallbackMsg = summary.isBlank() ? "Решение не определено" : summary;
         telegram.sendMessage(chatIdLong, "⚠️ Post-validation: " + fallbackMsg, taskId);
         return AgentResult.failed(AgentError.of("post_validation",
