@@ -76,6 +76,12 @@ fi
 
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-build
 
+# Правки opencode-config (агенты/MCP-конфиг) монтируются, а не запеканы в образ: их тег
+# больше НЕ пересобирает opencode, поэтому перечитываем смонтированные файлы обычным
+# рестартом (секунды) вместо полного pull/recreate. Если opencode.Dockerfile менялся —
+# compose up выше уже пересоздал контейнер, этот restart безвреден.
+docker compose -f docker-compose.yml -f docker-compose.prod.yml restart opencode
+
 echo "=== Проверка запуска ==="
 chmod +x healthcheck.sh
 ./healthcheck.sh

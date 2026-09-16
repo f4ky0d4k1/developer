@@ -28,7 +28,9 @@ jobs:
         # пересоздаёт лишь изменившийся сервис (остальные не трогает).
         run: |
           echo "developer=dev-$(git log -1 --format=%h -- src/main pom.xml Dockerfile)" >> "$GITHUB_OUTPUT"
-          echo "opencode=oc-$(git log -1 --format=%h -- opencode.Dockerfile opencode-config)" >> "$GITHUB_OUTPUT"
+          # opencode-config (агенты/MCP-конфиг) МОНТИРУЕТСЯ в рантайме, а не запекается в образ,
+          # поэтому его правки НЕ должны пересобирать образ — только рестарт контейнера (deploy.sh).
+          echo "opencode=oc-$(git log -1 --format=%h -- opencode.Dockerfile)" >> "$GITHUB_OUTPUT"
           echo "alloy=alloy-$(git log -1 --format=%h -- grafana-alloy)" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 21
