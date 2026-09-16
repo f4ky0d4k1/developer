@@ -277,6 +277,7 @@ public class OpenCodeClient {
                     if (taskId != null) {
                         progressRegistry.recordError(taskId, "network: " + e.getMessage());
                     }
+                    abortIfUnreadable(run, agentName, taskId, prevText, lastProgressAt);
                     sleep();
                     continue;
                 } catch (RestClientException e) {
@@ -289,6 +290,7 @@ public class OpenCodeClient {
                     if (taskId != null) {
                         progressRegistry.recordError(taskId, "read: " + e.getMessage());
                     }
+                    abortIfUnreadable(run, agentName, taskId, prevText, lastProgressAt);
                     sleep();
                     continue;
                 }
@@ -587,6 +589,24 @@ public class OpenCodeClient {
         abortSession(run, agentName, partialText, message);
         recordFailure(taskId, agentName, message, reason);
         return new OpenCodeTransientException("[" + agentName + "] " + message);
+    }
+
+    /**
+     * Если сессию не удаётся прочитать (сетевые/read ошибки опроса) дольше stall-timeout,
+     * а sidecar НЕ сообщает её busy — сессия мертва или слишком велика для чтения. Не крутим
+     * опрос до 30-мин deadline (инцидент «завис намертво»: аналитик закончил, а поллер вечно
+     * ретраил Premature end of Content-Length), а абортим как stall — граф ретраит узел с
+     * предупреждением о зависании (§42).
+     */
+    private void abortIfUnreadable(OpenCodeRunEntity run, String agentName, String taskId,
+                                   String partialText, long lastProgressAt) {
+        if (Boolean.TRUE.equals(sessionIsBusy(run.getSessionId()))) {
+            return;
+        }
+        if (System.currentTimeMillis() - lastProgressAt > stallTimeoutSeconds * 1000L) {
+            throw abortAndThrow(run, agentName, taskId, partialText,
+                    "OpenCode агент завис: сессия не читается (сетевые ошибки опроса) " + stallTimeoutSeconds + "с", "stall");
+        }
     }
 
     private String extractError(OpenCodeApi.MessageEnvelope env) {
