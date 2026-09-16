@@ -66,6 +66,13 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 - **Analyst routing is deterministic by flags, not `nextStep`**: `requiresTesting` → `tester` first (TDD), else
   `requiresDevelopment` → `developer`, else → `post_validation`. Guards against the analyst setting
   `nextStep=developer` while `requiresTesting=true`.
+- **Tracker responsibility split — all agents must know it**: the analyst is the ONLY one who creates/links a Tracker
+  issue; the validator is the ONLY one who writes the result/rework comment there; `developer`/`tester` never touch
+  the Tracker. The rule is stated in every `opencode-config/agents/*.md` and enforced by
+  `AgentPolicyConsistencyTest` (a policy known to one agent but not the others is a bug).
+- **`post_validation` has a `done` outcome**: a task that needs no code change (Tracker/documentation edits) ends
+  successfully without a PR. PR stays mandatory whenever code changed — `done` covers "there is nothing to open a PR
+  from". Collapsing `done` back into "unresolved decision → FAILED" is a regression (incident 427edb3c).
 
 ## Conventions
 
