@@ -44,7 +44,7 @@ class TaskMcpToolsHistoryTest {
                 repo,
                 "dima");
 
-        String out = tools.getChatHistory(5L, 20);
+        String out = tools.getChatHistory(5L, 20, 0);
 
         assertTrue(out.contains("user: перезапусти задачу"), out);
         assertTrue(out.contains("[task:abcdef12]"), "должна быть привязка к задаче: " + out);

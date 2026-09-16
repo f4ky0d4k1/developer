@@ -426,12 +426,15 @@ public class TaskMcpTools {
             "a previous retry. Prefer this over guessing.")
     public String getChatHistory(
             @ToolParam(description = "Telegram chat ID") long chatId,
-            @ToolParam(description = "How many recent messages to return (1..50)") int limit
+            @ToolParam(description = "How many recent messages to return (1..50)") int limit,
+            @ToolParam(description = "Offset for pagination — skip this many newest messages (optional, default 0)") Integer offset
     ) {
         int n = Math.clamp(limit, 1, 50);
-        log.info("MCP getChatHistory: chatId={}, limit={}", chatId, n);
+        int skip = offset != null && offset > 0 ? offset : 0;
+        log.info("MCP getChatHistory: chatId={}, limit={}, offset={}", chatId, n, skip);
 
-        var messages = chatMessageRepo.findByChatIdOrderByCreatedAtDesc(chatId, org.springframework.data.domain.PageRequest.of(0, n));
+        var messages = chatMessageRepo.findByChatIdOrderByCreatedAtDesc(chatId,
+                org.springframework.data.domain.PageRequest.of(skip, n));
         if (messages.isEmpty()) {
             return "No messages found for chat " + chatId;
         }

@@ -48,11 +48,13 @@ public class TelegramMcpTools {
 
     @Tool(description = "Get recent chat history for a Telegram chat. Returns last N messages with role (user/bot), text, timestamp, and optional taskId. Use this to understand conversation context, find previous questions and answers.")
     public String getChatHistory(@ToolParam(description = "Telegram chat ID (negative for groups, e.g. -1001506621216)") long chatId,
-                                 @ToolParam(description = "Number of recent messages to return (default 30, max 100)") Integer limit) {
+                                 @ToolParam(description = "Number of recent messages to return (default 30, max 100)") Integer limit,
+                                 @ToolParam(description = "Offset for pagination — skip this many newest messages (optional, default 0)") Integer offset) {
         int n = limit != null ? Math.min(limit, 100) : 30;
-        log.info("MCP getChatHistory: chatId={}, limit={}", chatId, n);
+        int skip = offset != null && offset > 0 ? offset : 0;
+        log.info("MCP getChatHistory: chatId={}, limit={}, offset={}", chatId, n, skip);
 
-        var messages = messageRepo.findByChatIdOrderByCreatedAtDesc(chatId, PageRequest.of(0, n));
+        var messages = messageRepo.findByChatIdOrderByCreatedAtDesc(chatId, PageRequest.of(skip, n));
         if (messages.isEmpty()) {
             return "No messages found for chat " + chatId;
         }
