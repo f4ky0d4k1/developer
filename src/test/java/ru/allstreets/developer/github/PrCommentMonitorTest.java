@@ -78,6 +78,21 @@ class PrCommentMonitorTest {
     }
 
     @Test
+    void agentReportComment_isIgnored() {
+        when(taskRepo.findDistinctRepos(20)).thenReturn(List.of(REPO));
+        when(github.listAgentPullRequests(REPO)).thenReturn(List.of(
+                new GitHubService.PrInfo(29, "t", BRANCH, "https://x/29", "bot", "now")));
+        when(github.listPrComments(REPO, 29)).thenReturn(List.of(
+                new GitHubService.PrComment(5L, "bot",
+                        PrCommentMonitor.AGENT_REPORT_MARKER + " итог прогона", "now", "url")));
+
+        monitor("").monitorPullRequests();
+
+        verify(taskLauncher, never()).rework(anyString(), anyLong(), anyString());
+        verify(processed, never()).save(any());
+    }
+
+    @Test
     void alreadyProcessedComment_isNotReworked() {
         onePrWithComment(1L);
         when(processed.existsById(1L)).thenReturn(true);

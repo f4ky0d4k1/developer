@@ -43,6 +43,13 @@ public class PrCommentMonitor {
      */
     private static final int MONITOR_REPO_LIMIT = 20;
 
+    /**
+     * Метка служебных комментариев агента (его итоговые отчёты в PR). Такие комментарии
+     * НЕ считаются вводными — иначе каждый прогон постит отчёт, монитор видит «новый комментарий»
+     * и запускает следующую реитерацию (самоподдерживающаяся петля).
+     */
+    static final String AGENT_REPORT_MARKER = "<!-- agent-report -->";
+
     private final GitHubService github;
     private final TaskLauncher taskLauncher;
     private final TelegramGateway telegram;
@@ -159,6 +166,8 @@ public class PrCommentMonitor {
             List<GitHubService.PrComment> fresh = github.listPrComments(repo, pr.number()).stream()
                     .filter(c -> !processedComments.existsById(c.id()))
                     .filter(c -> c.body() != null && !c.body().isBlank())
+                    // Служебные отчёты агента — не вводные, игнорируем (см. AGENT_REPORT_MARKER).
+                    .filter(c -> !c.body().contains(AGENT_REPORT_MARKER))
                     .toList();
             if (fresh.isEmpty()) {
                 return;
