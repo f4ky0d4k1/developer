@@ -53,7 +53,7 @@ public class PostValidationNode implements Agent {
                               TelegramGateway telegram, StructuredOutputHelper structuredOutput,
                               TaskRepository taskRepo, ValidatorService validator,
                               @Value("${github.pr-label:agent-generated}") String prLabel,
-                              @Value("${github.base-branch:main}") String baseBranch,
+                              @Value("${github.base-branch:Atest}") String baseBranch,
                               SlotUnavailableHandler slotHandler) {
         this.chatClient = chatClient;
         this.fallbackChatClient = fallbackChatClient;
@@ -192,6 +192,9 @@ public class PostValidationNode implements Agent {
                 4. Тесты НЕ запускай — их уже написали (`tester`) и добились зелёного прогона (`developer`).
                    Если видишь, что тестов нет или покрытие не соответствует AC — это повод вернуть tester.
                 5. Решение:
+                   - ЦЕЛЕВАЯ ВЕТКА (base) PR: дефолт — тестовая ветка `%s`. ПРОВЕРЬ через GitHub MCP,
+                     что она существует в репозитории; если тестовой ветки НЕТ — создавай PR в `main`
+                     (продовую). Если пользователь в задании ЯВНО указал другую целевую ветку — её (приоритет).
                    - ПЕРЕД созданием PR проверь, не сделал ли это кто-то раньше: найди PR по твоей
                      head-ветке (GitHub MCP, state=open). Если PR уже есть — НЕ создавай дубликат, а
                      проверь его оформление (base — %s, метка «%s», осмысленные title/body) и исправь,
@@ -217,7 +220,7 @@ public class PostValidationNode implements Agent {
                   "summary": "кратко: что сделано и почему такое решение"
                 }
                 ```
-                """.formatted(baseBranch, prLabel));
+                """.formatted(baseBranch, baseBranch, prLabel));
 
         sb.append("\n## Контекст задачи\n");
         appendSection(sb, "ТЗ / спека", ctx.get(TaskState.SPEC), SPEC_LIMIT);
