@@ -41,6 +41,7 @@ public class TaskLauncher {
     private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final TaskRepository taskRepo;
     private final TaskLockService taskLockService;
+    private final ReplyAnchorRegistry replyAnchors;
 
     // taskId → running future (для interrupt)
     private final Map<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
@@ -55,7 +56,8 @@ public class TaskLauncher {
                         PriorTaskContextBuilder priorTaskContextBuilder,
                         ru.allstreets.developer.metrics.TaskMetrics metrics,
                         TaskRepository taskRepo,
-                        TaskLockService taskLockService) {
+                        TaskLockService taskLockService,
+                        ReplyAnchorRegistry replyAnchors) {
         this.graphRunner = graphRunner;
         this.telegram = telegram;
         this.taskRegistry = taskRegistry;
@@ -68,6 +70,7 @@ public class TaskLauncher {
         this.metrics = metrics;
         this.taskRepo = taskRepo;
         this.taskLockService = taskLockService;
+        this.replyAnchors = replyAnchors;
     }
 
     /**
@@ -76,6 +79,8 @@ public class TaskLauncher {
      */
     public void launch(String taskDescription, long chatId, String targetRepo, String priorTaskId) {
         String taskId = UUID.randomUUID().toString();
+        // Привязываем задачу к сообщению-источнику: все её асинхронные сообщения уйдут reply-to.
+        replyAnchors.anchorTask(taskId, chatId);
         String title = generateTitle(taskDescription);
 
         String startMsg = (title != null && !title.isBlank()
@@ -282,6 +287,7 @@ public class TaskLauncher {
             future.cancel(true);
         }
         runningTasks.remove(taskId);
+        replyAnchors.forgetTask(taskId);
         humanInputRegistry.cancel(taskId);
         checkpointService.cleanup(taskId);
         // Слот задачи НЕ освобождаем: он закреплён за taskId и живёт до CLOSED
@@ -330,6 +336,7 @@ public class TaskLauncher {
             telegram.sendMessage(chatId, "🛑 Задача " + taskId.substring(0, 8) + " отменена и закрыта.", taskId);
         }
         cancel(taskId);                        // interrupt + освобождение HITL-слота/чекпоинта
+        replyAnchors.forgetTask(taskId);       // anchor reply-to задачи больше не нужен
         taskRegistry.markClosed(taskId);
         sessionPool.releaseForTask(taskId);    // слот задачи освобождается только при CLOSED
         log.info("TaskLauncher: задача {} закрыта (CLOSED), слот освобождён", taskId.substring(0, 8));

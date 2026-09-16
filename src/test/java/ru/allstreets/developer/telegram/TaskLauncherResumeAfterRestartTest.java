@@ -50,7 +50,8 @@ class TaskLauncherResumeAfterRestartTest {
                 new ru.allstreets.developer.metrics.TaskMetrics(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
                 mock(ru.allstreets.developer.checkpoint.TaskRepository.class),
-                mock(ru.allstreets.developer.checkpoint.TaskLockService.class));
+                mock(ru.allstreets.developer.checkpoint.TaskLockService.class),
+                mock(ReplyAnchorRegistry.class));
     }
 
     @AfterEach

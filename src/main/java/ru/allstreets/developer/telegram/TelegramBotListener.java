@@ -26,6 +26,7 @@ public class TelegramBotListener {
     private final HumanInputRegistry humanInputRegistry;
     private final ActiveTaskRegistry taskRegistry;
     private final TaskRepository taskRepo;
+    private final ReplyAnchorRegistry replyAnchors;
     private final AtomicInteger lastUpdateId = new AtomicInteger(0);
 
     @Value("${telegram.polling-timeout:30}")
@@ -42,7 +43,7 @@ public class TelegramBotListener {
     public TelegramBotListener(TelegramGateway telegram, TaskLauncher taskLauncher,
                                ConversationAgent conversationAgent, ChatMemoryService chatMemory,
                                HumanInputRegistry humanInputRegistry, ActiveTaskRegistry taskRegistry,
-                               TaskRepository taskRepo) {
+                               TaskRepository taskRepo, ReplyAnchorRegistry replyAnchors) {
         this.telegram = telegram;
         this.taskLauncher = taskLauncher;
         this.conversationAgent = conversationAgent;
@@ -50,6 +51,7 @@ public class TelegramBotListener {
         this.humanInputRegistry = humanInputRegistry;
         this.taskRegistry = taskRegistry;
         this.taskRepo = taskRepo;
+        this.replyAnchors = replyAnchors;
     }
 
     @jakarta.annotation.PostConstruct
@@ -220,6 +222,9 @@ public class TelegramBotListener {
 
             log.info("TG poll: сообщение принято chatId={} user={}: {}",
                     chat.id(), username, text.length() > 100 ? text.substring(0, 100) + "..." : text);
+
+            // Anchor reply-to: немедленные ответы и последующие сообщения задачи уйдут reply на источник.
+            replyAnchors.recordIncoming(chat.id(), msg.message_id());
 
             // Записываем в sliding window память чата
             chatMemory.recordUserMessage(chat.id(), text);

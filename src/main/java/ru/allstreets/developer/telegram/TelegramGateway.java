@@ -23,12 +23,14 @@ public class TelegramGateway {
     private final ChatMemoryService chatMemory;
     private final ActiveTaskRegistry taskRegistry;
     private final ChatClient fastChatClient;
+    private final ReplyAnchorRegistry replyAnchors;
 
     public TelegramGateway(@Value("${telegram.bot-token}") String botToken,
                            RateLimiterRegistry rateLimiterRegistry,
                            ChatMemoryService chatMemory,
                            ActiveTaskRegistry taskRegistry,
-                           @Qualifier("fallbackChatClient") ChatClient fastChatClient) {
+                           @Qualifier("fallbackChatClient") ChatClient fastChatClient,
+                           ReplyAnchorRegistry replyAnchors) {
         this.api = RestClient.builder()
                 .baseUrl("https://api.telegram.org/bot" + botToken)
                 .requestInterceptor(new ru.allstreets.developer.config.LoggingClientHttpRequestInterceptor())
@@ -37,6 +39,7 @@ public class TelegramGateway {
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
         this.fastChatClient = fastChatClient;
+        this.replyAnchors = replyAnchors;
     }
 
     public void sendMessage(long chatId, String text) {
@@ -48,12 +51,45 @@ public class TelegramGateway {
         log.info("Отправка в ТГ chatId={}: {}", chatId, outgoing.length() > 100 ? outgoing.substring(0, 100) + "..." : outgoing);
         try {
             String escaped = escapeMarkdownUnderscores(outgoing);
-            sendWithRetry(chatId, escaped, "Markdown");
+            sendWithRetry(chatId, escaped, "Markdown", anchorFor(chatId, taskId));
             log.debug("sendMessage: успешно отправлено chatId={}", chatId);
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
         }
+    }
+
+    /**
+     * Anchor reply-to для исходящего сообщения. Fail-open: любая проблема реестра
+     * не мешает доставке — возвращаем {@code null} (отправка без reply-to).
+     */
+    private Long anchorFor(long chatId, String taskId) {
+        try {
+            return replyAnchors.replyToFor(chatId, taskId);
+        } catch (Exception e) {
+            log.debug("reply-to: anchor недоступен chatId={} taskId={}: {}", chatId, taskId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Разбор тела {@code /sendMessage}: при наличии anchor добавляется {@code reply_parameters}
+     * (Bot API 7.0+), при его отсутствии тело не меняется. Package-private static — для тестов
+     * без HTTP.
+     */
+    static Map<String, Object> buildSendMessageBody(long chatId, String text, String parseMode, Long replyToMessageId) {
+        var body = new java.util.HashMap<String, Object>();
+        body.put("chat_id", chatId);
+        body.put("text", text);
+        if (parseMode != null) {
+            body.put("parse_mode", parseMode);
+        }
+        if (replyToMessageId != null) {
+            body.put("reply_parameters", Map.of(
+                    "message_id", replyToMessageId,
+                    "allow_sending_without_reply", true));
+        }
+        return body;
     }
 
     private String titleOf(String taskId) {
@@ -89,7 +125,7 @@ public class TelegramGateway {
         String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
         log.info("Отправка plain в ТГ chatId={}: {}", chatId, outgoing.length() > 100 ? outgoing.substring(0, 100) + "..." : outgoing);
         try {
-            sendWithRetry(chatId, outgoing, null);
+            sendWithRetry(chatId, outgoing, null, anchorFor(chatId, taskId));
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки plain в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
@@ -105,14 +141,25 @@ public class TelegramGateway {
                                         String taskId) {
         String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
         log.info("Отправка кнопок в ТГ chatId={} ({} рядов)", chatId, inlineKeyboard.size());
+        Long replyTo = anchorFor(chatId, taskId);
+        var body = new java.util.HashMap<>(buildSendMessageBody(chatId, outgoing, "Markdown", replyTo));
+        body.put("reply_markup", Map.of("inline_keyboard", inlineKeyboard));
         try {
-            var body = new java.util.HashMap<String, Object>();
-            body.put("chat_id", chatId);
-            body.put("text", outgoing);
-            body.put("parse_mode", "Markdown");
-            body.put("reply_markup", Map.of("inline_keyboard", inlineKeyboard));
             api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
+        } catch (org.springframework.web.client.HttpClientErrorException.BadRequest e) {
+            if (replyTo != null && isReplyRelated(e)) {
+                log.warn("sendMessageWithKeyboard: Telegram отклонил reply_parameters, повтор без reply-to chatId={}", chatId);
+                body.remove("reply_parameters");
+                try {
+                    api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
+                    chatMemory.recordBotMessage(chatId, outgoing, taskId);
+                } catch (Exception retry) {
+                    log.error("Ошибка отправки кнопок в ТГ chatId={}: {}", chatId, retry.getMessage(), retry);
+                }
+            } else {
+                log.error("Ошибка отправки кнопок в ТГ chatId={}: {}", chatId, e.getMessage(), e);
+            }
         } catch (Exception e) {
             log.error("Ошибка отправки кнопок в ТГ chatId={}: {}", chatId, e.getMessage(), e);
         }
@@ -152,16 +199,11 @@ public class TelegramGateway {
         return text.replaceAll("(?<=\\w)_(?=\\w)", "\\\\_");
     }
 
-    private void sendWithRetry(long chatId, String text, String parseMode) {
+    private void sendWithRetry(long chatId, String text, String parseMode, Long replyTo) {
         Runnable sendCall = () -> {
-            log.trace("sendMessage: HTTP POST /sendMessage chatId={} textLen={} parseMode={}", chatId, text.length(), parseMode);
-            var body = new java.util.HashMap<String, Object>(Map.of(
-                    "chat_id", chatId,
-                    "text", text
-            ));
-            if (parseMode != null) {
-                body.put("parse_mode", parseMode);
-            }
+            log.trace("sendMessage: HTTP POST /sendMessage chatId={} textLen={} parseMode={} replyTo={}",
+                    chatId, text.length(), parseMode, replyTo);
+            var body = buildSendMessageBody(chatId, text, parseMode, replyTo);
             var response = api.post().uri("/sendMessage")
                     .body(body)
                     .retrieve()
@@ -175,19 +217,32 @@ public class TelegramGateway {
         try {
             RateLimiter.decorateRunnable(rateLimiter, sendCall).run();
         } catch (org.springframework.web.client.HttpClientErrorException.BadRequest e) {
-            if (parseMode != null && e.getMessage().contains("can't parse entities")) {
+            if (replyTo != null && isReplyRelated(e)) {
+                // Telegram не принял reply_parameters — доставка важнее: повторяем без reply-to.
+                log.warn("sendMessage: Telegram отклонил reply_parameters ({}), повтор без reply-to chatId={}",
+                        e.getMessage(), chatId);
+                sendWithRetry(chatId, text, parseMode, null);
+            } else if (parseMode != null && e.getMessage().contains("can't parse entities")) {
                 log.warn("sendMessage: Markdown parse error, переформатирую через LLM chatId={}", chatId);
                 String fixed = reformatForTelegram(text);
                 if (fixed != null && !fixed.isBlank()) {
-                    sendWithRetry(chatId, fixed, "Markdown");
+                    sendWithRetry(chatId, fixed, "Markdown", replyTo);
                 } else {
                     log.warn("sendMessage: LLM переформатирование не удалось, отправляю plain text chatId={}", chatId);
-                    sendWithRetry(chatId, text, null);
+                    sendWithRetry(chatId, text, null, replyTo);
                 }
             } else {
                 throw e;
             }
         }
+    }
+
+    /**
+     * BadRequest вызван именно reply_parameters (сообщение-источник недоступно и т.п.)?
+     */
+    private static boolean isReplyRelated(org.springframework.web.client.HttpClientErrorException.BadRequest e) {
+        String message = e.getMessage();
+        return message != null && message.toLowerCase().contains("reply");
     }
 
     private String reformatForTelegram(String text) {
