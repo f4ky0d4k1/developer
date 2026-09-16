@@ -85,11 +85,11 @@ public class WorktreeManager {
         }
 
         try {
-            if (isGitRepo(slotDir)) {
-                // Уже клонировано — снимаем прошлую подмену конфига и обновляем remote-ссылки
-                // (с retry на случай TLS ошибок). Ветки НЕ сбрасываем принудительно: если в дереве
-                // осталась незакоммиченная работа агента, `git checkout main` упадёт — не фейлим
-                // задачу, оставляем агенту (по промпту он сам закоммитит/stash и разрешит конфликт).
+            if (isGitRepo(slotDir) && isSameRepo(slotDir, repoUrl)) {
+                // Уже клонирован НУЖНЫЙ репозиторий — снимаем прошлую подмену конфига и обновляем
+                // remote-ссылки (с retry на случай TLS ошибок). Ветки НЕ сбрасываем принудительно:
+                // если в дереве осталась незакоммиченная работа агента, `git checkout main` упадёт —
+                // не фейлим задачу, оставляем агенту (по промпту он сам закоммитит/stash и разрешит конфликт).
                 clearProjectConfigOverride(slotDir);
                 runCommand(slotDir, "git", "config", "http.sslVerify", "false");
                 runCommandWithRetry(slotDir, 3, "git", "fetch", "origin");
@@ -106,9 +106,11 @@ public class WorktreeManager {
                 return;
             }
 
-            // Слот не является валидным репозиторием: подчищаем остатки от прошлых запусков.
+            // Слот не пригоден: либо не git-репозиторий, либо содержит ЧУЖОЙ репозиторий
+            // (инцидент 5d8aabf5: задаче f4ky0d4k1/developer достался слот с клоном allstreets-spring).
             if (Files.exists(slotDir)) {
-                log.warn("Слот {} не является git-репозиторием — очищаю перед клоном: {}", slotIndex, slotDir);
+                log.warn("Слот {} не пригоден (не git-репо или чужой репозиторий, origin={}) — очищаю перед клоном",
+                        slotIndex, originOf(slotDir));
                 deleteRecursively(slotDir);
             }
             Files.createDirectories(slotDir);
@@ -140,6 +142,61 @@ public class WorktreeManager {
         return Files.isDirectory(dir) && Files.exists(dir.resolve(".git"));
     }
 
+    /**
+     * Слот уже содержит ТОТ ЖЕ репозиторий, что запрошен? Сверяем origin слота с {@code repoUrl}
+     * по нормализованной форме (без схемы/userinfo/.git, регистронезависимо). Иначе слот
+     * «протекает» чужим репозиторием между задачами (инцидент 5d8aabf5).
+     */
+    private boolean isSameRepo(Path slotDir, String repoUrl) {
+        String origin = originOf(slotDir);
+        if (origin == null) {
+            return false;
+        }
+        return normalizeRepoUrl(origin).equals(normalizeRepoUrl(repoUrl));
+    }
+
+    /**
+     * origin-URL слота из git config, либо {@code null}, если его нет/не прочитать.
+     */
+    private String originOf(Path slotDir) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("git", "config", "--get", "remote.origin.url");
+            pb.directory(slotDir.toFile());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            String out = new String(process.getInputStream().readAllBytes()).trim();
+            return process.waitFor() == 0 && !out.isBlank() ? out : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Нормализация URL для сравнения: отбрасываем схему, userinfo (токен в {@code authenticatedUrl}),
+     * суффикс {@code .git} и слэши; сравниваем регистронезависимо.
+     */
+    private static String normalizeRepoUrl(String url) {
+        if (url == null) {
+            return null;
+        }
+        String s = url.trim().replace('\\', '/');
+        int scheme = s.indexOf("://");
+        if (scheme >= 0) {
+            s = s.substring(scheme + 3);
+        }
+        int at = s.lastIndexOf('@');
+        if (at >= 0) {
+            s = s.substring(at + 1);
+        }
+        if (s.endsWith(".git")) {
+            s = s.substring(0, s.length() - 4);
+        }
+        while (s.endsWith("/")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        return s.toLowerCase();
+    }
+
     private static void deleteRecursively(Path path) throws IOException {
         if (!Files.exists(path)) {
             return;
@@ -147,6 +204,10 @@ public class WorktreeManager {
         try (var walk = Files.walk(path)) {
             walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
                 try {
+                    // Windows: git-объекты могут быть read-only — Files.delete падает с AccessDenied.
+                    if (!p.toFile().setWritable(true)) {
+                        log.warn("Не удалось снять read-only с {} — удаление может не пройти", p);
+                    }
                     Files.deleteIfExists(p);
                 } catch (IOException e) {
                     throw new java.io.UncheckedIOException(e);

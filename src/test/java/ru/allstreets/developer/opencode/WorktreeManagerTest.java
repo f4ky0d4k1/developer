@@ -131,6 +131,36 @@ class WorktreeManagerTest {
                 "незакоммиченная работа агента должна сохраниться");
     }
 
+    @Test
+    void prepareSlot_differentRepo_reclonesToRequestedRepo() throws Exception {
+        assumeTrue(gitAvailable(), "git недоступен");
+        Path repoA = createNamedRepo("repo-a", "# repo A\n");
+        Path repoB = createNamedRepo("repo-b", "# repo B\n");
+        WorktreeManager m = manager();
+
+        m.prepareSlot(0, repoA.toString());
+        assertEquals("# repo A", Files.readString(workDir.resolve("slot-0").resolve("README.md")).strip());
+
+        // Тот же слот, но ДРУГОЙ репозиторий — должен пере-клонироваться, а не переиспользовать
+        // чужой origin (инцидент 5d8aabf5: задаче developer достался слот с клоном allstreets-spring).
+        m.prepareSlot(0, repoB.toString());
+
+        assertEquals("# repo B", Files.readString(workDir.resolve("slot-0").resolve("README.md")).strip(),
+                "слот должен быть пере-клонирован под запрошенный репозиторий");
+    }
+
+    private Path createNamedRepo(String name, String readme) throws Exception {
+        Path repo = workDir.resolve(name);
+        Files.createDirectories(repo);
+        git(repo, "init", "-b", "main");
+        git(repo, "config", "user.email", "test@test.local");
+        git(repo, "config", "user.name", "test");
+        Files.writeString(repo.resolve("README.md"), readme);
+        git(repo, "add", "-A");
+        git(repo, "commit", "-m", "init");
+        return repo;
+    }
+
     private Path createSourceRepo(String opencodeJson) throws Exception {
         Path repo = workDir.resolve("source-repo");
         Files.createDirectories(repo);
