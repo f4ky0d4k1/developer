@@ -88,4 +88,13 @@ class TaskMcpToolsLaunchTaskTest {
 
         verify(taskLauncher).launch(eq("сделай X"), eq(1L), eq("allstreets/backend"), org.mockito.ArgumentMatchers.isNull());
     }
+
+    @Test
+    void launchTask_doesNotInterruptRunningTaskInChat() {
+        // Задачи в чате идут параллельно: запуск новой НЕ останавливает уже работающую.
+        tools.launchTask(1L, "allstreets/backend", "сделай Y", null, ctx("dima"));
+
+        verify(taskLauncher, never()).interruptRunningTask(anyString(), anyLong());
+        verify(taskLauncher).launch(eq("сделай Y"), eq(1L), eq("allstreets/backend"), org.mockito.ArgumentMatchers.isNull());
+    }
 }

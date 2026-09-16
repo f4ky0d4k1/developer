@@ -453,8 +453,8 @@ public class TaskMcpTools {
 
     @Tool(description = "Start a development task in this Telegram chat for the given repository. " +
             "repo is REQUIRED (owner/name): if you do NOT know the target repository — do NOT call this tool, " +
-            "ask the user which repository to use first (never guess). Interrupts a running task in the chat, " +
-            "if any. Returns a confirmation to relay to the user.")
+            "ask the user which repository to use first (never guess). Several tasks can run in the same chat " +
+            "in parallel — this tool does NOT stop others. Returns a confirmation to relay to the user.")
     public String launchTask(
             @ToolParam(description = "Telegram chat ID") long chatId,
             @ToolParam(description = "Target repository, owner/name (required)") String repo,
@@ -489,15 +489,8 @@ public class TaskMcpTools {
         log.info("MCP launchTask: chatId={}, repo={}, priorTask={}", chatId, normalized,
                 resolvedPrior != null ? resolvedPrior.substring(0, 8) : "none");
 
-        // Прерываем running-задачу в чате (reroute).
-        for (var entry : taskRegistry.getActiveTasks(chatId).entrySet()) {
-            if (entry.getValue() == ActiveTaskRegistry.TaskStatus.RUNNING
-                    && taskLauncher.isRunning(entry.getKey())) {
-                taskLauncher.interruptRunningTask(entry.getKey(), chatId);
-                break;
-            }
-        }
-
+        // Задачи в одном чате идут ПАРАЛЛЕЛЬНО: НЕ прерываем running-задачи.
+        // Соответствие сообщения → задача решает ConversationAgent по контексту/истории/pending-вопросам.
         taskLauncher.launch(description, chatId, normalized, resolvedPrior);
         return "Task started for repository " + normalized + ". Tell the user it is running.";
     }
