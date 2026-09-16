@@ -7,11 +7,11 @@ import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.PendingInputEntity;
 import ru.allstreets.developer.checkpoint.PendingInputRepository;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Реестр pending HITL-вопросов — per-task, DB-backed.
+ * Реестр pending HITL-вопросов — per-task, <b>DB-backed</b>.
  * <p>
  * Не блокирует потоки: вопрос приостанавливает граф через
  * {@code AgentResult.interrupted(...)} и сохраняет checkpoint — поток из пула
@@ -19,15 +19,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * который вызывает {@code graph.resume(runId, answerMessage)} — продолжение той же
  * OpenCode-сессии в том же зарезервированном слоте (см. AnalystNode), без перезапуска.
  * <p>
- * Pending questions persist в БД — при рестарте можно ре-нотифицировать пользователя.
- * ConversationAgent решает, какое сообщение является ответом для какой задачи.
+ * Источник истины — БД ({@code agent_pending_inputs}), а не память: иначе после рестарта
+ * (деплой) pending теряется и ответ пользователя не может возобновить задачу (инцидент 427edb3c:
+ * «нет chatId для pending задачи — resume невозможен», задача навсегда висит в HITL).
  */
 @Component
 public class HumanInputRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(HumanInputRegistry.class);
 
-    private final Map<String, PendingInput> pendingInputs = new ConcurrentHashMap<>();
     private final PendingInputRepository pendingRepo;
 
     public HumanInputRegistry(PendingInputRepository pendingRepo) {
@@ -39,29 +39,25 @@ public class HumanInputRegistry {
      * приостановлен через interrupt, вызывающий агент вернул управление немедленно.
      */
     public void registerPending(String taskId, long chatId, String question) {
-        pendingInputs.put(taskId, new PendingInput(question, chatId, System.currentTimeMillis()));
         pendingRepo.save(new PendingInputEntity(taskId, chatId, question));
         log.info("HumanInput: зарегистрирован pending-вопрос для taskId={} chatId={}", taskId, chatId);
     }
 
     /**
-     * chatId, для которого зарегистрирован pending-вопрос данной задачи, или null.
+     * chatId, для которого зарегистрирован pending-вопрос задачи, или null (читается из БД).
      */
     public Long getChatIdForPending(String taskId) {
-        var pending = pendingInputs.get(taskId);
-        return pending != null ? pending.chatId() : null;
+        return pendingRepo.findById(taskId).map(PendingInputEntity::getChatId).orElse(null);
     }
 
     public boolean hasPendingInputs(long chatId) {
-        return pendingInputs.values().stream().anyMatch(p -> p.chatId() == chatId);
+        return !pendingRepo.findByChatId(chatId).isEmpty();
     }
 
     public Map<String, String> getPendingQuestionsForChat(long chatId) {
-        var result = new java.util.LinkedHashMap<String, String>();
-        for (var entry : pendingInputs.entrySet()) {
-            if (entry.getValue().chatId() == chatId) {
-                result.put(entry.getKey(), entry.getValue().question());
-            }
+        var result = new LinkedHashMap<String, String>();
+        for (var e : pendingRepo.findByChatId(chatId)) {
+            result.put(e.getTaskId(), e.getQuestion());
         }
         return result;
     }
@@ -71,8 +67,7 @@ public class HumanInputRegistry {
      * Ничего не блокирует и не завершает — это делает {@code TaskLauncher.resumeWithAnswer}.
      */
     public void provideAnswer(String taskId) {
-        var pending = pendingInputs.remove(taskId);
-        if (pending != null) {
+        if (pendingRepo.existsById(taskId)) {
             log.info("HumanInput: ответ получен для taskId={}", taskId);
             pendingRepo.deleteById(taskId);
         } else {
@@ -81,11 +76,8 @@ public class HumanInputRegistry {
     }
 
     public void cancel(String taskId) {
-        if (pendingInputs.remove(taskId) != null) {
+        if (pendingRepo.existsById(taskId)) {
             pendingRepo.deleteById(taskId);
         }
-    }
-
-    public record PendingInput(String question, long chatId, long createdAt) {
     }
 }

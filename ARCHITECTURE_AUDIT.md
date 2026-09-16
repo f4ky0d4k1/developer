@@ -496,3 +496,21 @@ Tracker — вместо доработки той же задачи.
   `ActiveTaskRegistry.titleOf`), `taskId` прокинут во все узлы.
 
 Тесты: `AgentFlowConfigRoutingTest`, `PostValidationNodeTest`, `TelegramGatewayTest`, `ConversationFastPromptTest`.
+
+## 34. Pending HITL — источник истины БД, а не память (ответ не теряется при рестарте)
+
+**Статус: DONE**
+
+- **Инцидент 427edb3c**: задача спросила уточнение (`HITL_CLARIFICATION`, pending зарегистрирован в БД), затем
+  произошёл рестарт (деплой). Ответ пользователя дошёл и был классифицирован
+  (`ConversationAgent [fast]: action=HITL_ANSWER`), но `TaskLauncher.resumeWithAnswer` не смог продолжить:
+  `HumanInput: нет pending запроса` / `нет chatId для pending задачи — resume невозможен`. Задача навсегда
+  зависла в HITL, бот молчал (и `ZombieTaskMonitor` её не поднимал — для HITL это верно).
+- **Причина**: `HumanInputRegistry` читал pending из in-memory `ConcurrentHashMap`, а `PendingInputRepository`
+  писался и **никогда не читался** (`getChatIdForPending`/`hasPendingInputs`/`getPendingQuestionsForChat` смотрели
+  только в map). Класс-комментарий обещал персистентность, которой не было.
+- **Фикс**: реестр стал DB-backed — все чтения идут в `agent_pending_inputs`
+  (`findById`, `findByChatId`), запись/удаление через `deleteById`; in-memory map удалён. `ZombieTaskMonitor`
+  уже читал репозиторий (`existsById`), поэтому расхождение и было заметно: монитор «видел» pending, а резюм — нет.
+
+Тесты: `HumanInputRegistryTest`.
