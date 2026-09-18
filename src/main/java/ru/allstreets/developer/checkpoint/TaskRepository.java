@@ -3,6 +3,7 @@ package ru.allstreets.developer.checkpoint;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -11,7 +12,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Repository
-public interface TaskRepository extends JpaRepository<TaskEntity, String> {
+public interface TaskRepository extends JpaRepository<TaskEntity, String>, JpaSpecificationExecutor<TaskEntity> {
 
     List<TaskEntity> findByStatus(String status);
 
@@ -20,6 +21,12 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
     Optional<TaskEntity> findByGitBranch(String gitBranch);
 
     List<TaskEntity> findByTaskIdStartingWith(String prefix);
+
+    /**
+     * Последняя (по createdAt) не удалённая задача среди ВСЕХ чатов — режим allChats
+     * инструмента getLastTaskForChat (BACKEND-441).
+     */
+    Optional<TaskEntity> findTopByDeletedFalseOrderByCreatedAtDesc();
 
     /**
      * Страница задач чата (не удалённых), свежие первыми. Возвращает {@code Page} —
@@ -77,4 +84,26 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
             LIMIT :limit
             """, nativeQuery = true)
     List<String> findDistinctRepos(@Param("limit") int limit);
+
+    /**
+     * Проекты (уникальные репозитории LOWER/TRIM) по ВСЕМ не удалённым задачам всех чатов
+     * со счётчиком задач, свежие первыми, не более {@code limit} строк — режим allChats
+     * инструмента getChatProjects (BACKEND-441). Порядок колонок: {@code repo, cnt}.
+     */
+    @Query(value = """
+            SELECT repo_norm, cnt
+            FROM (
+                SELECT LOWER(TRIM(repo)) AS repo_norm,
+                       COUNT(*) AS cnt,
+                       MAX(COALESCE(updated_at, created_at)) AS last_used
+                FROM agent_tasks
+                WHERE deleted = false
+                  AND repo IS NOT NULL
+                  AND TRIM(repo) <> ''
+                GROUP BY LOWER(TRIM(repo))
+            ) sub
+            ORDER BY last_used DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<Object[]> findAllChatsProjects(@Param("limit") int limit);
 }

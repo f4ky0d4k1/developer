@@ -94,6 +94,7 @@ telegram:
   polling-timeout: 30
   allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS:}   # whitelist чатов, через запятую (см. .env)
   trigger-users: ${TELEGRAM_TRIGGER_USERS:}         # логины, кому можно запускать задачи, через запятую,anton_pppp
+  chat-title-ttl-ms: ${CHAT_TITLE_TTL_MS:600000}     # кэш заголовков чатов (/getChat), 10 минут
 
 # Skills — путь внутри репозитория (по умолчанию .windsurf)
 skills:

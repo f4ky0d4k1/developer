@@ -1,5 +1,7 @@
 package ru.allstreets.developer.telegram;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.resilience4j.ratelimiter.RateLimiter;
 import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
 import org.slf4j.Logger;
@@ -17,6 +19,7 @@ import java.util.Map;
 public class TelegramGateway {
 
     private static final Logger log = LoggerFactory.getLogger(TelegramGateway.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final RestClient api;
     private final RateLimiter rateLimiter;
@@ -261,6 +264,57 @@ public class TelegramGateway {
             log.warn("reformatForTelegram: ошибка LLM: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Человекочитаемый заголовок чата: title группы/супергруппы или «Имя Фамилия»
+     * личного чата. Fail-open: при любой ошибке/таймауте возвращает {@code null}
+     * (вызывающий сам решает fallback), поэтому не влияет на основной поток.
+     */
+    public String getChatTitle(long chatId) {
+        try {
+            String body = api.get()
+                    .uri(uriBuilder -> uriBuilder.path("/getChat")
+                            .queryParam("chat_id", chatId)
+                            .build())
+                    .retrieve()
+                    .body(String.class);
+            return extractChatTitle(body);
+        } catch (Exception e) {
+            log.debug("getChatTitle: не удалось получить заголовок chatId={}: {}", chatId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Разбор ответа {@code /getChat}: {@code result.title} для групп, иначе
+     * {@code first_name + last_name} для личных чатов. Package-private static — для тестов.
+     */
+    static String extractChatTitle(String body) {
+        if (body == null || body.isBlank()) return null;
+        try {
+            JsonNode result = JSON.readTree(body).get("result");
+            if (result == null || result.isNull()) return null;
+
+            JsonNode title = result.get("title");
+            if (title != null && !title.isNull() && !title.asText().isBlank()) {
+                return title.asText();
+            }
+
+            String first = textOrNull(result.get("first_name"));
+            String last = textOrNull(result.get("last_name"));
+            if (first == null && last == null) return null;
+            if (first == null) return last;
+            return last == null ? first : first + " " + last;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String textOrNull(JsonNode node) {
+        if (node == null || node.isNull()) return null;
+        String value = node.asText();
+        return value == null || value.isBlank() ? null : value;
     }
 
     /**
