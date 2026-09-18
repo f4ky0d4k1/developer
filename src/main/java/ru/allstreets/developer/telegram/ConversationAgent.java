@@ -116,7 +116,9 @@ public class ConversationAgent {
             try {
                 fastResult = fastChatClient.prompt()
                         .user(contextPrompt)
-                        .toolContext(Map.of("username", username != null ? username.toLowerCase() : ""))
+                        .toolContext(Map.of(
+                                "username", username != null ? username.toLowerCase() : "",
+                                "chatId", chatId))
                         .call()
                         .entity(AgentResponses.FastDecision.class);
             } catch (Exception e) {

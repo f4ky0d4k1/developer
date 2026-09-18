@@ -7,6 +7,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -103,5 +104,46 @@ class TelegramGatewayTest {
 
         assertNotNull(replyParameters(body));
         assertEquals(0L, ((Number) replyParameters(body).get("message_id")).longValue());
+    }
+
+    // ------------------------------------------------------------------
+    // getChatTitle: разбор ответа /getChat (BACKEND-441)
+    // ------------------------------------------------------------------
+
+    @Test
+    void extractChatTitle_group_usesResultTitle() {
+        String body = "{\"ok\":true,\"result\":{\"id\":-100500,\"type\":\"supergroup\",\"title\":\"Команда\"}}";
+        assertEquals("Команда", TelegramGateway.extractChatTitle(body));
+    }
+
+    @Test
+    void extractChatTitle_private_joinsFirstAndLastName() {
+        String body = "{\"ok\":true,\"result\":{\"id\":42,\"type\":\"private\",\"first_name\":\"Иван\",\"last_name\":\"Петров\"}}";
+        assertEquals("Иван Петров", TelegramGateway.extractChatTitle(body));
+    }
+
+    @Test
+    void extractChatTitle_privateFirstOnly_usesFirstName() {
+        String body = "{\"ok\":true,\"result\":{\"id\":42,\"type\":\"private\",\"first_name\":\"Иван\"}}";
+        assertEquals("Иван", TelegramGateway.extractChatTitle(body));
+    }
+
+    @Test
+    void extractChatTitle_titleTakesPrecedenceOverNames() {
+        String body = "{\"ok\":true,\"result\":{\"id\":1,\"type\":\"group\",\"title\":\"Группа\",\"first_name\":\"Игнор\"}}";
+        assertEquals("Группа", TelegramGateway.extractChatTitle(body));
+    }
+
+    @Test
+    void extractChatTitle_invalidJson_returnsNull() {
+        assertNull(TelegramGateway.extractChatTitle("not-json"));
+        assertNull(TelegramGateway.extractChatTitle(null));
+        assertNull(TelegramGateway.extractChatTitle(""));
+    }
+
+    @Test
+    void extractChatTitle_missingResult_returnsNull() {
+        assertNull(TelegramGateway.extractChatTitle("{\"ok\":false,\"description\":\"Bad Request\"}"));
+        assertNull(TelegramGateway.extractChatTitle("{\"ok\":true}"));
     }
 }

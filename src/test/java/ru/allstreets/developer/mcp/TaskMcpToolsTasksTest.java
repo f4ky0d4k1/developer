@@ -9,6 +9,7 @@ import ru.allstreets.developer.checkpoint.*;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.TaskProgressRegistry;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
+import ru.allstreets.developer.telegram.ChatTitleResolver;
 import ru.allstreets.developer.telegram.TaskLauncher;
 
 import java.time.Instant;
@@ -40,6 +41,7 @@ class TaskMcpToolsTasksTest extends PostgresTestBase {
                 mock(HumanInputRegistry.class),
                 mock(TaskProgressRegistry.class),
                 mock(ChatMessageRepository.class),
+                mock(ChatTitleResolver.class),
                 "");
     }
 
@@ -56,13 +58,13 @@ class TaskMcpToolsTasksTest extends PostgresTestBase {
 
         var tools = tools();
 
-        String page0 = tools.getChatTasks(10L, 0, 10);
+        String page0 = tools.getChatTasks(10L, 0, 10, null, null, null, null, null, null);
         assertTrue(page0.contains("t14"), "свежие первыми: " + page0);
         assertTrue(page0.contains("repo=allstreets/repo"), "репо в выдаче: " + page0);
         assertTrue(page0.contains("page 0 of 2 (total 15 tasks)"), page0);
         assertFalse(page0.contains("t4\n"), "t4 не на первой странице: " + page0);
 
-        String page1 = tools.getChatTasks(10L, 1, 10);
+        String page1 = tools.getChatTasks(10L, 1, 10, null, null, null, null, null, null);
         assertTrue(page1.contains("t4"), page1);
         assertTrue(page1.contains("page 1 of 2 (total 15 tasks)"), page1);
         assertFalse(page1.contains("t14"), "t14 не на второй странице: " + page1);
@@ -70,7 +72,7 @@ class TaskMcpToolsTasksTest extends PostgresTestBase {
 
     @Test
     void getChatTasks_emptyPage() {
-        String result = tools().getChatTasks(123L, 5, 10);
+        String result = tools().getChatTasks(123L, 5, 10, null, null, null, null, null, null);
         assertTrue(result.contains("No tasks on page 5"), result);
     }
 }

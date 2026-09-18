@@ -6,16 +6,27 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.checkpoint.*;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.TaskProgress;
 import ru.allstreets.developer.opencode.TaskProgressRegistry;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
+import ru.allstreets.developer.telegram.ChatTitleResolver;
 import ru.allstreets.developer.telegram.TaskLauncher;
 
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -42,6 +53,7 @@ public class TaskMcpTools {
     private final HumanInputRegistry humanInputRegistry;
     private final TaskProgressRegistry progressRegistry;
     private final ChatMessageRepository chatMessageRepo;
+    private final ChatTitleResolver chatTitles;
     /**
      * Кто имеет право запускать задачи (deny-by-default, если список пуст).
      */
@@ -56,6 +68,7 @@ public class TaskMcpTools {
             HumanInputRegistry humanInputRegistry,
             TaskProgressRegistry progressRegistry,
             ChatMessageRepository chatMessageRepo,
+            ChatTitleResolver chatTitles,
             @Value("${telegram.trigger-users:}") String triggerUsersRaw
     ) {
         this.taskRegistry = taskRegistry;
@@ -66,6 +79,7 @@ public class TaskMcpTools {
         this.humanInputRegistry = humanInputRegistry;
         this.progressRegistry = progressRegistry;
         this.chatMessageRepo = chatMessageRepo;
+        this.chatTitles = chatTitles;
         this.triggerUsers = triggerUsersRaw == null || triggerUsersRaw.isBlank()
                 ? Set.of()
                 : Arrays.stream(triggerUsersRaw.split(","))
@@ -182,11 +196,15 @@ public class TaskMcpTools {
             "marks task as deleted in DB. Use when user says 'отмени задачу' or 'удали задачу'. " +
             "taskId can be partial (first 8 chars are enough). Returns confirmation message.")
     public String cancelTask(
-            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
+            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
+            ToolContext context
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
             return cancelOrphanRun(taskId);
+        }
+        if (isCrossChatDenied(fullTaskId, context)) {
+            return crossChatDenied(fullTaskId, context);
         }
 
         log.info("MCP cancelTask: taskId={}", fullTaskId);
@@ -226,11 +244,15 @@ public class TaskMcpTools {
             "to free slots when they run out. Use when user says 'закрой задачу', 'заверши задачу', " +
             "'освободи слот'. taskId can be partial (first 8 chars). Returns confirmation message.")
     public String closeTask(
-            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
+            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
+            ToolContext context
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
             return cancelOrphanRun(taskId);
+        }
+        if (isCrossChatDenied(fullTaskId, context)) {
+            return crossChatDenied(fullTaskId, context);
         }
         log.info("MCP closeTask: taskId={}", fullTaskId);
 
@@ -249,11 +271,15 @@ public class TaskMcpTools {
             "in a wrong or corrupted worktree (e.g. the wrong repository was cloned into its slot). " +
             "taskId can be partial (first 8 chars). Returns confirmation.")
     public String resetSlot(
-            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId
+            @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
+            ToolContext context
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
             return "Task not found: " + taskId;
+        }
+        if (isCrossChatDenied(fullTaskId, context)) {
+            return crossChatDenied(fullTaskId, context);
         }
         log.info("MCP resetSlot: taskId={}", fullTaskId);
 
@@ -318,11 +344,15 @@ public class TaskMcpTools {
             "taskId can be partial (first 8 chars are enough).")
     public String restartTask(
             @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
-            @ToolParam(description = "Additional context/instructions for the retry (optional, can be null)") String additionalContext
+            @ToolParam(description = "Additional context/instructions for the retry (optional, can be null)") String additionalContext,
+            ToolContext context
     ) {
         String fullTaskId = resolveTaskId(taskId);
         if (fullTaskId == null) {
             return "Task not found: " + taskId;
+        }
+        if (isCrossChatDenied(fullTaskId, context)) {
+            return crossChatDenied(fullTaskId, context);
         }
 
         Long chatId = taskRegistry.getChatIdForTask(fullTaskId);
@@ -346,8 +376,24 @@ public class TaskMcpTools {
             "or 'возобнови задачу' without specifying a taskId, or when getActiveTasks returns nothing but " +
             "you need to find a recent failed/completed task.")
     public String getLastTaskForChat(
-            @ToolParam(description = "Telegram chat ID") long chatId
+            @ToolParam(description = "Telegram chat ID") long chatId,
+            @ToolParam(description = "Если true — последняя задача СРЕДИ ВСЕХ чатов (только для trigger-user)",
+                    required = false) Boolean allChats,
+            ToolContext context
     ) {
+        if (Boolean.TRUE.equals(allChats)) {
+            if (!isTriggerUser(username(context))) {
+                return allChatsDenied("getLastTaskForChat", context);
+            }
+            TaskEntity last = taskRepo.findTopByDeletedFalseOrderByCreatedAtDesc().orElse(null);
+            if (last == null) {
+                return "No tasks found in any chat";
+            }
+            log.info("MCP getLastTaskForChat[allChats]: taskId={} chatId={}", shortId(last.getTaskId()),
+                    last.getNotifyChatId());
+            return formatLastTask(last, true);
+        }
+
         log.info("MCP getLastTaskForChat: chatId={}", chatId);
 
         var tasks = taskRepo.findByNotifyChatId(chatId).stream()
@@ -366,15 +412,21 @@ public class TaskMcpTools {
                 })
                 .orElse(null);
 
+        return formatLastTask(last, false);
+    }
+
+    private String formatLastTask(TaskEntity last, boolean withChatId) {
         StringBuilder sb = new StringBuilder();
-        sb.append("task_id: ").append(last.getTaskId(), 0, 8).append("\n");
+        sb.append("task_id: ").append(shortId(last.getTaskId())).append("\n");
         sb.append("status: ").append(last.getStatus()).append("\n");
         if (last.getDescription() != null) {
             String desc = last.getDescription();
             sb.append("description: ").append(desc.length() > 200 ? desc.substring(0, 200) + "..." : desc).append("\n");
         }
         sb.append("created_at: ").append(last.getCreatedAt()).append("\n");
-
+        if (withChatId) {
+            sb.append("chat_id: ").append(last.getNotifyChatId()).append("\n");
+        }
         return sb.toString();
     }
 
@@ -384,8 +436,33 @@ public class TaskMcpTools {
             "message/context and the listed tasks. If you cannot determine the repository confidently, DO NOT " +
             "launch the task: ask the user which project (owner/name) it belongs to.")
     public String getChatProjects(
-            @ToolParam(description = "Telegram chat ID") long chatId
+            @ToolParam(description = "Telegram chat ID") long chatId,
+            @ToolParam(description = "Если true — проекты по задачам ВСЕХ чатов (только для trigger-user)",
+                    required = false) Boolean allChats,
+            ToolContext context
     ) {
+        if (Boolean.TRUE.equals(allChats)) {
+            if (!isTriggerUser(username(context))) {
+                return allChatsDenied("getChatProjects", context);
+            }
+            List<Object[]> rows = taskRepo.findAllChatsProjects(MAX_PROJECTS + 1);
+            if (rows.isEmpty()) {
+                return "No projects recorded in any chat yet.";
+            }
+            log.info("MCP getChatProjects[allChats]: {} repo rows", rows.size());
+            boolean more = rows.size() > MAX_PROJECTS;
+            StringBuilder sb = new StringBuilder("Projects in all chats:\n");
+            for (Object[] row : rows.stream().limit(MAX_PROJECTS).toList()) {
+                String repo = (String) row[0];
+                long count = row[1] == null ? 0 : ((Number) row[1]).longValue();
+                sb.append("- ").append(repo).append(" (").append(count).append(" task(s)\n");
+            }
+            if (more) {
+                sb.append("(+more projects)\n");
+            }
+            return sb.toString();
+        }
+
         log.info("MCP getChatProjects: chatId={}", chatId);
 
         // Агрегация и LIMIT на стороне БД: на большом чате не тянем все задачи в память.
@@ -420,8 +497,32 @@ public class TaskMcpTools {
     public String getChatTasks(
             @ToolParam(description = "Telegram chat ID") long chatId,
             @ToolParam(description = "Page number, starting at 0") int page,
-            @ToolParam(description = "Page size, e.g. 10") int perPage
+            @ToolParam(description = "Page size, e.g. 10") int perPage,
+            @ToolParam(description = "Если true — задачи ВСЕХ чатов, сгруппированные по чатам (только для trigger-user)",
+                    required = false) Boolean allChats,
+            @ToolParam(description = "Фильтр по статусу (RUNNING/COMPLETED/FAILED/CLOSED), без учёта регистра",
+                    required = false) String status,
+            @ToolParam(description = "Фильтр по репозиторию owner/name, без учёта регистра", required = false) String repo,
+            @ToolParam(description = "Фильтр createdAt >= from (ISO-8601, напр. 2026-01-01T00:00:00Z)",
+                    required = false) String from,
+            @ToolParam(description = "Фильтр createdAt <= to (ISO-8601)", required = false) String to,
+            ToolContext context
     ) {
+        if (Boolean.TRUE.equals(allChats)) {
+            if (!isTriggerUser(username(context))) {
+                return allChatsDenied("getChatTasks", context);
+            }
+            Instant fromInstant = parseInstantOrNull(from);
+            if (from != null && !from.isBlank() && fromInstant == null) {
+                return "ERROR: invalid 'from' date '" + from + "'. Use ISO-8601, e.g. 2026-01-01T00:00:00Z.";
+            }
+            Instant toInstant = parseInstantOrNull(to);
+            if (to != null && !to.isBlank() && toInstant == null) {
+                return "ERROR: invalid 'to' date '" + to + "'. Use ISO-8601, e.g. 2026-01-01T00:00:00Z.";
+            }
+            return getAllChatsTasks(page, perPage, status, repo, fromInstant, toInstant);
+        }
+
         log.info("MCP getChatTasks: chatId={}, page={}, perPage={}", chatId, page, perPage);
 
         var taskPage = taskRegistry.getChatTasksPage(chatId, page, perPage);
@@ -446,6 +547,81 @@ public class TaskMcpTools {
         sb.append("page ").append(page).append(" of ").append(Math.max(1, taskPage.getTotalPages()))
                 .append(" (total ").append(taskPage.getTotalElements()).append(" tasks)");
         return sb.toString();
+    }
+
+    /**
+     * Режим {@code allChats}: страница не удалённых задач всех чатов, свежие первыми,
+     * сгруппированная по чатам. Фильтры применяются на стороне БД ДО пагинации —
+     * {@code totalElements}/{@code totalPages} остаются корректными.
+     */
+    private String getAllChatsTasks(int page, int perPage, String status, String repo,
+                                    Instant from, Instant to) {
+        int p = Math.max(0, page);
+        int size = Math.max(1, perPage);
+        log.info("MCP getChatTasks[allChats]: page={}, perPage={}, status={}, repo={}, from={}, to={}",
+                p, size, status, repo, from, to);
+
+        Pageable pageable = PageRequest.of(p, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<TaskEntity> taskPage = taskRepo.findAll(allChatsSpec(status, repo, from, to), pageable);
+        if (taskPage.isEmpty()) {
+            return "No tasks on page " + p + " for all chats";
+        }
+
+        LinkedHashMap<Long, List<TaskEntity>> byChat = new LinkedHashMap<>();
+        for (TaskEntity t : taskPage.getContent()) {
+            byChat.computeIfAbsent(t.getNotifyChatId(), k -> new ArrayList<>()).add(t);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<Long, List<TaskEntity>> entry : byChat.entrySet()) {
+            long cid = entry.getKey();
+            sb.append(chatTitles.titleOrFallback(cid)).append(" (chatId: ").append(cid).append(")\n");
+            for (TaskEntity t : entry.getValue()) {
+                sb.append(shortId(t.getTaskId())).append(" | ").append(t.getStatus())
+                        .append(" | repo=").append(t.getRepo() != null && !t.getRepo().isBlank()
+                                ? t.getRepo() : "—");
+                if (t.getTitle() != null && !t.getTitle().isBlank()) {
+                    sb.append(" | ").append(t.getTitle());
+                }
+                if (t.getCreatedAt() != null) {
+                    sb.append(" | ").append(t.getCreatedAt());
+                }
+                sb.append("\n");
+            }
+        }
+        sb.append("page ").append(p).append(" of ").append(Math.max(1, taskPage.getTotalPages()))
+                .append(" (total ").append(taskPage.getTotalElements()).append(" tasks)");
+        return sb.toString();
+    }
+
+    private Specification<TaskEntity> allChatsSpec(String status, String repo, Instant from, Instant to) {
+        Specification<TaskEntity> spec = (root, query, cb) -> cb.isFalse(root.get("deleted"));
+        if (status != null && !status.isBlank()) {
+            String normalizedStatus = status.trim().toLowerCase();
+            spec = spec.and((root, query, cb) ->
+                    cb.equal(cb.lower(root.get("status")), normalizedStatus));
+        }
+        if (repo != null && !repo.isBlank()) {
+            String normalizedRepo = repo.trim().toLowerCase();
+            spec = spec.and((root, query, cb) ->
+                    cb.equal(cb.lower(cb.trim(root.get("repo"))), normalizedRepo));
+        }
+        if (from != null) {
+            spec = spec.and((root, query, cb) -> cb.greaterThanOrEqualTo(root.get("createdAt"), from));
+        }
+        if (to != null) {
+            spec = spec.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("createdAt"), to));
+        }
+        return spec;
+    }
+
+    private static Instant parseInstantOrNull(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Instant.parse(value.trim());
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 
     @Tool(description = "Read the chat history to dig into earlier context, previous tasks, clarifications and " +
@@ -525,5 +701,56 @@ public class TaskMcpTools {
 
     private boolean isTriggerUser(String username) {
         return !triggerUsers.isEmpty() && username != null && triggerUsers.contains(username.toLowerCase());
+    }
+
+    /**
+     * Операция над задачей из ЧУЖОГО чата разрешена только trigger-user. Свой чат
+     * (или неизвестный вызывающий chatId) — прежнее поведение без ограничений.
+     */
+    private boolean isCrossChatDenied(String fullTaskId, ToolContext context) {
+        Long ownerChatId = taskRegistry.getChatIdForTask(fullTaskId);
+        Long callerChatId = callerChatId(context);
+        if (ownerChatId == null || callerChatId == null || ownerChatId.equals(callerChatId)) {
+            return false;
+        }
+        return !isTriggerUser(username(context));
+    }
+
+    private String crossChatDenied(String fullTaskId, ToolContext context) {
+        log.warn("MCP: пользователь '{}' без прав пытался управлять задачей {} из чужого чата",
+                username(context), shortId(fullTaskId));
+        return "ERROR: task " + shortId(fullTaskId)
+                + " belongs to another chat — not allowed for this user.";
+    }
+
+    private String allChatsDenied(String tool, ToolContext context) {
+        log.warn("MCP {}[allChats]: пользователь '{}' не имеет прав", tool, username(context));
+        return "ERROR: all-chats mode is not allowed for this user.";
+    }
+
+    private static String username(ToolContext context) {
+        if (context == null) return null;
+        Object value = context.getContext().get("username");
+        return value != null ? value.toString() : null;
+    }
+
+    private static Long callerChatId(ToolContext context) {
+        if (context == null) return null;
+        Object value = context.getContext().get("chatId");
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String s && !s.isBlank()) {
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static String shortId(String taskId) {
+        return taskId != null && taskId.length() > 8 ? taskId.substring(0, 8) : taskId;
     }
 }

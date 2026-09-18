@@ -9,6 +9,7 @@ import ru.allstreets.developer.checkpoint.*;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.TaskProgressRegistry;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
+import ru.allstreets.developer.telegram.ChatTitleResolver;
 import ru.allstreets.developer.telegram.TaskLauncher;
 
 import java.util.ArrayList;
@@ -41,6 +42,7 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
                 mock(HumanInputRegistry.class),
                 mock(TaskProgressRegistry.class),
                 mock(ChatMessageRepository.class),
+                mock(ChatTitleResolver.class),
                 "");
     }
 
@@ -57,7 +59,7 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
         task("t3", 1L, "allstreets/frontend", "Фронт фича");
         task("t4", 2L, "other/repo", "Другой чат");
 
-        String result = tools().getChatProjects(1L);
+        String result = tools().getChatProjects(1L, null, null);
 
         assertTrue(result.contains("allstreets/backend (2 task(s)"), result);
         assertTrue(result.contains("allstreets/frontend (1 task(s)"), result);
@@ -69,14 +71,14 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
         task("t1", 5L, null, "Задача без репо");
         task("t2", 5L, "allstreets/backend", "С репо");
 
-        String result = tools().getChatProjects(5L);
+        String result = tools().getChatProjects(5L, null, null);
 
         assertTrue(result.contains("allstreets/backend (1 task(s)"), result);
     }
 
     @Test
     void getChatProjects_unknownChat_asksToClarify() {
-        String result = tools().getChatProjects(999L);
+        String result = tools().getChatProjects(999L, null, null);
 
         assertTrue(result.contains("No projects recorded"), result);
         assertTrue(result.contains("Ask the user"), result);
@@ -87,7 +89,7 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
         task("t1", 7L, "AllStreets/Backend", "A");
         task("t2", 7L, "  allstreets/backend ", "B");
 
-        String result = tools().getChatProjects(7L);
+        String result = tools().getChatProjects(7L, null, null);
 
         assertTrue(result.contains("allstreets/backend (2 task(s)"), result);
     }
@@ -98,7 +100,7 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
             task("t" + i, 8L, "allstreets/repo" + i, "task " + i);
         }
 
-        String result = tools().getChatProjects(8L);
+        String result = tools().getChatProjects(8L, null, null);
 
         long projectLines = result.lines().filter(l -> l.startsWith("- ")).count();
         assertEquals(10, projectLines, "ровно top-10 проектов: " + result);
@@ -119,7 +121,7 @@ class TaskMcpToolsChatProjectsTest extends PostgresTestBase {
         taskRepo.saveAll(tasks);
         taskRepo.flush();
 
-        String result = tools().getChatProjects(42L);
+        String result = tools().getChatProjects(42L, null, null);
 
         long projectLines = result.lines().filter(l -> l.startsWith("- ")).count();
         assertEquals(10, projectLines, "вывод ограничен top-10 даже на 2000 задачах: " + result);
