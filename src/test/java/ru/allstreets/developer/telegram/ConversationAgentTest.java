@@ -85,6 +85,33 @@ class ConversationAgentTest {
         assertFalse(prompt.contains("title 10"), "задачи за пределами страницы не должны попадать: " + prompt);
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void processMessage_passesChatIdInToolContext() {
+        ChatClient fast = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
+        when(fast.prompt()).thenReturn(request);
+        when(request.user(anyString())).thenReturn(request);
+        when(request.toolContext(anyMap())).thenReturn(request);
+        when(request.call()).thenReturn(response);
+        when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
+                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null));
+
+        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+                chatMemoryMock(), taskRegistryMock(Page.empty()),
+                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+                mock(TaskMcpTools.class));
+
+        agent.processMessage(77L, "DiMa", "привет");
+
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(request).toolContext(captor.capture());
+        assertEquals(77L, ((Number) captor.getValue().get("chatId")).longValue(),
+                "ConversationAgent должен прокидывать chatId в ToolContext для cross-chat проверок");
+        assertEquals("dima", captor.getValue().get("username"));
+    }
+
     private static ChatMemoryService chatMemoryMock() {
         ChatMemoryService chatMemory = mock(ChatMemoryService.class);
         when(chatMemory.getHistoryText(anyLong())).thenReturn("");

@@ -10,6 +10,7 @@ import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.opencode.TaskProgressRegistry;
 import ru.allstreets.developer.telegram.ActiveTaskRegistry;
+import ru.allstreets.developer.telegram.ChatTitleResolver;
 import ru.allstreets.developer.telegram.TaskLauncher;
 
 import java.util.List;
@@ -42,6 +43,7 @@ class TaskMcpToolsHistoryTest {
                 mock(HumanInputRegistry.class),
                 mock(TaskProgressRegistry.class),
                 repo,
+                mock(ChatTitleResolver.class),
                 "dima");
 
         String out = tools.getChatHistory(5L, 20, 0);

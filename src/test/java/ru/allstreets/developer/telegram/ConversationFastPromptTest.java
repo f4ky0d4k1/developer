@@ -24,4 +24,15 @@ class ConversationFastPromptTest {
         assertTrue(prompt.contains("agent-generated"),
                 "промпт должен связывать мониторинг с меткой agent-generated");
     }
+
+    @Test
+    void fastPrompt_mentionsAllChatsScenario() throws Exception {
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+        String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertTrue(prompt.contains("всех чатах"),
+                "промпт должен описывать сценарий «задачи из всех чатов»");
+        assertTrue(prompt.contains("allChats"),
+                "промпт должен упоминать параметр allChats инструмента getChatTasks");
+    }
 }
