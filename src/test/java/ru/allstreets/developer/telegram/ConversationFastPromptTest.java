@@ -49,4 +49,19 @@ class ConversationFastPromptTest {
         assertTrue(prompt.contains("НЕ подставляй репозиторий"),
                 "промпт должен запрещать подставлять репозиторий из чата для тикета Tracker");
     }
+
+    @Test
+    void fastPrompt_checksUnclosedTasksBeforeLaunch() throws Exception {
+        // Оркестратор должен ДО запуска новой задачи проверить незакрытые задачи чата и, если тема
+        // совпадает, дополнить существующую (restartTask) вместо создания новой (launch_task).
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+        String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertTrue(prompt.contains("незакрытые задачи чата"),
+                "промпт должен требовать проверки незакрытых задач перед запуском новой");
+        assertTrue(prompt.contains("status=RUNNING"),
+                "промпт должен указывать проверять задачи со статусом RUNNING");
+        assertTrue(prompt.contains("restartTask(taskId, additionalContext"),
+                "промпт должен направлять на дополнение существующей задачи (restartTask) вместо новой");
+    }
 }

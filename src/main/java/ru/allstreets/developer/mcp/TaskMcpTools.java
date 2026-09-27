@@ -342,9 +342,11 @@ public class TaskMcpTools {
 
     @Tool(description = "Restart/continue the SAME task. Resumes from its checkpoint if one exists, otherwise " +
             "re-runs it from the analyst with the additional context appended — always the SAME taskId. Use when " +
-            "the user says 'перезапусти задачу' / 'возобнови задачу'. Create a NEW task from an old one's context " +
-            "ONLY if the user explicitly wants a fresh task (that's launch_task with priorTaskId). " +
-            "taskId can be partial (first 8 chars are enough).")
+            "the user says 'перезапусти задачу' / 'возобнови задачу'. Also use it INSTEAD of launch_task when the " +
+            "user's new request concerns an already-open (unclosed) task on the SAME topic: pass the new request " +
+            "as additionalContext to append it to the existing task rather than creating a duplicate. Create a NEW " +
+            "task from an old one's context ONLY if the user explicitly wants a fresh task (that's launch_task " +
+            "with priorTaskId). taskId can be partial (first 8 chars are enough).")
     public String restartTask(
             @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
             @ToolParam(description = "Additional context/instructions for the retry (optional, can be null)") String additionalContext,
