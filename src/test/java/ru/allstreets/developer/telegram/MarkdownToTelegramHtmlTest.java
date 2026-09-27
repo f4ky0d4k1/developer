@@ -113,4 +113,43 @@ class MarkdownToTelegramHtmlTest {
         assertEquals("обычный абзац без разметки",
                 MarkdownToTelegramHtml.toHtml("обычный абзац без разметки"));
     }
+
+    @Test
+    void underline() {
+        assertEquals("<u>подчёркнутый</u>", MarkdownToTelegramHtml.toHtml("__подчёркнутый__"));
+    }
+
+    @Test
+    void strikethrough() {
+        assertEquals("<s>зачёркнутый</s>", MarkdownToTelegramHtml.toHtml("~зачёркнутый~"));
+    }
+
+    @Test
+    void spoiler() {
+        assertEquals("<tg-spoiler>секрет</tg-spoiler>", MarkdownToTelegramHtml.toHtml("||секрет||"));
+    }
+
+    @Test
+    void blockquote() {
+        assertEquals("<blockquote>цитата</blockquote>", MarkdownToTelegramHtml.toHtml("> цитата"));
+    }
+
+    @Test
+    void singleUnderscore_notItalicized() {
+        // single `_` не должен превращаться в разметку (snake_case идентификаторы)
+        assertEquals("thread_id", MarkdownToTelegramHtml.toHtml("thread_id"));
+    }
+
+    @Test
+    void allInlineStyles_combined() {
+        String input = "**жирный** __подчёркнутый__ *курсив* ~зачёркнутый~ ||спойлер||";
+        String expected = "<b>жирный</b> <u>подчёркнутый</u> <i>курсив</i> <s>зачёркнутый</s> <tg-spoiler>спойлер</tg-spoiler>";
+        assertEquals(expected, MarkdownToTelegramHtml.toHtml(input));
+    }
+
+    @Test
+    void nestedBoldWithUnderline() {
+        assertEquals("<b>жирный <u>подчёркнутый</u></b>",
+                MarkdownToTelegramHtml.toHtml("**жирный __подчёркнутый__**"));
+    }
 }

@@ -28,10 +28,14 @@ public final class MarkdownToTelegramHtml {
     private static final Pattern INLINE_CODE = Pattern.compile("`([^`\\n]+)`");
     private static final Pattern BOLD = Pattern.compile("\\*\\*([^*]+)\\*\\*");
     private static final Pattern ITALIC = Pattern.compile("(?<!\\*)\\*([^*]+)\\*(?!\\*)");
+    private static final Pattern UNDERLINE = Pattern.compile("__([^_\\n]+)__");
+    private static final Pattern STRIKETHROUGH = Pattern.compile("~([^~\\n]+)~");
+    private static final Pattern SPOILER = Pattern.compile("\\|\\|([^|\\n]+)\\|\\|");
     private static final Pattern LINK = Pattern.compile("\\[([^\\]]+)]\\(([^)\\s]+)\\)");
     private static final Pattern HEADING = Pattern.compile("^(#{1,6})\\s+(.*)$");
     private static final Pattern BULLET = Pattern.compile("^\\s*[-*+]\\s+(.*)$");
     private static final Pattern NUMBERED = Pattern.compile("^(\\d+)[.)]\\s+(.*)$");
+    private static final Pattern BLOCKQUOTE = Pattern.compile("^>\\s?(.*)$");
 
     private static final String PH_OPEN = "\u0000";
     private static final String PH_CLOSE = "\u0001";
@@ -81,6 +85,10 @@ public final class MarkdownToTelegramHtml {
         if (heading.matches()) {
             return "<b>" + inline(heading.group(2)) + "</b>";
         }
+        Matcher blockquote = BLOCKQUOTE.matcher(trimmed);
+        if (blockquote.matches()) {
+            return "<blockquote>" + inline(blockquote.group(1)) + "</blockquote>";
+        }
         Matcher bullet = BULLET.matcher(trimmed);
         if (bullet.matches()) {
             return "• " + inline(bullet.group(1));
@@ -93,7 +101,8 @@ public final class MarkdownToTelegramHtml {
     }
 
     /**
-     * Инлайн-разметка строки: экранирование HTML → защита инлайн-кода → жирный → курсив → ссылки.
+     * Инлайн-разметка строки: экранирование HTML → защита инлайн-кода → жирный → подчёркнутый →
+     * курсив → зачёркнутый → спойлер → ссылки.
      */
     static String inline(String text) {
         if (text == null || text.isEmpty()) {
@@ -113,7 +122,10 @@ public final class MarkdownToTelegramHtml {
         s = sb.toString();
 
         s = BOLD.matcher(s).replaceAll("<b>$1</b>");
+        s = UNDERLINE.matcher(s).replaceAll("<u>$1</u>");
         s = ITALIC.matcher(s).replaceAll("<i>$1</i>");
+        s = STRIKETHROUGH.matcher(s).replaceAll("<s>$1</s>");
+        s = SPOILER.matcher(s).replaceAll("<tg-spoiler>$1</tg-spoiler>");
         s = LINK.matcher(s).replaceAll("<a href=\"$2\">$1</a>");
 
         for (int i = 0; i < codeSpans.size(); i++) {

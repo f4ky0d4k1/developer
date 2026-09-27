@@ -229,7 +229,7 @@ public class TelegramBotListener {
                         telegram.sendMessageWithKeyboard(chatId, decision.text(),
                                 choiceKeyboard(decision.options()), null);
                     } else {
-                        telegram.sendMessage(chatId, decision.text());
+                        telegram.sendMarkdownMessage(chatId, decision.text(), null);
                     }
                 }
             }

@@ -158,14 +158,15 @@ public class TelegramGateway {
     /**
      * Отправить сообщение с inline-клавиатурой (кнопки). {@code inlineKeyboard} — список рядов,
      * каждый ряд — список кнопок вида {@code Map.of("text", label, "callback_data", data)}.
+     * Текст конвертируется Markdown → Telegram HTML (как {@link #sendMarkdownMessage}).
      */
     public void sendMessageWithKeyboard(long chatId, String text,
                                         java.util.List<java.util.List<java.util.Map<String, String>>> inlineKeyboard,
                                         String taskId) {
-        String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
+        String outgoing = MarkdownToTelegramHtml.toHtml(withTaskHeader(text, titleOf(taskId), taskId));
         log.info("Отправка кнопок в ТГ chatId={} ({} рядов)", chatId, inlineKeyboard.size());
         Long replyTo = anchorFor(chatId, taskId);
-        var body = new java.util.HashMap<>(buildSendMessageBody(chatId, outgoing, "Markdown", replyTo));
+        var body = new java.util.HashMap<>(buildSendMessageBody(chatId, outgoing, "HTML", replyTo));
         body.put("reply_markup", Map.of("inline_keyboard", inlineKeyboard));
         try {
             api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
