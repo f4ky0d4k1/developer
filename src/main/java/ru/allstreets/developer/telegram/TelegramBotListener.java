@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 
@@ -162,8 +163,10 @@ public class TelegramBotListener {
      */
     private void handleCallbackQuery(TelegramGateway.CallbackQuery cq) {
         long chatId = (cq.message() != null && cq.message().chat() != null) ? cq.message().chat().id() : 0;
+        Integer threadId = cq.message() != null ? cq.message().message_thread_id() : null;
+        String topicTaskId = resolveTopicTask(chatId, threadId);
         String data = cq.data();
-        log.info("TG callback: chat={} data={}", chatId, data);
+        log.info("TG callback: chat={} thread={} data={}", chatId, threadId, data);
         if (data == null || data.isBlank()) {
             telegram.answerCallbackQuery(cq.id(), null);
             return;
@@ -174,7 +177,7 @@ public class TelegramBotListener {
                 boolean closed = taskLauncher.close(taskId, chatId);
                 telegram.answerCallbackQuery(cq.id(), closed ? "Задача закрыта" : "Не удалось закрыть");
             } else if (data.startsWith("choice:")) {
-                handleChoiceCallback(chatId, cq, data.substring("choice:".length()));
+                handleChoiceCallback(chatId, topicTaskId, cq, data.substring("choice:".length()));
             } else {
                 telegram.answerCallbackQuery(cq.id(), "Ок");
             }
@@ -189,7 +192,7 @@ public class TelegramBotListener {
      * и прогоняем классификатор заново — он по истории чата (включая свой вопрос с кнопками)
      * свяжет выбор с исходным запросом и выполнит действие (launch_task / ответ).
      */
-    private void handleChoiceCallback(long chatId, TelegramGateway.CallbackQuery cq, String option) {
+    private void handleChoiceCallback(long chatId, String topicTaskId, TelegramGateway.CallbackQuery cq, String option) {
         telegram.answerCallbackQuery(cq.id(), option);
         if (option == null || option.isBlank()) {
             log.warn("TG callback: choice без варианта chat={}", chatId);
@@ -203,7 +206,7 @@ public class TelegramBotListener {
             var decision = conversationAgent.processMessage(chatId, username, synthetic);
             log.info("TG callback: классификатор на choice решил action={} chat={}",
                     decision.action(), chatId);
-            applyDecision(chatId, decision);
+            applyDecision(chatId, topicTaskId, decision);
         } catch (Exception e) {
             log.error("TG callback: ошибка обработки choice chat={}: {}", chatId, e.getMessage(), e);
         }
@@ -212,7 +215,7 @@ public class TelegramBotListener {
     /**
      * Применить решение классификатора — общий путь для обычного сообщения и для выбора кнопкой.
      */
-    private void applyDecision(long chatId, ConversationAgent.Decision decision) {
+    private void applyDecision(long chatId, String topicTaskId, ConversationAgent.Decision decision) {
         switch (decision.action()) {
             case HITL_ANSWER -> {
                 if (decision.taskId() != null && decision.text() != null) {
@@ -222,21 +225,51 @@ public class TelegramBotListener {
                     log.warn("TG poll: HITL_ANSWER без taskId/answer — игнор");
                 }
             }
-            case STATUS -> telegram.sendMessage(chatId, formatActiveTasks(chatId));
+            case STATUS -> sendToChat(chatId, formatActiveTasks(chatId), topicTaskId);
             case ANSWER -> {
                 if (hasText(decision.text())) {
                     if (hasOptions(decision)) {
                         telegram.sendMessageWithKeyboard(chatId, decision.text(),
-                                choiceKeyboard(decision.options()), null);
+                                choiceKeyboard(decision.options()), topicTaskId);
                     } else {
-                        telegram.sendMarkdownMessage(chatId, decision.text(), null);
+                        telegram.sendMarkdownMessage(chatId, decision.text(), topicTaskId);
                     }
                 }
             }
             case ERROR -> {
                 log.error("TG poll: ConversationAgent error: {}", decision.description());
-                telegram.sendMessage(chatId, "⚠️ Ошибка: " + decision.description());
+                sendToChat(chatId, "⚠️ Ошибка: " + decision.description(), topicTaskId);
             }
+        }
+    }
+
+    /**
+     * Отправка в тему задачи, если она известна (иначе — прежний путь в General).
+     * Реюз резолвера {@code taskId → thread_id} в {@link TelegramGateway}.
+     */
+    private void sendToChat(long chatId, String text, String topicTaskId) {
+        if (topicTaskId != null && !topicTaskId.isBlank()) {
+            telegram.sendMessage(chatId, text, topicTaskId);
+        } else {
+            telegram.sendMessage(chatId, text);
+        }
+    }
+
+    /**
+     * Задача-корень, которой принадлежит forum-тема входящего сообщения, по паре
+     * {@code (chat_id, message_thread_id)}. {@code null} — General или тема неизвестна.
+     */
+    private String resolveTopicTask(long chatId, Integer threadId) {
+        if (threadId == null) {
+            return null;
+        }
+        try {
+            return taskRepo.findByNotifyChatIdAndThreadIdAndParentTaskIdIsNull(chatId, threadId.longValue())
+                    .map(TaskEntity::getTaskId)
+                    .orElse(null);
+        } catch (Exception e) {
+            log.debug("TG poll: задача темы (chat={}, thread={}) недоступна: {}", chatId, threadId, e.getMessage());
+            return null;
         }
     }
 
@@ -301,20 +334,28 @@ public class TelegramBotListener {
                     chat.id(), username, text.length() > 100 ? text.substring(0, 100) + "..." : text);
 
             // Anchor reply-to: немедленные ответы и последующие сообщения задачи уйдут reply на источник.
+            // 2-arg — General-scope (обратная совместимость), 3-arg — topic-scoped (BACKEND-443).
             replyAnchors.recordIncoming(chat.id(), msg.message_id());
+            Integer threadId = msg.message_thread_id();
+            if (threadId != null) {
+                replyAnchors.recordIncoming(chat.id(), threadId.longValue(), msg.message_id());
+            }
+            // Роутинг по (chat_id, message_thread_id): кому принадлежит тема сообщения.
+            String topicTaskId = resolveTopicTask(chat.id(), threadId);
 
             // Записываем в sliding window память чата
             chatMemory.recordUserMessage(chat.id(), text);
 
             // Pre-filtering: команды без LLM
             if (text.startsWith("/status")) {
-                telegram.sendMessage(chat.id(), formatActiveTasks(chat.id()));
+                sendToChat(chat.id(), formatActiveTasks(chat.id()), topicTaskId);
                 continue;
             }
 
             if (text.startsWith("/start")) {
-                telegram.sendMessage(chat.id(),
-                        "Привет! Я агент-разработчик. Упомяни меня (@" + botUsername + ") чтобы поставить задачу.");
+                sendToChat(chat.id(),
+                        "Привет! Я агент-разработчик. Упомяни меня (@" + botUsername + ") чтобы поставить задачу.",
+                        topicTaskId);
                 continue;
             }
 
@@ -372,12 +413,19 @@ public class TelegramBotListener {
                     }
                     rawMeta.append("]");
                 }
+                if (threadId != null) {
+                    rawMeta.append("\n[Forum topic: message_thread_id=").append(threadId);
+                    if (topicTaskId != null) {
+                        rawMeta.append(", task=").append(topicTaskId, 0, Math.min(8, topicTaskId.length()));
+                    }
+                    rawMeta.append("]");
+                }
 
                 var decision = conversationAgent.processMessage(chat.id(), username, rawMeta.toString());
                 log.info("TG poll: ConversationAgent решил action={} taskId={} for chatId={}",
                         decision.action(), decision.taskId(), chat.id());
 
-                applyDecision(chat.id(), decision);
+                applyDecision(chat.id(), topicTaskId, decision);
             } catch (Exception e) {
                 log.error("TG poll: ошибка обработки сообщения: {}", e.getMessage(), e);
             }

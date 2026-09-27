@@ -50,6 +50,27 @@ public class TaskEntity {
     @Column(name = "pr_number")
     private Integer prNumber;
 
+    /**
+     * id forum-темы Telegram, в которой живёт задача ({@code message_thread_id}).
+     * У корня задачи совпадает с {@link #rootThreadId}; у наследника берётся у корня.
+     * {@code null} — тема не создана (терминальная задача, не-форум, fallback).
+     */
+    @Column(name = "thread_id")
+    private Long threadId;
+
+    /**
+     * id forum-темы КОРНЯ цепочки (ретрай/доработка/follow-up с priorTaskId).
+     * Позволяет наследнику не создавать свою тему и однозначно подниматься до корня.
+     */
+    @Column(name = "root_thread_id")
+    private Long rootThreadId;
+
+    /**
+     * id родительской задачи цепочки (priorTaskId), {@code null} — задача корневая.
+     */
+    @Column(name = "parent_task_id", length = 64)
+    private String parentTaskId;
+
     @Column(name = "analysis_done", nullable = false, columnDefinition = "boolean default false")
     private boolean analysisDone;
 

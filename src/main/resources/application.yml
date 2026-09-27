@@ -96,6 +96,8 @@ telegram:
   mention-free-chat-ids: ${TELEGRAM_MENTION_FREE_CHAT_IDS:}  # чаты, где бот отвечает на все сообщения без @mention
   trigger-users: ${TELEGRAM_TRIGGER_USERS:}         # логины, кому можно запускать задачи, через запятую,anton_pppp
   chat-title-ttl-ms: ${CHAT_TITLE_TTL_MS:600000}     # кэш заголовков чатов (/getChat), 10 минут
+  forum-topics:
+    enabled: ${TELEGRAM_FORUM_TOPICS_ENABLED:true}   # forum-темы задач в супергруппах (false — старый режим, общий чат + reply-to)
 
 # Skills — путь внутри репозитория (по умолчанию .windsurf)
 skills:

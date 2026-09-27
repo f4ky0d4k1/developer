@@ -7,10 +7,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.CheckpointService;
+import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskLockService;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
@@ -42,6 +44,14 @@ public class TaskLauncher {
     private final TaskRepository taskRepo;
     private final TaskLockService taskLockService;
     private final ReplyAnchorRegistry replyAnchors;
+
+    /**
+     * Жизненный цикл forum-темы задачи. Field-injection, чтобы не ломать конструктор
+     * (тесты создают launcher напрямую) и не заводить циклическую зависимость:
+     * gateway → topicService → gateway. Fail-open при {@code null} (юнит-тесты).
+     */
+    @Autowired(required = false)
+    private TelegramTopicService topicService;
 
     // taskId → running future (для interrupt)
     private final Map<String, Future<?>> runningTasks = new ConcurrentHashMap<>();
@@ -82,6 +92,16 @@ public class TaskLauncher {
         // Привязываем задачу к сообщению-источнику: все её асинхронные сообщения уйдут reply-to.
         replyAnchors.anchorTask(taskId, chatId);
         String title = generateTitle(taskDescription);
+        String repo = normalizeRepo(targetRepo);
+
+        // Регистрируем СИНХРОННО до первого сообщения: forum-тема создаётся ДО отправки,
+        // иначе стартовое сообщение утечёт в General (AC «нет утечки в General»).
+        taskRegistry.register(chatId, taskId, taskDescription, title, repo);
+        if (priorTaskId != null && !priorTaskId.isBlank()) {
+            // Наследник цепочки: parent_task_id → унаследует тему корня, свою не создаёт.
+            taskRegistry.linkParent(taskId, priorTaskId);
+        }
+        createTopicForTask(taskId, chatId, title != null && !title.isBlank() ? title : taskDescription);
 
         String startMsg = (title != null && !title.isBlank()
                 ? "📋 " + title + " (ID: " + taskId.substring(0, 8) + ")"
@@ -89,7 +109,6 @@ public class TaskLauncher {
                 + "\nЗапускаю агентов...";
         telegram.sendMessage(chatId, startMsg, taskId);
 
-        String repo = normalizeRepo(targetRepo);
         String priorContext = priorTaskContextBuilder.build(priorTaskId);
         try {
             Future<?> future = executor.submit(() ->
@@ -133,6 +152,56 @@ public class TaskLauncher {
         } catch (Exception e) {
             log.warn("generateTitle: ошибка LLM: {}", e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Создать (корень) или унаследовать (наследник) forum-тему задачи ДО первой отправки.
+     * Fail-open: ошибка Telegram/БД не мешает запуску — задача идёт в общий чат (fallback).
+     */
+    private void createTopicForTask(String taskId, long chatId, String title) {
+        if (topicService == null) {
+            return;
+        }
+        try {
+            Long threadId = topicService.ensureTopic(taskId, chatId, title);
+            if (threadId != null) {
+                // topic-scoped anchor: reply задачи — на исходное сообщение В ЕЁ теме.
+                replyAnchors.anchorTask(taskId, chatId, threadId);
+                topicService.pinTopicDescription(taskId, title);
+            }
+        } catch (Exception e) {
+            log.warn("TaskLauncher: forum-тема для задачи {} не создана: {}", taskId.substring(0, 8), e.getMessage());
+        }
+    }
+
+    /**
+     * Закрыть forum-тему задачи (closeTask → closeForumTopic). Fail-open.
+     */
+    private void closeTopicQuietly(String taskId) {
+        if (topicService == null) {
+            return;
+        }
+        try {
+            topicService.closeTopic(taskId);
+        } catch (Exception e) {
+            log.debug("TaskLauncher: закрытие темы {} не удалось: {}", taskId.substring(0, 8), e.getMessage());
+        }
+    }
+
+    /**
+     * Переименовать тему по статусу (⏳/✅/❌). Fail-open — ошибки Telegram не валят задачу.
+     */
+    private void updateTopicStatus(String taskId, boolean failed) {
+        if (topicService == null) {
+            return;
+        }
+        try {
+            String title = taskRepo.findById(taskId).map(TaskEntity::getTitle).orElse(null);
+            String label = (title != null && !title.isBlank()) ? title : taskId.substring(0, 8);
+            topicService.renameTopic(taskId, (failed ? "❌ " : "✅ ") + label);
+        } catch (Exception e) {
+            log.debug("TaskLauncher: переименование темы {} не удалось: {}", taskId.substring(0, 8), e.getMessage());
         }
     }
 
@@ -220,10 +289,12 @@ public class TaskLauncher {
                 // Ссылку на PR уже отправила пост-валидация («✅ PR создан: …») — здесь не дублируем.
                 resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
                 taskRegistry.markCompleted(taskId);
+                updateTopicStatus(taskId, false);
                 metrics.taskOutcome("completed");
             } else {
                 resultMsg = "❌ Задача " + taskId.substring(0, 8) + " не завершена: " + result.error();
                 taskRegistry.markFailed(taskId);
+                updateTopicStatus(taskId, true);
                 metrics.taskOutcome("failed");
             }
 
@@ -238,6 +309,7 @@ public class TaskLauncher {
             String errMsg = "❌ Ошибка: " + e.getMessage();
             telegram.sendMessage(chatId, errMsg, taskId);
             taskRegistry.markFailed(taskId);
+            updateTopicStatus(taskId, true);
             metrics.taskOutcome("failed");
         } finally {
             runningTasks.remove(taskId);
@@ -347,6 +419,7 @@ public class TaskLauncher {
         cancel(taskId);                        // interrupt + освобождение HITL-слота/чекпоинта
         replyAnchors.forgetTask(taskId);       // anchor reply-to задачи больше не нужен
         taskRegistry.markClosed(taskId);
+        closeTopicQuietly(taskId);             // closeForumTopic (fail-open)
         sessionPool.releaseForTask(taskId);    // слот задачи освобождается только при CLOSED
         log.info("TaskLauncher: задача {} закрыта (CLOSED), слот освобождён", taskId.substring(0, 8));
         return true;
@@ -525,9 +598,11 @@ public class TaskLauncher {
         if (!result.hasError()) {
             resultMsg = "✅ Задача " + taskId.substring(0, 8) + " завершена.";
             taskRegistry.markCompleted(taskId);
+            updateTopicStatus(taskId, false);
         } else {
             resultMsg = "❌ Задача " + taskId.substring(0, 8) + " упала: " + result.error();
             taskRegistry.markFailed(taskId);
+            updateTopicStatus(taskId, true);
         }
         telegram.sendMessage(chatId, resultMsg, taskId);
     }
