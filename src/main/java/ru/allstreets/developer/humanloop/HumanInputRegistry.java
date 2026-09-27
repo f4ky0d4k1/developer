@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.checkpoint.PendingInputEntity;
 import ru.allstreets.developer.checkpoint.PendingInputRepository;
+import ru.allstreets.developer.checkpoint.TaskRepository;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -29,9 +30,11 @@ public class HumanInputRegistry {
     private static final Logger log = LoggerFactory.getLogger(HumanInputRegistry.class);
 
     private final PendingInputRepository pendingRepo;
+    private final TaskRepository taskRepo;
 
-    public HumanInputRegistry(PendingInputRepository pendingRepo) {
+    public HumanInputRegistry(PendingInputRepository pendingRepo, TaskRepository taskRepo) {
         this.pendingRepo = pendingRepo;
+        this.taskRepo = taskRepo;
     }
 
     /**
@@ -45,21 +48,54 @@ public class HumanInputRegistry {
 
     /**
      * chatId, для которого зарегистрирован pending-вопрос задачи, или null (читается из БД).
+     * Осиротевший pending (задача удалена/закрыта/завершена) снимается и возвращает null.
      */
     public Long getChatIdForPending(String taskId) {
-        return pendingRepo.findById(taskId).map(PendingInputEntity::getChatId).orElse(null);
+        var pending = pendingRepo.findById(taskId).orElse(null);
+        if (pending == null) {
+            return null;
+        }
+        if (!isLiveTask(taskId)) {
+            purgeOrphan(taskId);
+            return null;
+        }
+        return pending.getChatId();
     }
 
     public boolean hasPendingInputs(long chatId) {
-        return !pendingRepo.findByChatId(chatId).isEmpty();
+        return !getPendingQuestionsForChat(chatId).isEmpty();
     }
 
+    /**
+     * Pending-вопросы чата, у которых задача всё ещё «живая» (RUNNING, не удалена).
+     * Осиротевшие строки (задача удалена/CLOSED/COMPLETED/FAILED) снимаются здесь же —
+     * иначе после закрытия задачи её вопрос вечно висел бы в очереди (инцидент 330559f5).
+     */
     public Map<String, String> getPendingQuestionsForChat(long chatId) {
         var result = new LinkedHashMap<String, String>();
         for (var e : pendingRepo.findByChatId(chatId)) {
-            result.put(e.getTaskId(), e.getQuestion());
+            if (isLiveTask(e.getTaskId())) {
+                result.put(e.getTaskId(), e.getQuestion());
+            } else {
+                purgeOrphan(e.getTaskId());
+            }
         }
         return result;
+    }
+
+    /**
+     * Задача, ожидающая ответа на HITL-вопрос, должна существовать, быть не удалённой
+     * и в статусе RUNNING. Всё остальное — осиротевший pending.
+     */
+    private boolean isLiveTask(String taskId) {
+        return taskRepo.findById(taskId)
+                .map(t -> !t.isDeleted() && "RUNNING".equals(t.getStatus()))
+                .orElse(false);
+    }
+
+    private void purgeOrphan(String taskId) {
+        log.warn("HumanInput: снимаю осиротевший pending-вопрос taskId={} (задача удалена/закрыта/завершена)", taskId);
+        pendingRepo.deleteById(taskId);
     }
 
     /**
