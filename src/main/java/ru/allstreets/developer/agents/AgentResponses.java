@@ -33,12 +33,18 @@ public final class AgentResponses {
      * Ответ fast mode — быстрый классификатор. Запуск задачи выполняется инструментом
      * {@code launch_task} (repo обязателен), поэтому здесь нет ни {@code repo}, ни action
      * запуска — только решение о диалоге/статусе.
+     * <p>
+     * {@code options} — необязательные варианты ответа для {@link FastAction#ANSWER}
+     * (вопрос с выбором): система отрисует их inline-кнопками в Telegram, а тап по кнопке
+     * вернётся в классификатор как «Выбрано: &lt;вариант&gt;» — он сам распутает контекст
+     * по истории чата (репо для launch_task и т.п.), отдельное хранилище не нужно.
      */
     public record FastDecision(
             FastAction action,
             String taskId,
             String text,
-            String description
+            String description,
+            List<String> options
     ) {
     }
 

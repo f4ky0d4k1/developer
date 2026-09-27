@@ -257,9 +257,9 @@ public class AnalystNode implements Agent {
             int maxLen = 4000;
             tgMessage += "\n\n" + (spec.length() > maxLen ? spec.substring(0, maxLen) + "..." : spec);
         }
-        // Спека — свободный текст (пути, `_`, `[`, backticks): Markdown на нём ломается,
-        // шлём без parse_mode, ссылку Telegram сделает кликабельной сам.
-        telegram.sendPlainMessage(chatIdLong, tgMessage, taskId);
+        // Спека — Markdown агента: конвертируем в Telegram HTML, чтобы списки, нумерация,
+        // блоки кода и жирный отображались (sendPlainMessage оставлял их как сырой текст).
+        telegram.sendMarkdownMessage(chatIdLong, tgMessage, taskId);
 
         var stateMap = new java.util.HashMap<io.github.asekka.springai.agents.core.StateKey<?>, Object>();
         stateMap.put(TaskState.SPEC, spec);

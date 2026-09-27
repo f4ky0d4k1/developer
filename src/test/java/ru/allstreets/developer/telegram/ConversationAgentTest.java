@@ -36,7 +36,7 @@ class ConversationAgentTest {
         when(request.toolContext(anyMap())).thenReturn(request);
         when(request.call()).thenReturn(response);
         when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.STATUS, "abc12345", "статус", null));
+                new AgentResponses.FastDecision(AgentResponses.FastAction.STATUS, "abc12345", "статус", null, null));
 
         var agent = new ConversationAgent(fast, mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
@@ -48,6 +48,29 @@ class ConversationAgentTest {
         assertEquals(AgentResponses.FastAction.STATUS, decision.action());
         assertEquals("abc12345", decision.taskId());
         assertEquals("статус", decision.text());
+    }
+
+    @Test
+    void processMessage_mapsOptions() {
+        ChatClient fast = mock(ChatClient.class);
+        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
+        ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
+        when(fast.prompt()).thenReturn(request);
+        when(request.user(anyString())).thenReturn(request);
+        when(request.toolContext(anyMap())).thenReturn(request);
+        when(request.call()).thenReturn(response);
+        when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
+                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "в каком репо?",
+                        null, java.util.List.of("owner/a", "owner/b")));
+
+        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+                chatMemoryMock(), taskRegistryMock(Page.empty()),
+                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+                mock(TaskMcpTools.class));
+
+        var decision = agent.processMessage(1L, "user", "проверь тикет");
+
+        assertEquals(java.util.List.of("owner/a", "owner/b"), decision.options());
     }
 
     @Test
@@ -67,7 +90,7 @@ class ConversationAgentTest {
         when(request.toolContext(anyMap())).thenReturn(request);
         when(request.call()).thenReturn(response);
         when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null));
+                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
 
         var agent = new ConversationAgent(fast, mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(page),
@@ -96,7 +119,7 @@ class ConversationAgentTest {
         when(request.toolContext(anyMap())).thenReturn(request);
         when(request.call()).thenReturn(response);
         when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null));
+                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
 
         var agent = new ConversationAgent(fast, mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),

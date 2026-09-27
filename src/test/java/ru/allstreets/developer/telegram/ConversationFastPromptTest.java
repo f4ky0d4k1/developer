@@ -35,4 +35,18 @@ class ConversationFastPromptTest {
         assertTrue(prompt.contains("allChats"),
                 "промпт должен упоминать параметр allChats инструмента getChatTasks");
     }
+
+    @Test
+    void fastPrompt_trackerTicketDoesNotImplyRepo() throws Exception {
+        // Инцидент: пользователь дал только тикет Tracker (URL/ключ), а классификатор «угадал»
+        // репозиторий из getChatProjects — тикет относился к чужому проекту. Тикет без явного repo
+        // НЕ должен выводить репозиторий из памяти чата.
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+        String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertTrue(prompt.contains("тикет Tracker"),
+                "промпт должен явно отделять тикет Tracker от определения репозитория");
+        assertTrue(prompt.contains("НЕ подставляй репозиторий"),
+                "промпт должен запрещать подставлять репозиторий из чата для тикета Tracker");
+    }
 }

@@ -138,7 +138,7 @@ public class ConversationAgent {
 
             if (fastResult == null) {
                 log.warn("ConversationAgent [fast]: пустой ответ после fallback");
-                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM");
+                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM", null);
             }
 
             log.info("ConversationAgent [fast]: action={} taskId={} description='{}'",
@@ -148,11 +148,12 @@ public class ConversationAgent {
             return new Decision(fastResult.action(),
                     fastResult.taskId() != null ? fastResult.taskId() : "",
                     fastResult.text() != null ? fastResult.text() : "",
-                    fastResult.description() != null ? fastResult.description() : "");
+                    fastResult.description() != null ? fastResult.description() : "",
+                    fastResult.options());
 
         } catch (Exception e) {
             log.error("ConversationAgent [fast]: ошибка: {}", e.getMessage(), e);
-            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage());
+            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage(), null);
         }
     }
 
@@ -163,12 +164,13 @@ public class ConversationAgent {
                 fallbackChatClient, fallbackChatClient, fullPrompt, AgentResponses.FastDecision.class);
         if (result == null) {
             log.error("ConversationAgent [fast]: callWithFallback вернул null — обе модели не смогли дать JSON");
-            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)");
+            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)", null);
         }
         return new Decision(result.action(),
                 result.taskId() != null ? result.taskId() : "",
                 result.text() != null ? result.text() : "",
-                result.description() != null ? result.description() : "");
+                result.description() != null ? result.description() : "",
+                result.options());
     }
 
     private static final java.util.regex.Pattern TASK_ID_PATTERN =
@@ -231,6 +233,7 @@ public class ConversationAgent {
         return id != null && id.length() > 8 ? id.substring(0, 8) : id;
     }
 
-    public record Decision(AgentResponses.FastAction action, String taskId, String text, String description) {
+    public record Decision(AgentResponses.FastAction action, String taskId, String text, String description,
+                           java.util.List<String> options) {
     }
 }

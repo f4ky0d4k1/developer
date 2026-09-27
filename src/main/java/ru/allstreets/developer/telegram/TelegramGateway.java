@@ -119,6 +119,26 @@ public class TelegramGateway {
     }
 
     /**
+     * Отправить свободный текст с Markdown-разметкой агентов (спек/итог анализа).
+     * Markdown конвертируется в Telegram HTML ({@code parse_mode=HTML}), чтобы списки,
+     * нумерация, блоки кода и жирный отображались, а не текли как мусор.
+     * При ошибке парсинга HTML — fallback на plain text (доставка важнее разметки).
+     */
+    public void sendMarkdownMessage(long chatId, String text, String taskId) {
+        String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
+        String html = MarkdownToTelegramHtml.toHtml(outgoing);
+        log.info("Отправка markdown в ТГ chatId={}: {}", chatId,
+                html.length() > 100 ? html.substring(0, 100) + "..." : html);
+        try {
+            sendWithRetry(chatId, html, "HTML", anchorFor(chatId, taskId));
+            chatMemory.recordBotMessage(chatId, outgoing, taskId);
+        } catch (Exception e) {
+            log.error("Ошибка отправки markdown в ТГ chatId={}: {} | type={}",
+                    chatId, e.getMessage(), e.getClass().getName(), e);
+        }
+    }
+
+    /**
      * Отправить сообщение <b>без разметки</b> (parse_mode отсутствует). Для свободного
      * текста — спек, отчётов, путей, кода — где спецсимволы `_ * [ ] ` ломают legacy
      * Markdown (инцидент: «сбитое» форматирование анализа). URL в тексте Telegram делает
@@ -226,13 +246,19 @@ public class TelegramGateway {
                         e.getMessage(), chatId);
                 sendWithRetry(chatId, text, parseMode, null);
             } else if (parseMode != null && e.getMessage().contains("can't parse entities")) {
-                log.warn("sendMessage: Markdown parse error, переформатирую через LLM chatId={}", chatId);
-                String fixed = reformatForTelegram(text);
-                if (fixed != null && !fixed.isBlank()) {
-                    sendWithRetry(chatId, fixed, "Markdown", replyTo);
-                } else {
-                    log.warn("sendMessage: LLM переформатирование не удалось, отправляю plain text chatId={}", chatId);
+                if ("HTML".equals(parseMode)) {
+                    // HTML от конвертера должен быть валидным; на сбой — plain text, без LLM-перегонки.
+                    log.warn("sendMessage: HTML parse error, отправляю plain text chatId={}", chatId);
                     sendWithRetry(chatId, text, null, replyTo);
+                } else {
+                    log.warn("sendMessage: Markdown parse error, переформатирую через LLM chatId={}", chatId);
+                    String fixed = reformatForTelegram(text);
+                    if (fixed != null && !fixed.isBlank()) {
+                        sendWithRetry(chatId, fixed, "Markdown", replyTo);
+                    } else {
+                        log.warn("sendMessage: LLM переформатирование не удалось, отправляю plain text chatId={}", chatId);
+                        sendWithRetry(chatId, text, null, replyTo);
+                    }
                 }
             } else {
                 throw e;

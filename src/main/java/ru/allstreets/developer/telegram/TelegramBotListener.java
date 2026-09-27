@@ -157,7 +157,8 @@ public class TelegramBotListener {
     }
 
     /**
-     * Нажатие inline-кнопки: {@code close:<taskId>} — закрыть задачу (освобождает слот).
+     * Нажатие inline-кнопки: {@code close:<taskId>} — закрыть задачу (освобождает слот);
+     * {@code choice:<вариант>} — выбор из вариантов вопроса классификатора.
      */
     private void handleCallbackQuery(TelegramGateway.CallbackQuery cq) {
         long chatId = (cq.message() != null && cq.message().chat() != null) ? cq.message().chat().id() : 0;
@@ -172,12 +173,70 @@ public class TelegramBotListener {
                 String taskId = data.substring("close:".length());
                 boolean closed = taskLauncher.close(taskId, chatId);
                 telegram.answerCallbackQuery(cq.id(), closed ? "Задача закрыта" : "Не удалось закрыть");
+            } else if (data.startsWith("choice:")) {
+                handleChoiceCallback(chatId, cq, data.substring("choice:".length()));
             } else {
                 telegram.answerCallbackQuery(cq.id(), "Ок");
             }
         } catch (Exception e) {
             log.error("TG callback: ошибка data={}: {}", data, e.getMessage(), e);
             telegram.answerCallbackQuery(cq.id(), "Ошибка");
+        }
+    }
+
+    /**
+     * Выбор варианта из кнопок: синтезируем пользовательское сообщение «Выбрано: &lt;вариант&gt;»
+     * и прогоняем классификатор заново — он по истории чата (включая свой вопрос с кнопками)
+     * свяжет выбор с исходным запросом и выполнит действие (launch_task / ответ).
+     */
+    private void handleChoiceCallback(long chatId, TelegramGateway.CallbackQuery cq, String option) {
+        telegram.answerCallbackQuery(cq.id(), option);
+        if (option == null || option.isBlank()) {
+            log.warn("TG callback: choice без варианта chat={}", chatId);
+            return;
+        }
+        String username = cq.from() != null ? cq.from().username() : null;
+        String synthetic = "Выбрано: " + option;
+        log.info("TG callback: choice='{}' chat={} — возвращаю в классификатор", option, chatId);
+        chatMemory.recordUserMessage(chatId, synthetic);
+        try {
+            var decision = conversationAgent.processMessage(chatId, username, synthetic);
+            log.info("TG callback: классификатор на choice решил action={} chat={}",
+                    decision.action(), chatId);
+            applyDecision(chatId, decision);
+        } catch (Exception e) {
+            log.error("TG callback: ошибка обработки choice chat={}: {}", chatId, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Применить решение классификатора — общий путь для обычного сообщения и для выбора кнопкой.
+     */
+    private void applyDecision(long chatId, ConversationAgent.Decision decision) {
+        switch (decision.action()) {
+            case HITL_ANSWER -> {
+                if (decision.taskId() != null && decision.text() != null) {
+                    log.info("TG poll: HITL ответ для задачи {} — resume", decision.taskId());
+                    taskLauncher.resumeWithAnswer(decision.taskId(), decision.text());
+                } else {
+                    log.warn("TG poll: HITL_ANSWER без taskId/answer — игнор");
+                }
+            }
+            case STATUS -> telegram.sendMessage(chatId, formatActiveTasks(chatId));
+            case ANSWER -> {
+                if (hasText(decision.text())) {
+                    if (hasOptions(decision)) {
+                        telegram.sendMessageWithKeyboard(chatId, decision.text(),
+                                choiceKeyboard(decision.options()), null);
+                    } else {
+                        telegram.sendMessage(chatId, decision.text());
+                    }
+                }
+            }
+            case ERROR -> {
+                log.error("TG poll: ConversationAgent error: {}", decision.description());
+                telegram.sendMessage(chatId, "⚠️ Ошибка: " + decision.description());
+            }
         }
     }
 
@@ -318,32 +377,7 @@ public class TelegramBotListener {
                 log.info("TG poll: ConversationAgent решил action={} taskId={} for chatId={}",
                         decision.action(), decision.taskId(), chat.id());
 
-                switch (decision.action()) {
-                    case HITL_ANSWER -> {
-                        if (decision.taskId() != null && decision.text() != null) {
-                            log.info("TG poll: HITL ответ для задачи {} — resume", decision.taskId());
-                            taskLauncher.resumeWithAnswer(decision.taskId(), decision.text());
-                        } else {
-                            log.warn("TG poll: HITL_ANSWER без taskId/answer — игнор");
-                        }
-                    }
-                    case STATUS -> telegram.sendMessage(chat.id(), formatActiveTasks(chat.id()));
-                    case ANSWER -> {
-                        log.trace("ANSWER: decision.text()='{}' isBlank={}",
-                                decision.text(), !hasText(decision.text()));
-                        if (hasText(decision.text())) {
-                            log.debug("ANSWER: отправка ответа в ТГ chatId={}", chat.id());
-                            telegram.sendMessage(chat.id(), decision.text());
-                            log.debug("ANSWER: ответ записан в память chatId={}", chat.id());
-                        } else {
-                            log.debug("ANSWER: decision.text() пустой — модель уже отправила ответ через sendMessage tool, chatId={}", chat.id());
-                        }
-                    }
-                    case ERROR -> {
-                        log.error("TG poll: ConversationAgent error: {}", decision.description());
-                        telegram.sendMessage(chat.id(), "⚠️ Ошибка: " + decision.description());
-                    }
-                }
+                applyDecision(chat.id(), decision);
             } catch (Exception e) {
                 log.error("TG poll: ошибка обработки сообщения: {}", e.getMessage(), e);
             }
@@ -352,5 +386,25 @@ public class TelegramBotListener {
 
     private static boolean hasText(String s) {
         return s != null && !s.isBlank();
+    }
+
+    private static boolean hasOptions(ConversationAgent.Decision decision) {
+        return decision.options() != null && !decision.options().isEmpty();
+    }
+
+    /**
+     * Inline-кнопки для вопроса с выбором: каждая кнопка несёт {@code choice:<вариант>}.
+     * Тап по кнопке возвращается в классификатор как «Выбрано: &lt;вариант&gt;» — он сам
+     * распутает контекст по истории чата (никакого отдельного хранилища вариантов).
+     */
+    static java.util.List<java.util.List<java.util.Map<String, String>>> choiceKeyboard(java.util.List<String> options) {
+        var keyboard = new java.util.ArrayList<java.util.List<java.util.Map<String, String>>>();
+        for (String option : options) {
+            if (option == null || option.isBlank()) {
+                continue;
+            }
+            keyboard.add(java.util.List.of(TelegramGateway.button(option, "choice:" + option)));
+        }
+        return keyboard;
     }
 }
