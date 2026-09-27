@@ -83,10 +83,18 @@
       "*": "deny",
       "/tmp/**": "allow"
     },
+    // Чтение разрешаем полностью: агент живёт в изолированном контейнере (/work/slot-N), реальных
+    // секретов (.env) в клонируемых репо нет — он в .gitignore, в образ jar-only нет opencode-config.
+    // Дефолт opencode для *.env* — «ask», что в async-режиме вешало сессию до opencode.timeout-seconds
+    // (инцидент 3e90880c: developer завис на read .env.template). Явный allow перебивает этот ask.
+    "read": {
+      "*": "allow",
+      "*.env": "allow",
+      "*.env.*": "allow"
+    },
     // Повтор одинакового tool-вызова 3 раза подряд: дефолт opencode — «ask», а отвечать на
-    // permission-запрос в async-режиме некому → агент зависает до opencode.timeout-seconds
-    // (инцидент: developer 3e90880c, «Таймаут OpenCode (1800с)»). Явный deny — повтор
-    // просто блокируется, агент идёт дальше, а не ждёт ответа.
+    // permission-запрос в async-режиме некому → агент завис бы до opencode.timeout-seconds.
+    // Явный deny — повтор просто блокируется, агент идёт дальше, а не ждёт ответа.
     "doom_loop": "deny"
   }
 }
