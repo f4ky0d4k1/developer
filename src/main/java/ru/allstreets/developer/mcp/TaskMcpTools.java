@@ -268,8 +268,8 @@ public class TaskMcpTools {
 
     @Tool(description = "Fully reset the OpenCode slot/worktree of a task: deletes its cloned repository and frees " +
             "the slot, so the next agent step re-clones the correct repo from scratch. Use to recover a task stuck " +
-            "in a wrong or corrupted worktree (e.g. the wrong repository was cloned into its slot). " +
-            "taskId can be partial (first 8 chars). Returns confirmation.")
+            "in a wrong or corrupted worktree (e.g. the wrong repository was cloned into its slot). Refuses to touch " +
+            "a RUNNING task — cancel/close it first. taskId can be partial (first 8 chars). Returns confirmation.")
     public String resetSlot(
             @ToolParam(description = "Task ID (full or first 8 characters)") String taskId,
             ToolContext context
@@ -283,19 +283,22 @@ public class TaskMcpTools {
         }
         log.info("MCP resetSlot: taskId={}", fullTaskId);
 
-        boolean wasRunning = taskLauncher.isRunning(fullTaskId);
+        // Не сносим worktree работающей задачи: агент прямо сейчас в нём работает (инцидент 5d8aabf5 —
+        // resetSlot во время RUNNING удалил клон и уронил тестировщика, а следом cancel снёс checkpoint).
+        if (taskLauncher.isRunning(fullTaskId)) {
+            return "Task " + fullTaskId.substring(0, 8)
+                    + " is RUNNING — cancel/close it first, then resetSlot.";
+        }
+
         boolean reset = taskLauncher.resetSlot(fullTaskId);
         if (!reset) {
             return "Task " + fullTaskId.substring(0, 8)
-                    + " has no bound slot (never acquired or already released).";
+                    + " has no bound slot (never acquired, already released, or app restarted). "
+                    + "The slot is re-cloned automatically on the next step if its repo doesn't match.";
         }
 
-        String msg = "Slot/worktree of task " + fullTaskId.substring(0, 8)
+        return "Slot/worktree of task " + fullTaskId.substring(0, 8)
                 + " reset — next agent step will re-clone the repo from scratch.";
-        if (wasRunning) {
-            msg += " Note: the task was RUNNING — restart it to continue cleanly.";
-        }
-        return msg;
     }
 
     /**
