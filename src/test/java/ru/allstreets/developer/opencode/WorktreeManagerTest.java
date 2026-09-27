@@ -117,6 +117,7 @@ class WorktreeManagerTest {
         // Остатки от прошлого упавшего агента: накоммитил на feature-ветке, затем оставил
         // незакоммиченное изменение tracked-файла. `git checkout main` в таком состоянии
         // падает с "Your local changes would be overwritten" (инцидент 0f9e5fa2).
+        configureIdentity(slot);
         git(slot, "checkout", "-b", "feature/leftover");
         Files.writeString(slot.resolve("README.md"), "committed-on-feature\n");
         git(slot, "add", "-A");
@@ -168,8 +169,7 @@ class WorktreeManagerTest {
         Path repo = workDir.resolve(name);
         Files.createDirectories(repo);
         git(repo, "init", "-b", "main");
-        git(repo, "config", "user.email", "test@test.local");
-        git(repo, "config", "user.name", "test");
+        configureIdentity(repo);
         Files.writeString(repo.resolve("README.md"), readme);
         git(repo, "add", "-A");
         git(repo, "commit", "-m", "init");
@@ -180,8 +180,7 @@ class WorktreeManagerTest {
         Path repo = workDir.resolve("source-repo");
         Files.createDirectories(repo);
         git(repo, "init", "-b", "main");
-        git(repo, "config", "user.email", "test@test.local");
-        git(repo, "config", "user.name", "test");
+        configureIdentity(repo);
         if (opencodeJson != null) {
             Files.writeString(repo.resolve("opencode.json"), opencodeJson);
         }
@@ -189,6 +188,16 @@ class WorktreeManagerTest {
         git(repo, "add", "-A");
         git(repo, "commit", "-m", "init");
         return repo;
+    }
+
+    /**
+     * Локальный git-identity в репозитории. Клон НЕ наследует user.name/user.email из локального
+     * конфига источника, поэтому слоту identity нужно выставлять явно — иначе `git commit` в слоте
+     * упадёт (exit 128) на машине без глобального `~/.gitconfig` (CI/контейнер).
+     */
+    private static void configureIdentity(Path repo) throws Exception {
+        git(repo, "config", "user.email", "test@test.local");
+        git(repo, "config", "user.name", "test");
     }
 
     private static String git(Path cwd, String... args) throws Exception {
