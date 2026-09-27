@@ -82,6 +82,11 @@
     "external_directory": {
       "*": "deny",
       "/tmp/**": "allow"
-    }
+    },
+    // Повтор одинакового tool-вызова 3 раза подряд: дефолт opencode — «ask», а отвечать на
+    // permission-запрос в async-режиме некому → агент зависает до opencode.timeout-seconds
+    // (инцидент: developer 3e90880c, «Таймаут OpenCode (1800с)»). Явный deny — повтор
+    // просто блокируется, агент идёт дальше, а не ждёт ответа.
+    "doom_loop": "deny"
   }
 }
