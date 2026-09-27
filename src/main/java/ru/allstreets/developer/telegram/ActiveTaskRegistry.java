@@ -45,9 +45,33 @@ public class ActiveTaskRegistry {
     public void register(long chatId, String taskId, String description, String title, String repo) {
         TaskEntity task = new TaskEntity(taskId, "RUNNING", description, title, chatId);
         task.setRepo(repo);
+        // Сохраняем forum-привязку между прогонами одной задачи (rework): register создаёт
+        // новый экземпляр, и без переноса thread_id/root_thread_id/prior-связь терялись бы.
+        taskRepo.findById(taskId).ifPresent(existing -> {
+            task.setThreadId(existing.getThreadId());
+            task.setRootThreadId(existing.getRootThreadId());
+            task.setParentTaskId(existing.getParentTaskId());
+        });
         taskRepo.save(task);
         taskChatRepo.save(new TaskChatEntity(taskId, chatId));
         log.info("TaskRegistry: регистрация task={} chat={} title={} repo={}", taskId, chatId, title, repo);
+    }
+
+    /**
+     * Проставить {@code parent_task_id} (priorTaskId) для наследника цепочки
+     * (ретрай/доработка/follow-up) — чтобы он унаследовал тему корня, а не создавал свою.
+     */
+    @Transactional
+    public void linkParent(String taskId, String parentTaskId) {
+        if (taskId == null || parentTaskId == null || parentTaskId.isBlank()) {
+            return;
+        }
+        taskRepo.findById(taskId).ifPresent(t -> {
+            t.setParentTaskId(parentTaskId);
+            t.setUpdatedAt(Instant.now());
+            taskRepo.save(t);
+        });
+        log.info("TaskRegistry: task={} → parent={}", taskId, parentTaskId);
     }
 
     /**

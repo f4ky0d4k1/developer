@@ -4,9 +4,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -21,6 +23,36 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String>, JpaSp
     Optional<TaskEntity> findByGitBranch(String gitBranch);
 
     List<TaskEntity> findByTaskIdStartingWith(String prefix);
+
+    /**
+     * Канонический владелец forum-темы ({@code chat_id}, {@code thread_id}) — КОРНЕВАЯ
+     * задача темы ({@code parent_task_id IS NULL}). Используется роутингом входящих:
+     * тема принадлежит notify-чату задачи; задача может быть видна в нескольких чатах
+     * (cross-chat, BACKEND-441), поэтому привязка считается по паре chat+thread.
+     */
+    Optional<TaskEntity> findByNotifyChatIdAndThreadIdAndParentTaskIdIsNull(Long notifyChatId, Long threadId);
+
+    /**
+     * Наследники задачи (ретраи/доработки/follow-up с priorTaskId) — звенья цепочки темы.
+     */
+    List<TaskEntity> findByParentTaskId(String parentTaskId);
+
+    /**
+     * На не удалённые задачи чата, у которых уже есть forum-тема. Источник истины
+     * инструмента {@code getForumTopics} (у Telegram Bot API нет метода листинга тем).
+     */
+    List<TaskEntity> findByNotifyChatIdAndThreadIdIsNotNullOrderByCreatedAtDesc(Long notifyChatId);
+
+    /**
+     * Атомарный claim темы: проставляет {@code thread_id}/{@code root_thread_id} только
+     * если тема ещё не назначена. Возвращает число обновлённых строк: {@code 0} — тему
+     * уже занял параллельный вызов, победитель перечитывается вызывающим.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE TaskEntity t SET t.threadId = :threadId, t.rootThreadId = :threadId " +
+            "WHERE t.taskId = :taskId AND t.threadId IS NULL")
+    int claimThreadId(@Param("taskId") String taskId, @Param("threadId") Long threadId);
 
     /**
      * Последняя (по createdAt) не удалённая задача среди ВСЕХ чатов — режим allChats

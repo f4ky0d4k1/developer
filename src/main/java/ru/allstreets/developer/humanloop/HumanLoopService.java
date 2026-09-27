@@ -38,7 +38,8 @@ public class HumanLoopService {
     public void askHuman(String taskId, long chatId, String question) {
         // Модель иногда пишет буквальный `\n` вместо переноса строки — в Telegram это выглядит мусором.
         String normalized = question.replace("\\n", "\n");
-        telegram.sendMessage(chatId, "❓ [" + taskId.substring(0, 8) + "] " + normalized);
+        // taskId обязателен: иначе вопрос утечёт в General мимо forum-темы задачи (BACKEND-443).
+        telegram.sendMessage(chatId, "❓ [" + taskId.substring(0, 8) + "] " + normalized, taskId);
         registry.registerPending(taskId, chatId, question);
     }
 

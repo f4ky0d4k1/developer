@@ -12,6 +12,7 @@ import org.springframework.web.client.RestClient;
 import ru.allstreets.developer.mcp.GithubMcpTools;
 import ru.allstreets.developer.mcp.SystemMcpTools;
 import ru.allstreets.developer.mcp.TaskMcpTools;
+import ru.allstreets.developer.mcp.TelegramTopicMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -135,9 +136,11 @@ public class McpToolConfig {
                                      GithubMcpTools githubTools,
                                      TaskMcpTools taskTools,
                                      SystemMcpTools systemTools,
+                                     TelegramTopicMcpTools topicTools,
                                      @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
                                      @Value("${llm.http.read-timeout:60s}") Duration readTimeout) {
-        log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task+system (no sendMessage)", fastModel, baseUrl);
+        log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task+system+forum-topics (no sendMessage)",
+                fastModel, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -159,7 +162,7 @@ public class McpToolConfig {
         );
         return ChatClient.builder(chatModel)
                 .defaultSystem(loadPrompt("prompts/conversation-fast.md"))
-                .defaultTools(githubTools, taskTools, systemTools)
+                .defaultTools(githubTools, taskTools, systemTools, topicTools)
                 .build();
     }
 

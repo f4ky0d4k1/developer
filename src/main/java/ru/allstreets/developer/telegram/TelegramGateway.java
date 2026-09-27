@@ -7,12 +7,14 @@ import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import ru.allstreets.developer.agents.AgentResponses;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @Component
@@ -27,6 +29,14 @@ public class TelegramGateway {
     private final ActiveTaskRegistry taskRegistry;
     private final ChatClient fastChatClient;
     private final ReplyAnchorRegistry replyAnchors;
+
+    /**
+     * Резолвер taskId → thread_id. Field-injection (а не конструктор), чтобы разорвать
+     * циклическую зависимость: {@link TelegramTopicService} зависит от этого gateway,
+     * а gateway — от резолвера. Spring разрешает такой цикл через раннюю ссылку.
+     */
+    @Autowired(required = false)
+    private TelegramTopicService topicService;
 
     public TelegramGateway(@Value("${telegram.bot-token}") String botToken,
                            RateLimiterRegistry rateLimiterRegistry,
@@ -54,8 +64,9 @@ public class TelegramGateway {
         log.info("Отправка в ТГ chatId={}: {}", chatId, outgoing.length() > 100 ? outgoing.substring(0, 100) + "..." : outgoing);
         try {
             String escaped = escapeMarkdownUnderscores(outgoing);
-            sendWithRetry(chatId, escaped, "Markdown", anchorFor(chatId, taskId));
-            log.debug("sendMessage: успешно отправлено chatId={}", chatId);
+            Long threadId = threadIdFor(chatId, taskId);
+            sendWithRetry(chatId, escaped, "Markdown", anchorFor(chatId, taskId, threadId), threadId);
+            log.debug("sendMessage: успешно отправлено chatId={} threadId={}", chatId, threadId);
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
@@ -63,25 +74,52 @@ public class TelegramGateway {
     }
 
     /**
-     * Anchor reply-to для исходящего сообщения. Fail-open: любая проблема реестра
-     * не мешает доставке — возвращаем {@code null} (отправка без reply-to).
+     * Anchor reply-to для исходящего сообщения, topic-scoped: берётся в рамках
+     * пары {@code (chatId, threadId)}, чтобы ответ не утащило в чужую тему.
+     * Fail-open: любая проблема реестра не мешает доставке — возвращаем {@code null}.
      */
-    private Long anchorFor(long chatId, String taskId) {
+    private Long anchorFor(long chatId, String taskId, Long threadId) {
         try {
-            return replyAnchors.replyToFor(chatId, taskId);
+            return replyAnchors.replyToFor(chatId, threadId, taskId);
         } catch (Exception e) {
-            log.debug("reply-to: anchor недоступен chatId={} taskId={}: {}", chatId, taskId, e.getMessage());
+            log.debug("reply-to: anchor недоступен chatId={} threadId={} taskId={}: {}",
+                    chatId, threadId, taskId, e.getMessage());
             return null;
         }
     }
 
     /**
-     * Разбор тела {@code /sendMessage}: при наличии anchor добавляется {@code reply_parameters}
-     * (Bot API 7.0+), при его отсутствии тело не меняется. Package-private static — для тестов
-     * без HTTP.
+     * thread_id задачи для исходящего сообщения. {@code null} — темы нет (fallback:
+     * общий чат, без {@code message_thread_id}). Fail-open.
+     */
+    private Long threadIdFor(long chatId, String taskId) {
+        if (topicService == null || taskId == null || taskId.isBlank()) {
+            return null;
+        }
+        try {
+            return topicService.resolveThreadId(taskId);
+        } catch (Exception e) {
+            log.debug("thread_id: резолвер недоступен taskId={}: {}", taskId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Разбор тела {@code /sendMessage} без forum-темы (General).
+     * Package-private static — для тестов без HTTP.
      */
     static Map<String, Object> buildSendMessageBody(long chatId, String text, String parseMode, Long replyToMessageId) {
-        var body = new java.util.HashMap<String, Object>();
+        return buildSendMessageBody(chatId, text, parseMode, replyToMessageId, null);
+    }
+
+    /**
+     * Разбор тела {@code /sendMessage}: при известной forum-теме добавляется
+     * {@code message_thread_id} (иначе сообщение утечёт в General), при наличии anchor —
+     * {@code reply_parameters} (Bot API 7.0+). Package-private static — для тестов без HTTP.
+     */
+    static Map<String, Object> buildSendMessageBody(long chatId, String text, String parseMode,
+                                                    Long replyToMessageId, Long threadId) {
+        var body = new HashMap<String, Object>();
         body.put("chat_id", chatId);
         body.put("text", text);
         if (parseMode != null) {
@@ -91,6 +129,9 @@ public class TelegramGateway {
             body.put("reply_parameters", Map.of(
                     "message_id", replyToMessageId,
                     "allow_sending_without_reply", true));
+        }
+        if (threadId != null) {
+            body.put("message_thread_id", threadId);
         }
         return body;
     }
@@ -130,7 +171,8 @@ public class TelegramGateway {
         log.info("Отправка markdown в ТГ chatId={}: {}", chatId,
                 html.length() > 100 ? html.substring(0, 100) + "..." : html);
         try {
-            sendWithRetry(chatId, html, "HTML", anchorFor(chatId, taskId));
+            Long threadId = threadIdFor(chatId, taskId);
+            sendWithRetry(chatId, html, "HTML", anchorFor(chatId, taskId, threadId), threadId);
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки markdown в ТГ chatId={}: {} | type={}",
@@ -148,7 +190,8 @@ public class TelegramGateway {
         String outgoing = withTaskHeader(text, titleOf(taskId), taskId);
         log.info("Отправка plain в ТГ chatId={}: {}", chatId, outgoing.length() > 100 ? outgoing.substring(0, 100) + "..." : outgoing);
         try {
-            sendWithRetry(chatId, outgoing, null, anchorFor(chatId, taskId));
+            Long threadId = threadIdFor(chatId, taskId);
+            sendWithRetry(chatId, outgoing, null, anchorFor(chatId, taskId, threadId), threadId);
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
         } catch (Exception e) {
             log.error("Ошибка отправки plain в ТГ chatId={}: {} | type={}", chatId, e.getMessage(), e.getClass().getName(), e);
@@ -165,8 +208,9 @@ public class TelegramGateway {
                                         String taskId) {
         String outgoing = MarkdownToTelegramHtml.toHtml(withTaskHeader(text, titleOf(taskId), taskId));
         log.info("Отправка кнопок в ТГ chatId={} ({} рядов)", chatId, inlineKeyboard.size());
-        Long replyTo = anchorFor(chatId, taskId);
-        var body = new java.util.HashMap<>(buildSendMessageBody(chatId, outgoing, "HTML", replyTo));
+        Long threadId = threadIdFor(chatId, taskId);
+        Long replyTo = anchorFor(chatId, taskId, threadId);
+        var body = new java.util.HashMap<>(buildSendMessageBody(chatId, outgoing, "HTML", replyTo, threadId));
         body.put("reply_markup", Map.of("inline_keyboard", inlineKeyboard));
         try {
             api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
@@ -224,10 +268,14 @@ public class TelegramGateway {
     }
 
     private void sendWithRetry(long chatId, String text, String parseMode, Long replyTo) {
+        sendWithRetry(chatId, text, parseMode, replyTo, null);
+    }
+
+    private void sendWithRetry(long chatId, String text, String parseMode, Long replyTo, Long threadId) {
         Runnable sendCall = () -> {
-            log.trace("sendMessage: HTTP POST /sendMessage chatId={} textLen={} parseMode={} replyTo={}",
-                    chatId, text.length(), parseMode, replyTo);
-            var body = buildSendMessageBody(chatId, text, parseMode, replyTo);
+            log.trace("sendMessage: HTTP POST /sendMessage chatId={} textLen={} parseMode={} replyTo={} threadId={}",
+                    chatId, text.length(), parseMode, replyTo, threadId);
+            var body = buildSendMessageBody(chatId, text, parseMode, replyTo, threadId);
             var response = api.post().uri("/sendMessage")
                     .body(body)
                     .retrieve()
@@ -245,20 +293,20 @@ public class TelegramGateway {
                 // Telegram не принял reply_parameters — доставка важнее: повторяем без reply-to.
                 log.warn("sendMessage: Telegram отклонил reply_parameters ({}), повтор без reply-to chatId={}",
                         e.getMessage(), chatId);
-                sendWithRetry(chatId, text, parseMode, null);
+                sendWithRetry(chatId, text, parseMode, null, threadId);
             } else if (parseMode != null && e.getMessage().contains("can't parse entities")) {
                 if ("HTML".equals(parseMode)) {
                     // HTML от конвертера должен быть валидным; на сбой — plain text, без LLM-перегонки.
                     log.warn("sendMessage: HTML parse error, отправляю plain text chatId={}", chatId);
-                    sendWithRetry(chatId, text, null, replyTo);
+                    sendWithRetry(chatId, text, null, replyTo, threadId);
                 } else {
                     log.warn("sendMessage: Markdown parse error, переформатирую через LLM chatId={}", chatId);
                     String fixed = reformatForTelegram(text);
                     if (fixed != null && !fixed.isBlank()) {
-                        sendWithRetry(chatId, fixed, "Markdown", replyTo);
+                        sendWithRetry(chatId, fixed, "Markdown", replyTo, threadId);
                     } else {
                         log.warn("sendMessage: LLM переформатирование не удалось, отправляю plain text chatId={}", chatId);
-                        sendWithRetry(chatId, text, null, replyTo);
+                        sendWithRetry(chatId, text, null, replyTo, threadId);
                     }
                 }
             } else {
@@ -344,6 +392,97 @@ public class TelegramGateway {
         return value == null || value.isBlank() ? null : value;
     }
 
+    // ------------------------------------------------------------------
+    // Forum-topic API (fail-open: ошибки не валят задачу, вызывающий уходит в fallback)
+    // ------------------------------------------------------------------
+
+    /**
+     * Создать forum-тему. Возвращает {@code message_thread_id} или {@code null}, если
+     * Telegram отказал (нет прав {@code can_manage_topics}, 429, не форум) — это сигнал
+     * вызывающему деградировать в fallback (общий чат + reply-to).
+     */
+    public Long createForumTopic(long chatId, String name) {
+        try {
+            var body = new HashMap<String, Object>();
+            body.put("chat_id", chatId);
+            body.put("name", name);
+            String response = api.post().uri("/createForumTopic")
+                    .body(body).retrieve().body(String.class);
+            Long threadId = extractThreadId(response);
+            log.info("createForumTopic: chatId={} name='{}' → threadId={}", chatId, name, threadId);
+            return threadId;
+        } catch (Exception e) {
+            log.warn("createForumTopic: не удалось chatId={} name='{}': {}", chatId, name, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Переименовать forum-тему. {@code false} — тема удалена/нет прав/429.
+     */
+    public boolean editForumTopic(long chatId, long threadId, String name) {
+        try {
+            var body = new HashMap<String, Object>();
+            body.put("chat_id", chatId);
+            body.put("message_thread_id", threadId);
+            body.put("name", name);
+            api.post().uri("/editForumTopic").body(body).retrieve().toEntity(String.class);
+            return true;
+        } catch (Exception e) {
+            log.warn("editForumTopic: chatId={} threadId={}: {}", chatId, threadId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Закрыть forum-тему. Повторное закрытие — не ошибка (idempotent, fail-open).
+     */
+    public boolean closeForumTopic(long chatId, long threadId) {
+        try {
+            var body = new HashMap<String, Object>();
+            body.put("chat_id", chatId);
+            body.put("message_thread_id", threadId);
+            api.post().uri("/closeForumTopic").body(body).retrieve().toEntity(String.class);
+            return true;
+        } catch (Exception e) {
+            log.warn("closeForumTopic: chatId={} threadId={}: {}", chatId, threadId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Закрепить сообщение. Для темы передаётся её {@code message_thread_id} —
+     * id сервисного сообщения-описания темы.
+     */
+    public boolean pinChatMessage(long chatId, long messageId) {
+        try {
+            var body = new HashMap<String, Object>();
+            body.put("chat_id", chatId);
+            body.put("message_id", messageId);
+            body.put("disable_notification", true);
+            api.post().uri("/pinChatMessage").body(body).retrieve().toEntity(String.class);
+            return true;
+        } catch (Exception e) {
+            log.warn("pinChatMessage: chatId={} messageId={}: {}", chatId, messageId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Разбор {@code /createForumTopic}: {@code result.message_thread_id}. Package-private static — для тестов.
+     */
+    static Long extractThreadId(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) return null;
+        try {
+            JsonNode result = JSON.readTree(responseBody).get("result");
+            if (result == null || result.isNull()) return null;
+            JsonNode threadId = result.get("message_thread_id");
+            return (threadId == null || threadId.isNull()) ? null : threadId.asLong();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /**
      * Получение обновлений через long-polling.
      */
@@ -398,8 +537,16 @@ public class TelegramGateway {
             String text,
             long date,
             java.util.List<MessageEntity> entities,
-            Message reply_to_message
+            Message reply_to_message,
+            Integer message_thread_id
     ) {
+        /**
+         * Совместимый конструктор без thread id (General / старые тесты).
+         */
+        public Message(long message_id, User from, Chat chat, String text, long date,
+                       java.util.List<MessageEntity> entities, Message reply_to_message) {
+            this(message_id, from, chat, text, date, entities, reply_to_message, null);
+        }
     }
 
     public record MessageEntity(
@@ -412,8 +559,15 @@ public class TelegramGateway {
 
     public record Chat(
             long id,
-            String type
+            String type,
+            Boolean is_forum
     ) {
+        /**
+         * Совместимый конструктор без {@code is_forum} (тесты/старые апдейты).
+         */
+        public Chat(long id, String type) {
+            this(id, type, null);
+        }
     }
 
     public record User(
