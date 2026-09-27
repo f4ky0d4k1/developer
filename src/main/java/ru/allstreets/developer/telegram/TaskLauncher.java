@@ -246,8 +246,9 @@ public class TaskLauncher {
                 log.info("TaskLauncher: задача {} остановлена, запускаю новую", taskId);
             }
 
+            // taskId старой задачи: сообщение остаётся в её forum-теме, а не утекает в General.
             telegram.sendMessage(chatId, "🔄 Задача " + taskId.substring(0, 8) +
-                    " прервана. Запускаю новую...");
+                    " прервана. Запускаю новую...", taskId);
         } else {
             log.debug("TaskLauncher: задача {} не running, interrupt не нужен", taskId);
             // Если задача HITL-paused — освобождаем ресурсы
