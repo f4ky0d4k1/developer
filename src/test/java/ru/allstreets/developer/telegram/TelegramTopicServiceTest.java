@@ -223,6 +223,23 @@ class TelegramTopicServiceTest {
     }
 
     @Test
+    void ensureTopic_grandchildInheritsRootTopic_withoutCreating() {
+        TaskEntity root = task(ROOT, 321L);
+        TaskEntity child = new TaskEntity("child-x", "RUNNING", "d", "Дочерняя", CHAT);
+        child.setParentTaskId(ROOT);
+        TaskEntity grandchild = new TaskEntity("grand-x", "RUNNING", "d", "Внук", CHAT);
+        grandchild.setParentTaskId("child-x");
+        when(taskRepo.findById("grand-x")).thenReturn(Optional.of(grandchild));
+        when(taskRepo.findById("child-x")).thenReturn(Optional.of(child));
+        when(taskRepo.findById(ROOT)).thenReturn(Optional.of(root));
+
+        assertEquals(Long.valueOf(321L), service.ensureTopic("grand-x", CHAT, "Внук"),
+                "цепочка наследников поднимается до темы корня");
+
+        verify(gateway, never()).createForumTopic(anyLong(), anyString());
+    }
+
+    @Test
     void ensureTopic_childWithParentTopic_resolvesViaCache_noCreate() {
         when(taskRepo.findById(ROOT)).thenReturn(Optional.of(task(ROOT, 321L)));
         // прогреваем кэш темы корня
@@ -326,6 +343,36 @@ class TelegramTopicServiceTest {
                 .thenThrow(new RuntimeException("Bad Request: not enough rights to pin"));
 
         assertFalse(service.pinTopicDescription(ROOT, "описание задачи"));
+    }
+
+    @Test
+    void pinTopicDescription_knownThread_callsGatewayOnce() {
+        when(taskRepo.findById(ROOT)).thenReturn(Optional.of(task(ROOT, 88L)));
+        when(gateway.pinChatMessage(CHAT, 88L)).thenReturn(true);
+
+        assertTrue(service.pinTopicDescription(ROOT, "описание задачи"));
+
+        verify(gateway).pinChatMessage(CHAT, 88L);
+    }
+
+    @Test
+    void pinTopicDescription_noThread_skipsGateway() {
+        when(taskRepo.findById(ROOT)).thenReturn(Optional.of(task(ROOT, null)));
+
+        assertFalse(service.pinTopicDescription(ROOT, "описание задачи"));
+
+        verify(gateway, never()).pinChatMessage(anyLong(), anyLong());
+    }
+
+    @Test
+    void closeTopic_repeated_isIdempotent() {
+        when(taskRepo.findById(ROOT)).thenReturn(Optional.of(task(ROOT, 88L)));
+        when(gateway.closeForumTopic(CHAT, 88L)).thenReturn(true);
+
+        assertTrue(service.closeTopic(ROOT));
+        assertTrue(service.closeTopic(ROOT));
+
+        verify(gateway, times(2)).closeForumTopic(CHAT, 88L);
     }
 
     private static TaskEntity task(String taskId, Long threadId) {
