@@ -35,10 +35,14 @@ public class TelegramBotListener {
     @Value("${telegram.allowed-chat-ids:}")
     private String allowedChatIdsRaw;
 
+    @Value("${telegram.mention-free-chat-ids:}")
+    private String mentionFreeChatIdsRaw;
+
     @Value("${telegram.bot-username:}")
     private String botUsername;
 
     private Set<Long> allowedChatIds;
+    private Set<Long> mentionFreeChatIds;
 
     public TelegramBotListener(TelegramGateway telegram, TaskLauncher taskLauncher,
                                ConversationAgent conversationAgent, ChatMemoryService chatMemory,
@@ -68,10 +72,24 @@ public class TelegramBotListener {
                     .collect(Collectors.toSet());
             log.info("Telegram whitelist активирован — разрешённые chatIds: {}", allowedChatIds);
         }
+        if (mentionFreeChatIdsRaw == null || mentionFreeChatIdsRaw.isBlank()) {
+            mentionFreeChatIds = Set.of();
+        } else {
+            mentionFreeChatIds = Arrays.stream(mentionFreeChatIdsRaw.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(Long::parseLong)
+                    .collect(Collectors.toSet());
+            log.info("Telegram mention-free чаты активированы — бот отвечает на все сообщения: {}", mentionFreeChatIds);
+        }
     }
 
     private boolean isChatAllowed(long chatId) {
         return !allowedChatIds.isEmpty() && allowedChatIds.contains(chatId);
+    }
+
+    private boolean isMentionFreeChat(long chatId) {
+        return !mentionFreeChatIds.isEmpty() && mentionFreeChatIds.contains(chatId);
     }
 
     /**
@@ -251,7 +269,9 @@ public class TelegramBotListener {
             boolean isPrivateChat = "private".equals(chat.type());
             // Прямой ответ (reply) на сообщение бота — тоже обращён к боту, даже без @mention.
             boolean isReplyToBot = isReplyToBot(msg, botUsername);
-            if (!hasMention && !hasPendingQuestions && !isPrivateChat && !isReplyToBot) {
+            // Чат из mention-free списка — бот отвечает на ВСЕ сообщения, @mention не нужен.
+            boolean isMentionFreeChat = isMentionFreeChat(chat.id());
+            if (!hasMention && !hasPendingQuestions && !isPrivateChat && !isReplyToBot && !isMentionFreeChat) {
                 log.debug("TG poll: chatId={} — нет @mention, нет pending-вопросов и не reply боту, пропуск LLM вызова",
                         chat.id());
                 continue;
@@ -260,7 +280,8 @@ public class TelegramBotListener {
                 log.info("TG poll: chatId={} — нет @mention, но {} → пропуск к ConversationAgent",
                         chat.id(), isPrivateChat ? "личный чат"
                                 : isReplyToBot ? "reply на сообщение бота"
-                                  : "есть pending-вопросы");
+                                  : isMentionFreeChat ? "mention-free чат"
+                                    : "есть pending-вопросы");
             }
 
             // Делегируем ConversationAgent
