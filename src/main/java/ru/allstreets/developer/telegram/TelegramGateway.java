@@ -10,6 +10,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import ru.allstreets.developer.agents.AgentResponses;
@@ -31,11 +32,14 @@ public class TelegramGateway {
     private final ReplyAnchorRegistry replyAnchors;
 
     /**
-     * Резолвер taskId → thread_id. Field-injection (а не конструктор), чтобы разорвать
-     * циклическую зависимость: {@link TelegramTopicService} зависит от этого gateway,
-     * а gateway — от резолвера. Spring разрешает такой цикл через раннюю ссылку.
+     * Резолвер taskId → thread_id. {@code @Lazy} разрывает циклическую зависимость
+     * {@link TelegramTopicService} → gateway (constructor) → topicService (field):
+     * инжектится ленивый прокси, реальный бин создаётся при первом обращении, когда
+     * gateway уже готов. Spring Boot 3.4 запрещает циклы бинов по умолчанию, ранняя
+     * ссылка через field-injection больше не работает (инцидент 27.09.2026).
      */
     @Autowired(required = false)
+    @Lazy
     private TelegramTopicService topicService;
 
     public TelegramGateway(@Value("${telegram.bot-token}") String botToken,
