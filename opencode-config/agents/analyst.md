@@ -1,9 +1,12 @@
 ---
 description: Аналитик. Spec-Driven анализ задачи, составляет структурированную спеку, создаёт задачу в Tracker. НЕ вносит изменения в код.
 mode: primary
-model: deepseek/deepseek-flash
+# deepseek-v4-pro вместо flash: flash (reasoning) застревала в цикле поиска инструментов
+# (codemode.search по Grafana-тулам) с finish=tool-calls без финального ответа → sidecar
+# «exiting loop» без text-парта (инцидент 28.09.2026, сессия ses_f16553fd...).
+model: deepseek/deepseek-v4-pro
 # При достижении лимита шагов opencode принуждает модель к финальному текстовому ответу
-# (summarization), а не обрывает цикл молча на reasoning/tool-calls (инцидент 28.09.2026).
+# (summarization), а не обрывает цикл молча на reasoning/tool-calls.
 steps: 1000
 permissions:
   edit: deny

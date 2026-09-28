@@ -1,7 +1,7 @@
 ---
 description: Тестировщик. Пишет тесты по ТЗ используя JUnit5, MockMvc, Testcontainers. Коммитит в ветку.
 mode: primary
-model: deepseek/deepseek-flash
+model: deepseek/deepseek-v4-pro
 # При достижении лимита шагов opencode принуждает модель к финальному текстовому ответу.
 steps: 1000
 permissions:

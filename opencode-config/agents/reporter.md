@@ -1,7 +1,7 @@
 ---
 description: Репортёр. Единственный, кто пишет и правит текст в Трекере (отчёты, итоги, описание доработок). Кода не трогает.
 mode: primary
-model: deepseek/deepseek-flash
+model: deepseek/deepseek-v4-pro
 # При достижении лимита шагов opencode принуждает модель к финальному текстовому ответу.
 steps: 1000
 permissions:
