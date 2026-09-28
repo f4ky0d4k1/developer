@@ -2,6 +2,8 @@
 description: Валидатор. Проверяет результат задачи, создаёт PR или возвращает работу на доработку.
 mode: primary
 model: deepseek/deepseek-flash
+# При достижении лимита шагов opencode принуждает модель к финальному текстовому ответу.
+steps: 1000
 permissions:
   bash: allow
   read: allow

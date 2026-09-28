@@ -58,70 +58,69 @@ class AnalystNodeDecisionGuardTest {
         return new OpenCodeClient.OpenCodeResult("success", out, null, null, List.of(), null, "ses_1");
     }
 
-    private void agentReturns(String out) {
-        when(openCode.runAgent(anyString(), anyString(), anyString(), anyString())).thenReturn(result(out));
-    }
-
-    private void nudgeReturns(String out) {
-        when(openCode.runAgent(anyString(), anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(result(out));
+    /**
+     * Последовательные ответы {@code runAgent}: первый вызов — первый прогон, остальные —
+     * нуджи (теперь нудж тоже идёт без sessionId, поэтому различие только по порядку).
+     */
+    private void runReturns(String... outs) {
+        var stub = when(openCode.runAgent(anyString(), anyString(), anyString(), anyString()));
+        var next = stub.thenReturn(result(outs[0]));
+        for (int i = 1; i < outs.length; i++) {
+            next = next.thenReturn(result(outs[i]));
+        }
     }
 
     @Test
     void degenerateOutput_nudgeAlsoWithoutDecision_fails() {
-        agentReturns(INTRO);
-        nudgeReturns(INTRO);
+        runReturns(INTRO, INTRO, INTRO);
 
         AgentResult result = analyst.execute(ctx());
 
         assertTrue(result.hasError(), "пустой ответ + безуспешный нудж должны завершаться ошибкой");
         assertFalse(result.completed());
-        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(openCode, times(3)).runAgent(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void degenerateOutput_nudgedToDecision_completes() {
-        agentReturns(INTRO);
-        nudgeReturns(DECISION);
+        runReturns(INTRO, DECISION);
 
         AgentResult result = analyst.execute(ctx());
 
         assertFalse(result.hasError());
         assertTrue(result.completed());
         assertEquals("developer", result.stateUpdates().get(TaskState.NEXT_STEP));
-        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(openCode, times(2)).runAgent(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void emptyOutput_nudgedToDecision_completes() {
-        agentReturns("");
-        nudgeReturns(DECISION);
+        runReturns("", DECISION);
 
         AgentResult result = analyst.execute(ctx());
 
         assertFalse(result.hasError(), "нудж должен вытащить решение из пустого ответа");
         assertTrue(result.completed());
         assertEquals("developer", result.stateUpdates().get(TaskState.NEXT_STEP));
-        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(openCode, times(2)).runAgent(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void emptyOutput_nudgeAlsoEmpty_fails() {
-        agentReturns("");
-        nudgeReturns("");
+        runReturns("", "", "");
 
         AgentResult result = analyst.execute(ctx());
 
         assertTrue(result.hasError(), "пустой ответ + безуспешный нудж — ошибка, а не silent-done");
         assertFalse(result.completed());
-        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(openCode, times(3)).runAgent(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void needsClarification_takesPriority_overDone() {
         // Дилемма: модель спрашивает текстом и ставит nextStep=done — задача закрывалась без разработки.
         // Вопрос должен иметь приоритет: needsClarification уводит задачу в HITL, nextStep не важен.
-        agentReturns("{\"nextStep\":\"done\",\"requiresDevelopment\":true,"
+        runReturns("{\"nextStep\":\"done\",\"requiresDevelopment\":true,"
                 + "\"needsClarification\":true,\"clarificationQuestion\":\"Создать задачу в Tracker?\"}");
 
         AgentResult result = analyst.execute(ctx());
@@ -135,7 +134,7 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void invalidDecisionValue_fails() {
-        agentReturns("{\"nextStep\":\"banana\",\"requiresDevelopment\":true}");
+        runReturns("{\"nextStep\":\"banana\",\"requiresDevelopment\":true}");
 
         AgentResult result = analyst.execute(ctx());
 
@@ -145,7 +144,7 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void decisionPresent_andParsed_completes() {
-        agentReturns(DECISION);
+        runReturns(DECISION);
 
         AgentResult result = analyst.execute(ctx());
 
@@ -158,7 +157,7 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void truncatedJson_fails() {
-        agentReturns("{\"nextStep\": \"developer\", \"requiresDevelopment\": true");
+        runReturns("{\"nextStep\": \"developer\", \"requiresDevelopment\": true");
 
         AgentResult result = analyst.execute(ctx());
 
@@ -168,18 +167,19 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void validJsonButNoNextStep_nudgedThenFails() {
-        agentReturns("{\"requiresDevelopment\": true, \"spec\": \"спека\"}");
-        nudgeReturns("{\"requiresDevelopment\": true, \"spec\": \"спека\"}");
+        runReturns("{\"requiresDevelopment\": true, \"spec\": \"спека\"}",
+                "{\"requiresDevelopment\": true, \"spec\": \"спека\"}",
+                "{\"requiresDevelopment\": true, \"spec\": \"спека\"}");
 
         AgentResult result = analyst.execute(ctx());
 
         assertTrue(result.hasError(), "JSON без nextStep — не решение");
-        verify(openCode).runAgent(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(openCode, times(3)).runAgent(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void explicitNextStepNull_fails() {
-        agentReturns("{\"nextStep\": null, \"requiresDevelopment\": true}");
+        runReturns("{\"nextStep\": null, \"requiresDevelopment\": true}");
 
         AgentResult result = analyst.execute(ctx());
 
@@ -188,7 +188,7 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void fencedJson_completes() {
-        agentReturns("```json\n" + DECISION + "\n```");
+        runReturns("```json\n" + DECISION + "\n```");
 
         AgentResult result = analyst.execute(ctx());
 
@@ -217,7 +217,7 @@ class AnalystNodeDecisionGuardTest {
                 ```
                 """.formatted(DECISION);
 
-        agentReturns(output);
+        runReturns(output);
 
         AgentResult result = analyst.execute(ctx());
 
@@ -227,7 +227,7 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void priorContext_isIncludedInAnalystPrompt() {
-        agentReturns(DECISION);
+        runReturns(DECISION);
         AgentContext withPrior = ctx().with(TaskState.PRIOR_CONTEXT,
                 "Предыдущая задача aaaaaaaa: Tracker BACKEND-432, НЕ создавай дубль");
 
@@ -241,7 +241,7 @@ class AnalystNodeDecisionGuardTest {
 
     @Test
     void unknownFieldsAreIgnored() {
-        agentReturns("{\"nextStep\":\"developer\",\"requiresDevelopment\":true,"
+        runReturns("{\"nextStep\":\"developer\",\"requiresDevelopment\":true,"
                 + "\"taskType\":\"task\",\"spec\":\"спека\",\"foo\":123}");
 
         AgentResult result = analyst.execute(ctx());

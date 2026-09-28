@@ -2,6 +2,9 @@
 description: Аналитик. Spec-Driven анализ задачи, составляет структурированную спеку, создаёт задачу в Tracker. НЕ вносит изменения в код.
 mode: primary
 model: deepseek/deepseek-flash
+# При достижении лимита шагов opencode принуждает модель к финальному текстовому ответу
+# (summarization), а не обрывает цикл молча на reasoning/tool-calls (инцидент 28.09.2026).
+steps: 1000
 permissions:
   edit: deny
   bash: allow

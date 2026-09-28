@@ -38,17 +38,25 @@ public class AnalystNode implements Agent {
     private static final long SLOT_WAIT_SECONDS = 30;
 
     /**
-     * Сколько раз нуджим агента в той же сессии, если он не вывел JSON-решение.
+     * Сколько раз нуджим агента в СВЕЖЕЙ сессии, если он не вывел JSON-решение.
+     * Нудж идёт без sessionId: застрявшая сессия (reasoning-цикл, «exiting loop»)
+     * отравлена, повторный промпт в ней снова крутит reasoning. Свежая сессия +
+     * жёсткое «не рассуждай» вытаскивают финальный ответ.
      */
-    private static final int MAX_CONTINUE_ATTEMPTS = 1;
+    private static final int MAX_CONTINUE_ATTEMPTS = 2;
 
     /**
-     * Нудж агенту: остановился без итогового решения — довести до JSON-блока.
+     * Нудж агенту в свежей сессии: прошлый прогон застрял в рассуждениях и не выдал
+     * JSON-решение. Запрещаем рассуждать/звать инструменты — только финальный JSON.
+     * Исходная задача добавляется отдельно (см. {@code buildAnalystPrompt}).
      */
     private static final String CONTINUE_ANALYSIS_PROMPT = """
-            Ты остановился, не выведя итоговое JSON-решение. Продолжи и в финальном ответе ОБЯЗАТЕЛЬНО
-            выведи JSON-блок с полями nextStep (developer/tester/done), requiresDevelopment,
-            requiresTesting и spec. Не выводи только план — доведи анализ до решения.
+            Ты остановился, не выведя итоговое JSON-решение — в прошлом ответе были только рассуждения.
+            НЕ рассуждай, НЕ вызывай инструменты, НЕ читай файлы, НЕ планируй шаги. Сразу, одним финальным
+            ответом, выведи JSON-блок с полями: nextStep (developer/tester/reporter/done), requiresDevelopment,
+            requiresTesting, spec, trackerIssue, needsClarification, clarificationQuestion.
+            Если данных для полной спеки не хватает — поставь needsClarification=true с коротким вопросом
+            либо nextStep=done с кратким spec-отчётом. Поле nextStep обязательно.
             """;
 
     private final OpenCodeClient openCode;
@@ -156,16 +164,18 @@ public class AnalystNode implements Agent {
                 }
 
                 // Пустой/усечённый вывод (агент «задумался вслух», провайдер вернул пустой ответ)
-                // — не фейлим сразу, а нуджим агента в той же сессии довести до JSON-решения.
-                // Только после N попыток без решения — провал (см. guard ниже).
+                // — не фейлим сразу, а нуджим агента в СВЕЖЕЙ сессии довести до JSON-решения.
+                // Застрявшая сессия (reasoning-цикл, «exiting loop») отравлена — повтор в ней крутит
+                // reasoning заново, поэтому нудж идёт БЕЗ sessionId, с полным промптом задачи +
+                // жёстким требованием «не рассуждай». Только после N попыток без решения — провал.
                 for (int attempt = 0; attempt < MAX_CONTINUE_ATTEMPTS
                         && (currentOutput.isBlank() || !hasDecisionBlock(currentOutput)); attempt++) {
-                    log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} в сессии {}: {}",
+                    log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} (свежая сессия, была {}): {}",
                             currentOutput.length(), attempt + 1, MAX_CONTINUE_ATTEMPTS, currentSessionId,
                             preview(currentOutput));
                     try {
-                        var contResult = openCode.runAgent("analyst", CONTINUE_ANALYSIS_PROMPT,
-                                workDir, taskId, currentSessionId);
+                        String nudgePrompt = CONTINUE_ANALYSIS_PROMPT + "\n\n" + buildAnalystPrompt(ctx, taskDescription);
+                        var contResult = openCode.runAgent("analyst", nudgePrompt, workDir, taskId);
                         if (contResult.error() != null && !contResult.error().isEmpty()) {
                             log.warn("Аналитик: нудж завершился ошибкой: {}", contResult.error());
                             break;
