@@ -1,5 +1,6 @@
 package ru.allstreets.developer.telegram;
 
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,8 +10,14 @@ import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -30,8 +37,17 @@ public class TelegramBotListener {
     private final ReplyAnchorRegistry replyAnchors;
     private final AtomicInteger lastUpdateId = new AtomicInteger(0);
 
+    /**
+     * Пачки сообщений по чатам, копящиеся в debounce-окне до единой классификации.
+     */
+    private final Map<Long, PendingBatch> pendingBatches = new ConcurrentHashMap<>();
+    private ScheduledExecutorService flushExecutor;
+
     @Value("${telegram.polling-timeout:30}")
     private int pollingTimeout;
+
+    @Value("${telegram.batch-debounce-ms:2000}")
+    private long batchDebounceMs;
 
     @Value("${telegram.allowed-chat-ids:}")
     private String allowedChatIdsRaw;
@@ -82,6 +98,25 @@ public class TelegramBotListener {
                     .map(Long::parseLong)
                     .collect(Collectors.toSet());
             log.info("Telegram mention-free чаты активированы — бот отвечает на все сообщения: {}", mentionFreeChatIds);
+        }
+        // Debounce-флашер на отдельном потоке: poll() блокируется в long-polling getUpdates
+        // до polling-timeout, поэтому флаш «по времени» нельзя вешать на тот же scheduler-поток.
+        // В юнит-тестах @Value не применяется → batchDebounceMs == 0 → флашер не стартует,
+        // а пачки флашатся синхронно в конце poll().
+        if (batchDebounceMs > 0) {
+            flushExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "telegram-batch-flush");
+                t.setDaemon(true);
+                return t;
+            });
+            flushExecutor.scheduleWithFixedDelay(this::flushDueBatches, 250, 250, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        if (flushExecutor != null) {
+            flushExecutor.shutdownNow();
         }
     }
 
@@ -384,51 +419,117 @@ public class TelegramBotListener {
                                     : "есть pending-вопросы");
             }
 
-            // Делегируем ConversationAgent
-            try {
-                // Build raw message metadata for the agent
-                StringBuilder rawMeta = new StringBuilder();
-                rawMeta.append("Сообщение: ").append(text);
-                if (msg.reply_to_message() != null) {
-                    var replied = msg.reply_to_message();
-                    rawMeta.append("\n[Reply-to message_id=").append(replied.message_id());
-                    if (replied.from() != null) {
-                        rawMeta.append(" from=").append(replied.from().username());
-                    }
-                    if (replied.text() != null) {
-                        rawMeta.append(" text=\"").append(replied.text().length() > 200 ? replied.text().substring(0, 200) + "..." : replied.text()).append("\"");
-                    }
-                    rawMeta.append("]");
-                }
-                if (msg.entities() != null && !msg.entities().isEmpty()) {
-                    rawMeta.append("\n[Entities: ");
-                    boolean first = true;
-                    for (var ent : msg.entities()) {
-                        if (!first) rawMeta.append(", ");
-                        rawMeta.append(ent.type());
-                        if ("mention".equals(ent.type())) {
-                            rawMeta.append("(@").append(botUsername).append(")");
-                        }
-                        first = false;
-                    }
-                    rawMeta.append("]");
-                }
-                if (threadId != null) {
-                    rawMeta.append("\n[Forum topic: message_thread_id=").append(threadId);
-                    if (topicTaskId != null) {
-                        rawMeta.append(", task=").append(topicTaskId, 0, Math.min(8, topicTaskId.length()));
-                    }
-                    rawMeta.append("]");
-                }
+            // Буферизуем сообщение в пачку (debounce) вместо немедленной классификации:
+            // несколько сообщений, пришедших подряд, уходят оркестратору одной пачкой
+            // (иначе каждое форварнутое сообщение → отдельный LLM-вызов и отдельный реворк).
+            String rawMeta = buildRawMeta(msg, topicTaskId, threadId);
+            long now = System.currentTimeMillis();
+            pendingBatches.compute(chat.id(), (k, existing) -> {
+                PendingBatch batch = existing != null ? existing : new PendingBatch(chat.id(), topicTaskId, username);
+                batch.add(rawMeta, now + batchDebounceMs);
+                return batch;
+            });
+        }
+        flushDueBatches();
+    }
 
-                var decision = conversationAgent.processMessage(chat.id(), username, rawMeta.toString());
-                log.info("TG poll: ConversationAgent решил action={} taskId={} for chatId={}",
-                        decision.action(), decision.taskId(), chat.id());
-
-                applyDecision(chat.id(), topicTaskId, decision);
-            } catch (Exception e) {
-                log.error("TG poll: ошибка обработки сообщения: {}", e.getMessage(), e);
+    /**
+     * Собрать сырой контекст одного сообщения (reply-to/entities/тема) для классификатора.
+     * В батче несколько таких блоков склеиваются через пустую строку.
+     */
+    private String buildRawMeta(TelegramGateway.Message msg, String topicTaskId, Integer threadId) {
+        StringBuilder rawMeta = new StringBuilder();
+        rawMeta.append("Сообщение: ").append(msg.text());
+        if (msg.reply_to_message() != null) {
+            var replied = msg.reply_to_message();
+            rawMeta.append("\n[Reply-to message_id=").append(replied.message_id());
+            if (replied.from() != null) {
+                rawMeta.append(" from=").append(replied.from().username());
             }
+            if (replied.text() != null) {
+                rawMeta.append(" text=\"")
+                        .append(replied.text().length() > 200 ? replied.text().substring(0, 200) + "..." : replied.text())
+                        .append("\"");
+            }
+            rawMeta.append("]");
+        }
+        if (msg.entities() != null && !msg.entities().isEmpty()) {
+            rawMeta.append("\n[Entities: ");
+            boolean first = true;
+            for (var ent : msg.entities()) {
+                if (!first) rawMeta.append(", ");
+                rawMeta.append(ent.type());
+                if ("mention".equals(ent.type())) {
+                    rawMeta.append("(@").append(botUsername).append(")");
+                }
+                first = false;
+            }
+            rawMeta.append("]");
+        }
+        if (threadId != null) {
+            rawMeta.append("\n[Forum topic: message_thread_id=").append(threadId);
+            if (topicTaskId != null) {
+                rawMeta.append(", task=").append(topicTaskId, 0, Math.min(8, topicTaskId.length()));
+            }
+            rawMeta.append("]");
+        }
+        return rawMeta.toString();
+    }
+
+    /**
+     * Флашнуть все пачки с истёкшим debounce-окном: каждая уходит оркестратору одним вызовом.
+     * Потокобезопасно — атомарный {@code remove(key, batch)} гарантирует, что пачку
+     * обработает ровно один поток (poll-тред или debounce-флашер).
+     */
+    void flushDueBatches() {
+        flushDueBatches(System.currentTimeMillis());
+    }
+
+    /**
+     * Флашнуть пачки с истёкшим к моменту {@code now} debounce-окном. Перегрузка с явным
+     * «сейчас» — для тестов (позволяет «прокрутить» время без sleep).
+     */
+    void flushDueBatches(long now) {
+        for (var entry : pendingBatches.entrySet()) {
+            PendingBatch batch = entry.getValue();
+            if (batch.deadline <= now && pendingBatches.remove(entry.getKey(), batch)) {
+                flushBatch(batch);
+            }
+        }
+    }
+
+    private void flushBatch(PendingBatch batch) {
+        String combined = String.join("\n\n", batch.parts);
+        log.info("TG poll: флашим пачку из {} сообщений для chat={}", batch.parts.size(), batch.chatId);
+        try {
+            var decision = conversationAgent.processMessage(batch.chatId, batch.username, combined);
+            log.info("TG poll: ConversationAgent решил action={} taskId={} for chatId={} (пачка)",
+                    decision.action(), decision.taskId(), batch.chatId);
+            applyDecision(batch.chatId, batch.topicTaskId, decision);
+        } catch (Exception e) {
+            log.error("TG poll: ошибка обработки пачки сообщений: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Пачка сообщений одного чата, копящаяся в debounce-окне до единой классификации.
+     */
+    private static final class PendingBatch {
+        final long chatId;
+        final String topicTaskId;
+        final String username;
+        final List<String> parts = new ArrayList<>();
+        volatile long deadline;
+
+        PendingBatch(long chatId, String topicTaskId, String username) {
+            this.chatId = chatId;
+            this.topicTaskId = topicTaskId;
+            this.username = username;
+        }
+
+        void add(String part, long deadline) {
+            parts.add(part);
+            this.deadline = deadline;
         }
     }
 

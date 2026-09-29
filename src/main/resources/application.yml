@@ -92,6 +92,9 @@ telegram:
   bot-username: ${TELEGRAM_BOT_USERNAME}  # username бота без @, для @mention фильтрации
   api-url: https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}
   polling-timeout: 30
+  # Debounce-окно батчинга входящих сообщений: сообщения одного чата, пришедшие в пределах
+  # этого окна, уходят оркестратору (классификатору) одной пачкой, а не по одному.
+  batch-debounce-ms: ${TELEGRAM_BATCH_DEBOUNCE_MS:2000}
   allowed-chat-ids: ${TELEGRAM_ALLOWED_CHAT_IDS:}   # whitelist чатов, через запятую (см. .env)
   mention-free-chat-ids: ${TELEGRAM_MENTION_FREE_CHAT_IDS:}  # чаты, где бот отвечает на все сообщения без @mention
   trigger-users: ${TELEGRAM_TRIGGER_USERS:}         # логины, кому можно запускать задачи, через запятую,anton_pppp
