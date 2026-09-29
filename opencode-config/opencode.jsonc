@@ -46,7 +46,13 @@
       "command": [
         "uvx",
         "mcp-grafana"
-      ]
+      ],
+      // URL — не секрет, фиксируем явно, чтобы сайдкар не зависел от того, есть ли
+      // GRAFANA_URL в .env на VPS (иначе mcp-grafana стартует с пустым URL и Grafana-тулов нет).
+      // Токен по-прежнему берётся из окружения контейнера (docker-compose, из .env).
+      "environment": {
+        "GRAFANA_URL": "https://allstreeets.grafana.net"
+      }
     },
     "github": {
       "type": "local",
