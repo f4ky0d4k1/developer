@@ -146,4 +146,34 @@ class TelegramGatewayTest {
         assertNull(TelegramGateway.extractChatTitle("{\"ok\":false,\"description\":\"Bad Request\"}"));
         assertNull(TelegramGateway.extractChatTitle("{\"ok\":true}"));
     }
+
+    // ------------------------------------------------------------------
+    // fallbackText: текст при неудачной отправке кнопок (BUTTON_DATA_INVALID)
+    // ------------------------------------------------------------------
+
+    @Test
+    void fallbackText_appendsNumberedOptions() {
+        var keyboard = java.util.List.of(
+                java.util.List.of(TelegramGateway.button("owner/a", "choice:abc:0")),
+                java.util.List.of(TelegramGateway.button("owner/b", "choice:abc:1")));
+
+        assertEquals("В каком репозитории?\n\nВарианты:\n1. owner/a\n2. owner/b",
+                TelegramGateway.fallbackText("В каком репозитории?", keyboard));
+    }
+
+    @Test
+    void fallbackText_skipsBlankLabels() {
+        var keyboard = java.util.List.of(
+                java.util.List.of(TelegramGateway.button("", "choice:abc:0")),
+                java.util.List.of(TelegramGateway.button("owner/b", "choice:abc:1")));
+
+        assertEquals("Вопрос\n\nВарианты:\n1. owner/b",
+                TelegramGateway.fallbackText("Вопрос", keyboard));
+    }
+
+    @Test
+    void fallbackText_nullOrEmptyKeyboard_returnsTextUnchanged() {
+        assertEquals("Просто текст", TelegramGateway.fallbackText("Просто текст", null));
+        assertEquals("Просто текст", TelegramGateway.fallbackText("Просто текст", java.util.List.of()));
+    }
 }

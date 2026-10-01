@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -41,6 +42,14 @@ public class TelegramBotListener {
      * Пачки сообщений по чатам, копящиеся в debounce-окне до единой классификации.
      */
     private final Map<Long, PendingBatch> pendingBatches = new ConcurrentHashMap<>();
+
+    /**
+     * Короткоживущее хранилище вариантов вопросов классификатора: {@code token → список вариантов}.
+     * В callback_data кнопки кладётся только {@code choice:<token>:<index>} (лимит Telegram 64 байта),
+     * а текст варианта резолвится отсюда по индексу. Запись удаляется после тапа (или при фолбэке).
+     */
+    private final Map<String, List<String>> choiceStore = new ConcurrentHashMap<>();
+
     private ScheduledExecutorService flushExecutor;
 
     @Value("${telegram.polling-timeout:30}")
@@ -223,16 +232,19 @@ public class TelegramBotListener {
     }
 
     /**
-     * Выбор варианта из кнопок: синтезируем пользовательское сообщение «Выбрано: &lt;вариант&gt;»
-     * и прогоняем классификатор заново — он по истории чата (включая свой вопрос с кнопками)
-     * свяжет выбор с исходным запросом и выполнит действие (launch_task / ответ).
+     * Выбор варианта из кнопок: резолвим {@code choice:<token>:<index>} → текст варианта
+     * (из {@link #choiceStore}), синтезируем сообщение «Выбрано: &lt;вариант&gt;» и прогоняем
+     * классификатор заново — он по истории чата (включая свой вопрос с кнопками) свяжет выбор
+     * с исходным запросом и выполнит действие (launch_task / ответ).
      */
-    private void handleChoiceCallback(long chatId, String topicTaskId, TelegramGateway.CallbackQuery cq, String option) {
-        telegram.answerCallbackQuery(cq.id(), option);
-        if (option == null || option.isBlank()) {
-            log.warn("TG callback: choice без варианта chat={}", chatId);
+    private void handleChoiceCallback(long chatId, String topicTaskId, TelegramGateway.CallbackQuery cq, String payload) {
+        String option = resolveChoice(payload);
+        if (option == null) {
+            log.warn("TG callback: choice не разрешился payload='{}' chat={} — варианты истекли", payload, chatId);
+            telegram.answerCallbackQuery(cq.id(), "Варианты устарели — напишите заново");
             return;
         }
+        telegram.answerCallbackQuery(cq.id(), option);
         String username = cq.from() != null ? cq.from().username() : null;
         String synthetic = "Выбрано: " + option;
         log.info("TG callback: choice='{}' chat={} — возвращаю в классификатор", option, chatId);
@@ -245,6 +257,27 @@ public class TelegramBotListener {
         } catch (Exception e) {
             log.error("TG callback: ошибка обработки choice chat={}: {}", chatId, e.getMessage(), e);
         }
+    }
+
+    /**
+     * Резолв {@code choice:<token>:<index>} → текст варианта. Удаляет запись из {@link #choiceStore}
+     * (варианты одноразовые). {@code null} — токен неизвестен/истёк или индекс вне диапазона.
+     */
+    private String resolveChoice(String payload) {
+        if (payload == null) return null;
+        int sep = payload.lastIndexOf(':');
+        if (sep <= 0 || sep == payload.length() - 1) return null;
+        String token = payload.substring(0, sep);
+        int index;
+        try {
+            index = Integer.parseInt(payload.substring(sep + 1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        List<String> options = choiceStore.get(token);
+        if (options == null || index < 0 || index >= options.size()) return null;
+        choiceStore.remove(token);
+        return options.get(index);
     }
 
     /**
@@ -264,8 +297,14 @@ public class TelegramBotListener {
             case ANSWER -> {
                 if (hasText(decision.text())) {
                     if (hasOptions(decision)) {
-                        telegram.sendMessageWithKeyboard(chatId, decision.text(),
-                                choiceKeyboard(decision.options()), topicTaskId);
+                        var registered = choiceKeyboard(decision.options());
+                        if (registered != null) {
+                            boolean sent = telegram.sendMessageWithKeyboard(chatId, decision.text(),
+                                    registered.keyboard(), topicTaskId);
+                            if (!sent) {
+                                choiceStore.remove(registered.token());
+                            }
+                        }
                     } else {
                         telegram.sendMarkdownMessage(chatId, decision.text(), topicTaskId);
                     }
@@ -542,18 +581,28 @@ public class TelegramBotListener {
     }
 
     /**
-     * Inline-кнопки для вопроса с выбором: каждая кнопка несёт {@code choice:<вариант>}.
-     * Тап по кнопке возвращается в классификатор как «Выбрано: &lt;вариант&gt;» — он сам
-     * распутает контекст по истории чата (никакого отдельного хранилища вариантов).
+     * Inline-кнопки для вопроса с выбором. В callback_data кладётся только короткий
+     * {@code choice:<token>:<index>} (лимит Telegram 64 байта), а тексты вариантов хранятся
+     * в {@link #choiceStore} до тапа (index → текст). Package-private для тестов.
+     *
+     * @return {@code null}, если после отброса пустых вариантов не осталось ни одной кнопки.
      */
-    static java.util.List<java.util.List<java.util.Map<String, String>>> choiceKeyboard(java.util.List<String> options) {
-        var keyboard = new java.util.ArrayList<java.util.List<java.util.Map<String, String>>>();
-        for (String option : options) {
-            if (option == null || option.isBlank()) {
-                continue;
-            }
-            keyboard.add(java.util.List.of(TelegramGateway.button(option, "choice:" + option)));
+    RegisteredChoice choiceKeyboard(List<String> options) {
+        List<String> filtered = options.stream().filter(o -> o != null && !o.isBlank()).toList();
+        if (filtered.isEmpty()) return null;
+        String token = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        var keyboard = new ArrayList<List<Map<String, String>>>();
+        for (int i = 0; i < filtered.size(); i++) {
+            keyboard.add(List.of(TelegramGateway.button(filtered.get(i), "choice:" + token + ":" + i)));
         }
-        return keyboard;
+        choiceStore.put(token, filtered);
+        return new RegisteredChoice(token, keyboard);
+    }
+
+    /**
+     * Зарегистрированная клавиатура выбора: {@code token} — короткоживущий ключ в
+     * {@link #choiceStore}, {@code keyboard} — кнопки с {@code choice:<token>:<index>}.
+     */
+    record RegisteredChoice(String token, List<List<Map<String, String>>> keyboard) {
     }
 }

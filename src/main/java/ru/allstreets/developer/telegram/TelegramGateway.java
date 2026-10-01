@@ -16,7 +16,9 @@ import org.springframework.web.client.RestClient;
 import ru.allstreets.developer.agents.AgentResponses;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 @Component
 public class TelegramGateway {
@@ -207,9 +209,9 @@ public class TelegramGateway {
      * каждый ряд — список кнопок вида {@code Map.of("text", label, "callback_data", data)}.
      * Текст конвертируется Markdown → Telegram HTML (как {@link #sendMarkdownMessage}).
      */
-    public void sendMessageWithKeyboard(long chatId, String text,
-                                        java.util.List<java.util.List<java.util.Map<String, String>>> inlineKeyboard,
-                                        String taskId) {
+    public boolean sendMessageWithKeyboard(long chatId, String text,
+                                           java.util.List<java.util.List<java.util.Map<String, String>>> inlineKeyboard,
+                                           String taskId) {
         String outgoing = MarkdownToTelegramHtml.toHtml(withTaskHeader(text, titleOf(taskId), taskId));
         log.info("Отправка кнопок в ТГ chatId={} ({} рядов)", chatId, inlineKeyboard.size());
         Long threadId = threadIdFor(chatId, taskId);
@@ -219,6 +221,7 @@ public class TelegramGateway {
         try {
             api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
             chatMemory.recordBotMessage(chatId, outgoing, taskId);
+            return true;
         } catch (org.springframework.web.client.HttpClientErrorException.BadRequest e) {
             if (replyTo != null && isReplyRelated(e)) {
                 log.warn("sendMessageWithKeyboard: Telegram отклонил reply_parameters, повтор без reply-to chatId={}", chatId);
@@ -226,6 +229,7 @@ public class TelegramGateway {
                 try {
                     api.post().uri("/sendMessage").body(body).retrieve().toEntity(String.class);
                     chatMemory.recordBotMessage(chatId, outgoing, taskId);
+                    return true;
                 } catch (Exception retry) {
                     log.error("Ошибка отправки кнопок в ТГ chatId={}: {}", chatId, retry.getMessage(), retry);
                 }
@@ -235,6 +239,33 @@ public class TelegramGateway {
         } catch (Exception e) {
             log.error("Ошибка отправки кнопок в ТГ chatId={}: {}", chatId, e.getMessage(), e);
         }
+        // Кнопки не ушли (BUTTON_DATA_INVALID и т.п.) — доставка важнее: текст вариантов без кнопок.
+        sendMarkdownMessage(chatId, fallbackText(text, inlineKeyboard), taskId);
+        return false;
+    }
+
+    /**
+     * Текст fallback-сообщения при неудачной отправке кнопок: исходный текст + нумерованный
+     * список вариантов, чтобы пользователь всё равно видел выбор (на который может ответить текстом).
+     * Package-private static — для тестов без HTTP.
+     */
+    static String fallbackText(String text,
+                               java.util.List<java.util.List<java.util.Map<String, String>>> inlineKeyboard) {
+        List<String> labels = inlineKeyboard == null ? List.of()
+                : inlineKeyboard.stream().flatMap(List::stream)
+                .map(b -> b.get("text"))
+                .filter(Objects::nonNull)
+                .filter(l -> !l.isBlank())
+                .toList();
+        if (labels.isEmpty()) {
+            return text;
+        }
+        StringBuilder sb = new StringBuilder(text == null ? "" : text);
+        sb.append("\n\nВарианты:");
+        for (int i = 0; i < labels.size(); i++) {
+            sb.append('\n').append(i + 1).append(". ").append(labels.get(i));
+        }
+        return sb.toString();
     }
 
     /**
