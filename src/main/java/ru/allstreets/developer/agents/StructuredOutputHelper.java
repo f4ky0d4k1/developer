@@ -21,6 +21,15 @@ public class StructuredOutputHelper {
 
     public StructuredOutputHelper(RetryRegistry retryRegistry) {
         this.llmRetry = retryRegistry.retry("llm");
+        // Логирование каждого уровня retry: по умолчанию Resilience4j не пишет ни попытку,
+        // ни причину. onRetry — перед следующей попыткой, onError — когда попытки исчерпаны.
+        this.llmRetry.getEventPublisher()
+                .onRetry(event -> log.warn("LLM retry: попытка {} провалилась — {}: {}",
+                        event.getNumberOfRetryAttempts(),
+                        event.getLastThrowable() != null ? event.getLastThrowable().getClass().getSimpleName() : "?",
+                        event.getLastThrowable() != null ? event.getLastThrowable().getMessage() : "?"))
+                .onError(event -> log.error("LLM retry: попытки исчерпаны после {} ретраев — {}",
+                        event.getNumberOfRetryAttempts(), event.getLastThrowable()));
     }
 
     /**

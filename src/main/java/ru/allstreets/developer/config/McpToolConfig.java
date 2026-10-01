@@ -54,7 +54,30 @@ public class McpToolConfig {
      */
     private RestClient.Builder llmRestClientBuilder(Duration connectTimeout, Duration readTimeout) {
         return RestClient.builder()
-                .requestFactory(OpenAiHttpClientFactory.requestFactory(connectTimeout, readTimeout));
+                .requestFactory(OpenAiHttpClientFactory.requestFactory(connectTimeout, readTimeout))
+                // Трассировка сырого ответа DeepSeek: без неё «Error while extracting response»
+                // не оставлял ни статуса, ни тела — нельзя было понять 429/5xx/битый JSON это.
+                .requestInterceptor(new LoggingClientHttpRequestInterceptor());
+    }
+
+    /**
+     * {@code RetryTemplate} для OpenAiChatModel с логированием каждой неудачной попытки.
+     * Spring Retry сам пишет только «Retry: count=N» (DEBUG, без исключения) — здесь добавляем throwable.
+     */
+    private org.springframework.retry.support.RetryTemplate llmRetryTemplate() {
+        org.springframework.retry.support.RetryTemplate template = new org.springframework.retry.support.RetryTemplate();
+        template.registerListener(new org.springframework.retry.RetryListener() {
+            @Override
+            public <T, E extends Throwable> void onError(org.springframework.retry.RetryContext context,
+                                                         org.springframework.retry.RetryCallback<T, E> callback,
+                                                         Throwable throwable) {
+                log.warn("LLM HTTP retry (Spring): попытка {} провалилась — {}: {}",
+                        context.getRetryCount(),
+                        throwable != null ? throwable.getClass().getSimpleName() : "?",
+                        throwable != null ? throwable.getMessage() : "?");
+            }
+        });
+        return template;
     }
 
     /**
@@ -85,7 +108,7 @@ public class McpToolConfig {
                         .temperature(temperature)
                         .build(),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
-                new org.springframework.retry.support.RetryTemplate(),
+                llmRetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP
         );
     }
@@ -157,7 +180,7 @@ public class McpToolConfig {
                                 .build(),
                         Map.of("type", "disabled")),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
-                new org.springframework.retry.support.RetryTemplate(),
+                llmRetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP
         );
         return ChatClient.builder(chatModel)
@@ -195,7 +218,7 @@ public class McpToolConfig {
                                 .build(),
                         Map.of("type", "disabled")),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
-                new org.springframework.retry.support.RetryTemplate(),
+                llmRetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP
         );
         return ChatClient.builder(chatModel).build();
