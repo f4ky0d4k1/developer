@@ -124,7 +124,7 @@ loki:
 
 logging:
   level:
-    root: debug
+    root: info
     ru.allstreets.developer: trace
     io.github.asekka: trace
     org.springframework.ai: debug
