@@ -156,18 +156,14 @@ public class ConversationAgent {
                 return structuredOutputFallback(contextPrompt);
             }
 
-            AgentResponses.OrchestratorDecision result = parseOrchestratorDecision(content);
-            if (result == null) {
-                log.warn("ConversationAgent [orchestrator]: в ответе нет JSON-решения ({} символов), fallback без tools",
-                        content != null ? content.length() : 0);
-                return structuredOutputFallback(contextPrompt);
+            Decision decision = decisionFromContent(content);
+            if (decision != null) {
+                log.info("ConversationAgent [orchestrator]: action={} taskId={}", decision.action(), decision.taskId());
+                return decision;
             }
 
-            log.info("ConversationAgent [orchestrator]: action={} taskId={} description='{}'",
-                    result.action(), result.taskId(),
-                    result.description() != null ? (result.description().length() > 80 ? result.description().substring(0, 80) + "..." : result.description()) : "null");
-
-            return toDecision(result);
+            log.warn("ConversationAgent [orchestrator]: пустой ответ, fallback без tools");
+            return structuredOutputFallback(contextPrompt);
 
         } catch (Exception e) {
             log.error("ConversationAgent [orchestrator]: ошибка: {}", e.getMessage(), e);
@@ -180,17 +176,36 @@ public class ConversationAgent {
         log.info("ConversationAgent [orchestrator]: structuredOutputFallback, prompt len={}", fullPrompt.length());
         try {
             String content = fallbackChatClient.prompt().user(fullPrompt + JSON_OUTPUT_INSTRUCTION).call().content();
-            AgentResponses.OrchestratorDecision result = parseOrchestratorDecision(content);
-            if (result == null) {
-                log.error("ConversationAgent [orchestrator]: fallback не дал JSON ({} символов) — обе модели не смогли дать JSON",
-                        content != null ? content.length() : 0);
-                return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null, "Пустой ответ LLM (fallback)", null);
+            Decision decision = decisionFromContent(content);
+            if (decision != null) {
+                log.info("ConversationAgent [orchestrator]: fallback action={}", decision.action());
+                return decision;
             }
-            return toDecision(result);
+            log.error("ConversationAgent [orchestrator]: обе модели вернули пустой ответ");
+            return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null,
+                    "Не удалось получить ответ от модели — попробуй ещё раз", null);
         } catch (Exception e) {
             log.error("ConversationAgent [orchestrator]: fallback ошибка: {}", e.getMessage(), e);
-            return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null, "Ошибка LLM (fallback): " + e.getMessage(), null);
+            return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage(), null);
         }
+    }
+
+    /**
+     * Ответ модели → решение: валидный JSON → его action; не-JSON, но непустой текст → ANSWER
+     * с этим текстом (graceful degradation — лучше показать ответ прозой, чем упасть с ошибкой);
+     * пусто/null → null (сигнал «попробовать фолбэк»).
+     */
+    private Decision decisionFromContent(String content) {
+        AgentResponses.OrchestratorDecision parsed = parseOrchestratorDecision(content);
+        if (parsed != null) {
+            return toDecision(parsed);
+        }
+        if (content != null && !content.isBlank()) {
+            log.warn("ConversationAgent [orchestrator]: модель вернула {} символов прозы вместо JSON — отдаём как ANSWER",
+                    content.length());
+            return new Decision(AgentResponses.OrchestratorAction.ANSWER, null, content, null, null);
+        }
+        return null;
     }
 
     private static Decision toDecision(AgentResponses.OrchestratorDecision result) {
