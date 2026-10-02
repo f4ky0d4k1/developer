@@ -1,4 +1,7 @@
-FROM ghcr.io/anomalyco/opencode:1.0.196
+# Пин по digest текущего `latest`: версии 1.0.x отстают по схеме конфига
+# (external_directory map + compaction/skills), а тег `latest` мутабелен и меняет digest.
+# Digest иммутабелен — не пересобирает образ и не ломает opencode-config.
+FROM ghcr.io/anomalyco/opencode@sha256:b34342987ca889fc2cc19cbc046eefc2418e5980a3d696e209fbb401a288f631
 
 # uvx для MCP stdio transport (yandex-tracker, grafana) + docker CLI для GitHub MCP
 # + JDK 21 для сборки/тестов целевых Java-проектов (Maven подтягивается через ./mvnw)
