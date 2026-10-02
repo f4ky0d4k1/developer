@@ -175,7 +175,9 @@ public class McpToolConfig {
                 org.springframework.ai.openai.OpenAiChatOptions.builder()
                         .model(orchestratorModel)
                         .temperature(0.1)
-                        .maxTokens(2048)
+                        // reasoning-модель тратит токены на reasoning_content ДО content:
+                        // при 2048 ответа (content) не оставалось, оркестратор падал «Пустой ответ LLM».
+                        .maxTokens(8192)
                         .build(),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
                 llmRetryTemplate(),
@@ -211,7 +213,8 @@ public class McpToolConfig {
                 org.springframework.ai.openai.OpenAiChatOptions.builder()
                         .model(fallbackModel)
                         .temperature(0.1)
-                        .maxTokens(2048)
+                        // reasoning-модель тратит токены на reasoning_content ДО content (см. orchestrator).
+                        .maxTokens(8192)
                         .build(),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
                 llmRetryTemplate(),
