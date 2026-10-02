@@ -17,7 +17,6 @@ import ru.allstreets.developer.mcp.TelegramTopicMcpTools;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Map;
 
 /**
  * Конфигурация ChatClient бинов для Spring AI.
@@ -149,21 +148,22 @@ public class McpToolConfig {
     }
 
     /**
-     * ChatClient для fast mode — быстрый классификатор на дешёвой модели.
-     * Системный промпт: prompts/conversation-fast.md.
+     * ChatClient оркестратора чата (Telegram): анализирует сообщение в контексте чата и задач,
+     * вызывает инструменты (launch_task/getChatHistory/…), возвращает JSON-решение.
+     * Системный промпт: prompts/orchestrator.md.
      */
-    @Bean("fastChatClient")
-    public ChatClient fastChatClient(@Value("${fast-model.model:deepseek-v4-pro}") String fastModel,
-                                     @Value("${fast-model.api-key:}") String apiKey,
-                                     @Value("${fast-model.base-url:https://api.deepseek.com}") String baseUrl,
-                                     GithubMcpTools githubTools,
-                                     TaskMcpTools taskTools,
-                                     SystemMcpTools systemTools,
-                                     TelegramTopicMcpTools topicTools,
-                                     @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
-                                     @Value("${llm.http.read-timeout:60s}") Duration readTimeout) {
-        log.info("Fast ChatClient: model={}, baseUrl={}, tools=github+task+system+forum-topics (no sendMessage)",
-                fastModel, baseUrl);
+    @Bean("orchestratorChatClient")
+    public ChatClient orchestratorChatClient(@Value("${orchestrator-model.model:deepseek-v4-pro}") String orchestratorModel,
+                                             @Value("${orchestrator-model.api-key:}") String apiKey,
+                                             @Value("${orchestrator-model.base-url:https://api.deepseek.com}") String baseUrl,
+                                             GithubMcpTools githubTools,
+                                             TaskMcpTools taskTools,
+                                             SystemMcpTools systemTools,
+                                             TelegramTopicMcpTools topicTools,
+                                             @Value("${llm.http.connect-timeout:5s}") Duration connectTimeout,
+                                             @Value("${llm.http.read-timeout:60s}") Duration readTimeout) {
+        log.info("Orchestrator ChatClient: model={}, baseUrl={}, tools=github+task+system+forum-topics (no sendMessage)",
+                orchestratorModel, baseUrl);
         var openAiApi = org.springframework.ai.openai.api.OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -172,19 +172,17 @@ public class McpToolConfig {
                 .build();
         var chatModel = new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
-                new DeepSeekChatOptions(
-                        org.springframework.ai.openai.OpenAiChatOptions.builder()
-                                .model(fastModel)
-                                .temperature(0.1)
-                                .maxTokens(2048)
-                                .build(),
-                        Map.of("type", "disabled")),
+                org.springframework.ai.openai.OpenAiChatOptions.builder()
+                        .model(orchestratorModel)
+                        .temperature(0.1)
+                        .maxTokens(2048)
+                        .build(),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
                 llmRetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP
         );
         return ChatClient.builder(chatModel)
-                .defaultSystem(loadPrompt("prompts/conversation-fast.md"))
+                .defaultSystem(loadPrompt("prompts/orchestrator.md"))
                 .defaultTools(githubTools, taskTools, systemTools, topicTools)
                 .build();
     }
@@ -210,13 +208,11 @@ public class McpToolConfig {
                 .build();
         var chatModel = new org.springframework.ai.openai.OpenAiChatModel(
                 openAiApi,
-                new DeepSeekChatOptions(
-                        org.springframework.ai.openai.OpenAiChatOptions.builder()
-                                .model(fallbackModel)
-                                .temperature(0.1)
-                                .maxTokens(2048)
-                                .build(),
-                        Map.of("type", "disabled")),
+                org.springframework.ai.openai.OpenAiChatOptions.builder()
+                        .model(fallbackModel)
+                        .temperature(0.1)
+                        .maxTokens(2048)
+                        .build(),
                 org.springframework.ai.model.tool.ToolCallingManager.builder().build(),
                 llmRetryTemplate(),
                 io.micrometer.observation.ObservationRegistry.NOOP

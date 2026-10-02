@@ -64,9 +64,9 @@ fallback-model:
   api-key: ${DEEPSEEK_API_KEY}
   base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
 
-# Fast mode model — быстрый классификатор (дешёвая, стабильная)
-fast-model:
-  model: ${FAST_MODEL:deepseek-v4-pro}
+# Оркестратор чата Telegram — классификатор сообщений с доступом к чату, задачам и тулам
+orchestrator-model:
+  model: ${ORCHESTRATOR_MODEL:deepseek-v4-pro}
   api-key: ${DEEPSEEK_API_KEY}
   base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
 

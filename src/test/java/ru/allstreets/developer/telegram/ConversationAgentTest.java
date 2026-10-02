@@ -8,7 +8,6 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import ru.allstreets.developer.agents.AgentResponses;
-import ru.allstreets.developer.agents.StructuredOutputHelper;
 import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.mcp.TaskMcpTools;
@@ -21,51 +20,53 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Классификатор: маппинг decision и ограничение контекста по задачам чата.
+ * Оркестратор чата: маппинг decision и ограничение контекста по задачам чата.
  * Логики запуска здесь нет — запуск вынесен в инструмент {@code launch_task}.
+ * Ответ берётся через {@code .content()} (JSON), а не {@code .entity()} — structured output
+ * несовместим с tool calling (spring-ai #4799, #6327).
  */
 class ConversationAgentTest {
 
-    @Test
-    void processMessage_mapsDecisionFields() {
-        ChatClient fast = mock(ChatClient.class);
+    private record Mocks(ChatClient client, ChatClient.ChatClientRequestSpec request) {
+    }
+
+    private static Mocks orchestratorClientReturning(String json) {
+        ChatClient orchestrator = mock(ChatClient.class);
         ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
         ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
-        when(fast.prompt()).thenReturn(request);
+        when(orchestrator.prompt()).thenReturn(request);
         when(request.user(anyString())).thenReturn(request);
         when(request.toolContext(anyMap())).thenReturn(request);
         when(request.call()).thenReturn(response);
-        when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.STATUS, "abc12345", "статус", null, null));
+        when(response.content()).thenReturn(json);
+        return new Mocks(orchestrator, request);
+    }
 
-        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+    @Test
+    void processMessage_mapsDecisionFields() {
+        Mocks m = orchestratorClientReturning(
+                "{\"action\":\"STATUS\",\"taskId\":\"abc12345\",\"text\":\"статус\",\"description\":null,\"options\":null}");
+
+        var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
-                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+                humanInputRegistryMock(), new DefaultResourceLoader(),
                 mock(TaskMcpTools.class));
 
         var decision = agent.processMessage(1L, "user", "статус?");
 
-        assertEquals(AgentResponses.FastAction.STATUS, decision.action());
+        assertEquals(AgentResponses.OrchestratorAction.STATUS, decision.action());
         assertEquals("abc12345", decision.taskId());
         assertEquals("статус", decision.text());
     }
 
     @Test
     void processMessage_mapsOptions() {
-        ChatClient fast = mock(ChatClient.class);
-        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
-        ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
-        when(fast.prompt()).thenReturn(request);
-        when(request.user(anyString())).thenReturn(request);
-        when(request.toolContext(anyMap())).thenReturn(request);
-        when(request.call()).thenReturn(response);
-        when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "в каком репо?",
-                        null, java.util.List.of("owner/a", "owner/b")));
+        Mocks m = orchestratorClientReturning(
+                "{\"action\":\"ANSWER\",\"taskId\":null,\"text\":\"в каком репо?\",\"description\":null,\"options\":[\"owner/a\",\"owner/b\"]}");
 
-        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+        var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
-                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+                humanInputRegistryMock(), new DefaultResourceLoader(),
                 mock(TaskMcpTools.class));
 
         var decision = agent.processMessage(1L, "user", "проверь тикет");
@@ -82,25 +83,18 @@ class ConversationAgentTest {
         }
         Page<TaskEntity> page = new PageImpl<>(tasks, PageRequest.of(0, 10), 50);
 
-        ChatClient fast = mock(ChatClient.class);
-        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
-        ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
-        when(fast.prompt()).thenReturn(request);
-        when(request.user(anyString())).thenReturn(request);
-        when(request.toolContext(anyMap())).thenReturn(request);
-        when(request.call()).thenReturn(response);
-        when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+        Mocks m = orchestratorClientReturning(
+                "{\"action\":\"ANSWER\",\"taskId\":null,\"text\":\"ok\",\"description\":null,\"options\":null}");
 
-        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+        var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(page),
-                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+                humanInputRegistryMock(), new DefaultResourceLoader(),
                 mock(TaskMcpTools.class));
 
         agent.processMessage(1L, "user", "статус");
 
         var captor = ArgumentCaptor.forClass(String.class);
-        verify(request).user(captor.capture());
+        verify(m.request()).user(captor.capture());
         String prompt = captor.getValue();
 
         assertTrue(prompt.contains("title 9"), "первая страница задач в контексте: " + prompt);
@@ -111,25 +105,18 @@ class ConversationAgentTest {
     @Test
     @SuppressWarnings("unchecked")
     void processMessage_passesChatIdInToolContext() {
-        ChatClient fast = mock(ChatClient.class);
-        ChatClient.ChatClientRequestSpec request = mock(ChatClient.ChatClientRequestSpec.class);
-        ChatClient.CallResponseSpec response = mock(ChatClient.CallResponseSpec.class);
-        when(fast.prompt()).thenReturn(request);
-        when(request.user(anyString())).thenReturn(request);
-        when(request.toolContext(anyMap())).thenReturn(request);
-        when(request.call()).thenReturn(response);
-        when(response.entity(AgentResponses.FastDecision.class)).thenReturn(
-                new AgentResponses.FastDecision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+        Mocks m = orchestratorClientReturning(
+                "{\"action\":\"ANSWER\",\"taskId\":null,\"text\":\"ok\",\"description\":null,\"options\":null}");
 
-        var agent = new ConversationAgent(fast, mock(ChatClient.class),
+        var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
-                humanInputRegistryMock(), mock(StructuredOutputHelper.class), new DefaultResourceLoader(),
+                humanInputRegistryMock(), new DefaultResourceLoader(),
                 mock(TaskMcpTools.class));
 
         agent.processMessage(77L, "DiMa", "привет");
 
         ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(request).toolContext(captor.capture());
+        verify(m.request()).toolContext(captor.capture());
         assertEquals(77L, ((Number) captor.getValue().get("chatId")).longValue(),
                 "ConversationAgent должен прокидывать chatId в ToolContext для cross-chat проверок");
         assertEquals("dima", captor.getValue().get("username"));

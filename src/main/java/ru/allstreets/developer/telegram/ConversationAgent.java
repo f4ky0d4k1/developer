@@ -1,5 +1,9 @@
 package ru.allstreets.developer.telegram;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -9,22 +13,26 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
-import ru.allstreets.developer.agents.StructuredOutputHelper;
 import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.mcp.TaskMcpTools;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Conversation Agent — оркестратор группового чата Telegram.
  * <p>
- * Fast mode: deepseek-v4-pro, умный промпт → HITL_ANSWER / ANSWER / STATUS.
+ * Оркестратор чата: deepseek-v4-pro, умный промпт → HITL_ANSWER / ANSWER / STATUS.
  * Запуск задачи — инструмент {@code launch_task} (repo обязателен в схеме тула), не action.
  * <p>
- * Видит sliding window истории чата и активные задачи с pending-вопросами.
+ * Имеет доступ к чату (история, pending-вопросы), текущим задачам и инструментам —
+ * анализирует сообщение, вызывает тулы и возвращает JSON-решение.
  */
 @Component
 public class ConversationAgent {
@@ -36,39 +44,36 @@ public class ConversationAgent {
      */
     private static final int TASKS_PAGE_SIZE = 10;
 
-    private final ChatClient fastChatClient;
+    private final ChatClient orchestratorChatClient;
     private final ChatClient fallbackChatClient;
     private final ChatMemoryService chatMemory;
     private final ActiveTaskRegistry taskRegistry;
     private final HumanInputRegistry humanInputRegistry;
-    private final StructuredOutputHelper structuredOutput;
     private final String systemPrompt;
     private final TaskMcpTools taskMcpTools;
 
-    public ConversationAgent(@Qualifier("fastChatClient") ChatClient fastChatClient,
+    public ConversationAgent(@Qualifier("orchestratorChatClient") ChatClient orchestratorChatClient,
                              @Qualifier("fallbackChatClient") ChatClient fallbackChatClient,
                              ChatMemoryService chatMemory,
                              ActiveTaskRegistry taskRegistry,
                              HumanInputRegistry humanInputRegistry,
-                             StructuredOutputHelper structuredOutput,
                              ResourceLoader resourceLoader,
                              TaskMcpTools taskMcpTools) {
-        this.fastChatClient = fastChatClient;
+        this.orchestratorChatClient = orchestratorChatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
         this.humanInputRegistry = humanInputRegistry;
-        this.structuredOutput = structuredOutput;
         this.systemPrompt = loadSystemPrompt(resourceLoader);
         this.taskMcpTools = taskMcpTools;
     }
 
     private String loadSystemPrompt(ResourceLoader resourceLoader) {
         try {
-            Resource resource = resourceLoader.getResource("classpath:prompts/conversation-fast.md");
+            Resource resource = resourceLoader.getResource("classpath:prompts/orchestrator.md");
             return resource.getContentAsString(StandardCharsets.UTF_8);
         } catch (IOException e) {
-            log.warn("Не удалось загрузить conversation-fast.md: {}", e.getMessage());
+            log.warn("Не удалось загрузить orchestrator.md: {}", e.getMessage());
             return "";
         }
     }
@@ -107,71 +112,157 @@ public class ConversationAgent {
                 taskDetailsPrefetch != null ? taskDetailsPrefetch + "\n" : "",
                 username, messageText);
 
-        log.info("ConversationAgent [fast]: chatId={}, history={} сообщений, pending={} вопросов",
+        log.info("ConversationAgent [orchestrator]: chatId={}, history={} сообщений, pending={} вопросов",
                 chatId, chatMemory.getHistory(chatId).size(), pendingQuestions.size());
 
         try {
-            // .entity() с tools — native structured output + tool calling
-            AgentResponses.FastDecision fastResult;
+            // Основной путь: тулы (launch_task/getChatHistory/…) исполняются через .call().
+            // .entity() несовместим с tool calling (spring-ai #4799, #6327): тул-вызов
+            // приходит с пустым content, и BeanOutputConverter парсит его как JSON →
+            // «No content to map». Поэтому берём .content() (тул-луп отрабатывает) и
+            // разбираем JSON-решение детерминированно, как AnalystNode.parseDecision.
+            String content;
             try {
-                fastResult = fastChatClient.prompt()
+                content = orchestratorChatClient.prompt()
                         .user(contextPrompt)
                         .toolContext(Map.of(
                                 "username", username != null ? username.toLowerCase() : "",
                                 "chatId", chatId))
                         .call()
-                        .entity(AgentResponses.FastDecision.class);
+                        .content();
             } catch (Exception e) {
-                // .entity() failed — tool error, JSON parse, network etc — fallback без tools
-                log.warn("ConversationAgent [fast]: .entity() failed: {} | {}, fallback без tools",
+                // .call() failed — tool error, network etc — fallback без tools
+                log.warn("ConversationAgent [orchestrator]: .call() failed: {} | {}, fallback без tools",
                         e.getClass().getSimpleName(), e.getMessage());
                 return structuredOutputFallback(contextPrompt);
             }
 
-            if (fastResult == null) {
-                // .entity() вернул null — fallback на дешёвую модель
-                log.warn("ConversationAgent [fast]: .entity() вернул null, fallback");
-                fastResult = structuredOutput.callWithFallback(
-                        fallbackChatClient, fallbackChatClient, contextPrompt,
-                        AgentResponses.FastDecision.class);
+            AgentResponses.OrchestratorDecision result = parseOrchestratorDecision(content);
+            if (result == null) {
+                log.warn("ConversationAgent [orchestrator]: в ответе нет JSON-решения ({} символов), fallback без tools",
+                        content != null ? content.length() : 0);
+                return structuredOutputFallback(contextPrompt);
             }
 
-            if (fastResult == null) {
-                log.warn("ConversationAgent [fast]: пустой ответ после fallback");
-                return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM", null);
-            }
+            log.info("ConversationAgent [orchestrator]: action={} taskId={} description='{}'",
+                    result.action(), result.taskId(),
+                    result.description() != null ? (result.description().length() > 80 ? result.description().substring(0, 80) + "..." : result.description()) : "null");
 
-            log.info("ConversationAgent [fast]: action={} taskId={} description='{}'",
-                    fastResult.action(), fastResult.taskId(),
-                    fastResult.description() != null ? (fastResult.description().length() > 80 ? fastResult.description().substring(0, 80) + "..." : fastResult.description()) : "null");
-
-            return new Decision(fastResult.action(),
-                    fastResult.taskId() != null ? fastResult.taskId() : "",
-                    fastResult.text() != null ? fastResult.text() : "",
-                    fastResult.description() != null ? fastResult.description() : "",
-                    fastResult.options());
+            return toDecision(result);
 
         } catch (Exception e) {
-            log.error("ConversationAgent [fast]: ошибка: {}", e.getMessage(), e);
-            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage(), null);
+            log.error("ConversationAgent [orchestrator]: ошибка: {}", e.getMessage(), e);
+            return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null, "Ошибка LLM: " + e.getMessage(), null);
         }
     }
 
     private Decision structuredOutputFallback(String prompt) {
         String fullPrompt = systemPrompt + "\n\n" + prompt;
-        log.info("ConversationAgent [fast]: structuredOutputFallback, prompt len={}", fullPrompt.length());
-        AgentResponses.FastDecision result = structuredOutput.callWithFallback(
-                fallbackChatClient, fallbackChatClient, fullPrompt, AgentResponses.FastDecision.class);
-        if (result == null) {
-            log.error("ConversationAgent [fast]: callWithFallback вернул null — обе модели не смогли дать JSON");
-            return new Decision(AgentResponses.FastAction.ERROR, null, null, "Пустой ответ LLM (fallback)", null);
+        log.info("ConversationAgent [orchestrator]: structuredOutputFallback, prompt len={}", fullPrompt.length());
+        try {
+            String content = fallbackChatClient.prompt().user(fullPrompt).call().content();
+            AgentResponses.OrchestratorDecision result = parseOrchestratorDecision(content);
+            if (result == null) {
+                log.error("ConversationAgent [orchestrator]: fallback не дал JSON ({} символов) — обе модели не смогли дать JSON",
+                        content != null ? content.length() : 0);
+                return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null, "Пустой ответ LLM (fallback)", null);
+            }
+            return toDecision(result);
+        } catch (Exception e) {
+            log.error("ConversationAgent [orchestrator]: fallback ошибка: {}", e.getMessage(), e);
+            return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null, "Ошибка LLM (fallback): " + e.getMessage(), null);
         }
+    }
+
+    private static Decision toDecision(AgentResponses.OrchestratorDecision result) {
         return new Decision(result.action(),
                 result.taskId() != null ? result.taskId() : "",
                 result.text() != null ? result.text() : "",
                 result.description() != null ? result.description() : "",
                 result.options());
     }
+
+    /**
+     * Детерминированный разбор JSON-решения из финального ответа оркестратора.
+     * Перебираем fenced-блоки и последний сбалансированный {@code {...}} и берём первый,
+     * который парсится как {@link AgentResponses.OrchestratorDecision} с ненулевым {@code action}.
+     */
+    private AgentResponses.OrchestratorDecision parseOrchestratorDecision(String content) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        for (String candidate : jsonCandidates(content)) {
+            try {
+                AgentResponses.OrchestratorDecision parsed = JSON_MAPPER.readValue(candidate, AgentResponses.OrchestratorDecision.class);
+                if (parsed.action() != null) {
+                    return parsed;
+                }
+            } catch (Exception e) {
+                log.debug("ConversationAgent: кандидат JSON не распарсен: {}", e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    private static List<String> jsonCandidates(String text) {
+        var candidates = new ArrayList<String>();
+        Matcher fence = JSON_FENCE.matcher(text);
+        while (fence.find()) {
+            String body = fence.group(1).trim();
+            if (body.startsWith("{")) {
+                candidates.add(body);
+            }
+        }
+        String balanced = lastBalancedObject(text);
+        if (balanced != null) {
+            candidates.add(balanced);
+        }
+        return candidates;
+    }
+
+    /**
+     * Последний сбалансированный JSON-объект в тексте (учёт строк и экранирования).
+     */
+    private static String lastBalancedObject(String text) {
+        int start = text.lastIndexOf('{');
+        if (start < 0) {
+            return null;
+        }
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return text.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static final Pattern JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
+
+    private static final ObjectMapper JSON_MAPPER = JsonMapper.builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
+            .build();
 
     private static final java.util.regex.Pattern TASK_ID_PATTERN =
             java.util.regex.Pattern.compile("\\b([0-9a-fA-F]{8})\\b");
@@ -233,7 +324,7 @@ public class ConversationAgent {
         return id != null && id.length() > 8 ? id.substring(0, 8) : id;
     }
 
-    public record Decision(AgentResponses.FastAction action, String taskId, String text, String description,
+    public record Decision(AgentResponses.OrchestratorAction action, String taskId, String text, String description,
                            java.util.List<String> options) {
     }
 }

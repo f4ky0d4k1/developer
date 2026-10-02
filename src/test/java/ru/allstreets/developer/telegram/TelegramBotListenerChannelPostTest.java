@@ -55,7 +55,7 @@ class TelegramBotListenerChannelPostTest {
     @Test
     void channelPost_processesWithoutMention() {
         when(conversationAgent.processMessage(anyLong(), nullable(String.class), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "ok", null, null));
         when(telegram.getUpdates(anyInt(), anyInt()))
                 .thenReturn(new TelegramGateway.TelegramUpdates(true, List.of(
                         channelPost(501L, CHANNEL_ID, "🔥 Найдена ошибка! Слой = Бой"))));

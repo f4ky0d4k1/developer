@@ -28,7 +28,7 @@ Packages under `ru.allstreets.developer` (entrypoint `DeveloperApplication`):
   `OpenCodeSessionPool`), git worktrees (`WorktreeManager`).
 - `agents/` — graph nodes (`AnalystNode`, developer/tester/validator, `PostValidationNode`). They orchestrate the
   sidecar; the actual agent behavior lives in `opencode-config/agents/*.md`.
-- `telegram/` — bot (`TelegramBotListener`), fast classifier (`ConversationAgent`), task runner (`TaskLauncher`).
+- `telegram/` — bot (`TelegramBotListener`), chat orchestrator (`ConversationAgent`), task runner (`TaskLauncher`).
 - `mcp/` — MCP tools exposed to the sidecar agents (`launch_task`, `getChatProjects`, `getSystemInfo`, …).
 - `checkpoint/` — spring-agent-flow checkpoint store + `CheckpointRecoveryListener` (restart recovery).
 - `config/` — bean wiring (`AgentGraphRunner`, `McpToolConfig`).

@@ -62,7 +62,7 @@ class TelegramBotListenerMentionFreeTest {
     @Test
     void mentionFreeChat_processesMessageWithoutMention() {
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "ok", null, null));
         givenUpdates(update(501L, MENTION_FREE_CHAT_ID, "поставь задачу без упоминания"));
 
         listener.poll();

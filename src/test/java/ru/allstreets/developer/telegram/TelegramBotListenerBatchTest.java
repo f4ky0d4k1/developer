@@ -58,7 +58,7 @@ class TelegramBotListenerBatchTest {
     @Test
     void multipleMessagesInOnePoll_flushAsSingleBatch() {
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "ok", null, null));
         when(telegram.getUpdates(anyInt(), anyInt()))
                 .thenReturn(new TelegramGateway.TelegramUpdates(true, List.of(
                         update(501L, CHAT_ID, "первое сообщение"),
@@ -79,7 +79,7 @@ class TelegramBotListenerBatchTest {
     void messagesAcrossPolls_coalesceWithinDebounceWindow() {
         ReflectionTestUtils.setField(listener, "batchDebounceMs", 10_000L);
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "ok", null, null));
         when(telegram.getUpdates(anyInt(), anyInt()))
                 .thenReturn(new TelegramGateway.TelegramUpdates(true, List.of(update(501L, CHAT_ID, "первое сообщение"))))
                 .thenReturn(new TelegramGateway.TelegramUpdates(true, List.of(update(502L, CHAT_ID, "второе сообщение"))));
@@ -103,7 +103,7 @@ class TelegramBotListenerBatchTest {
     @Test
     void singleMessage_stillClassifiedOnce() {
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "ok", null, null));
         when(telegram.getUpdates(anyInt(), anyInt()))
                 .thenReturn(new TelegramGateway.TelegramUpdates(true, List.of(update(501L, CHAT_ID, "одно сообщение"))));
 
@@ -115,7 +115,7 @@ class TelegramBotListenerBatchTest {
     @Test
     void messagesFromDifferentChats_doNotMix() {
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "ok", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "ok", null, null));
         when(telegram.getUpdates(anyInt(), anyInt()))
                 .thenReturn(new TelegramGateway.TelegramUpdates(true, List.of(
                         update(501L, CHAT_ID, "сообщение в первом чате"),

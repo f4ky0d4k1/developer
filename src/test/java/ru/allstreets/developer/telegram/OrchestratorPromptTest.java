@@ -8,26 +8,26 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Промпт fast-router'а обязан знать про мониторинг PR-комментариев: иначе бот отвечает
+ * Промпт оркестратора обязан знать про мониторинг PR-комментариев: иначе бот отвечает
  * «автозапуска по комментариям в PR нет» (инцидент 15.09.2026), хотя {@code PrCommentMonitor}
  * существует. Тест — страж от потери этой секции.
  */
-class ConversationFastPromptTest {
+class OrchestratorPromptTest {
 
     @Test
-    void fastPrompt_mentionsPrCommentMonitoring() throws Exception {
-        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+    void orchestratorPrompt_mentionsPrCommentMonitoring() throws Exception {
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/orchestrator.md");
         String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertTrue(prompt.contains("Мониторинг PR"),
-                "промпт fast-router'а должен описывать мониторинг PR-комментариев");
+                "промпт оркестратора должен описывать мониторинг PR-комментариев");
         assertTrue(prompt.contains("agent-generated"),
                 "промпт должен связывать мониторинг с меткой agent-generated");
     }
 
     @Test
-    void fastPrompt_mentionsAllChatsScenario() throws Exception {
-        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+    void orchestratorPrompt_mentionsAllChatsScenario() throws Exception {
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/orchestrator.md");
         String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertTrue(prompt.contains("всех чатах"),
@@ -37,11 +37,11 @@ class ConversationFastPromptTest {
     }
 
     @Test
-    void fastPrompt_trackerTicketDoesNotImplyRepo() throws Exception {
+    void orchestratorPrompt_trackerTicketDoesNotImplyRepo() throws Exception {
         // Инцидент: пользователь дал только тикет Tracker (URL/ключ), а классификатор «угадал»
         // репозиторий из getChatProjects — тикет относился к чужому проекту. Тикет без явного repo
         // НЕ должен выводить репозиторий из памяти чата.
-        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/orchestrator.md");
         String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertTrue(prompt.contains("тикет Tracker"),
@@ -51,10 +51,10 @@ class ConversationFastPromptTest {
     }
 
     @Test
-    void fastPrompt_checksUnclosedTasksBeforeLaunch() throws Exception {
+    void orchestratorPrompt_checksUnclosedTasksBeforeLaunch() throws Exception {
         // Оркестратор должен ДО запуска новой задачи проверить незакрытые задачи чата и, если тема
         // совпадает, дополнить существующую (restartTask) вместо создания новой (launch_task).
-        var resource = new DefaultResourceLoader().getResource("classpath:prompts/conversation-fast.md");
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/orchestrator.md");
         String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertTrue(prompt.contains("незакрытые задачи чата"),

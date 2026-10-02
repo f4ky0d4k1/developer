@@ -15,7 +15,7 @@ public final class AgentResponses {
      * Действия оркестратора. Запуска задачи среди них нет: запуск — это вызов инструмента
      * {@code launch_task} (с обязательным {@code repo} на уровне схемы тула), а не action.
      */
-    public enum FastAction {
+    public enum OrchestratorAction {
         HITL_ANSWER, ANSWER, STATUS, ERROR
     }
 
@@ -30,17 +30,18 @@ public final class AgentResponses {
     }
 
     /**
-     * Ответ fast mode — быстрый классификатор. Запуск задачи выполняется инструментом
+     * Ответ оркестратора чата — классификатор сообщений Telegram с доступом к чату,
+     * текущим задачам и инструментам. Запуск задачи выполняется инструментом
      * {@code launch_task} (repo обязателен), поэтому здесь нет ни {@code repo}, ни action
      * запуска — только решение о диалоге/статусе.
      * <p>
-     * {@code options} — необязательные варианты ответа для {@link FastAction#ANSWER}
+     * {@code options} — необязательные варианты ответа для {@link OrchestratorAction#ANSWER}
      * (вопрос с выбором): система отрисует их inline-кнопками в Telegram, а тап по кнопке
      * вернётся в классификатор как «Выбрано: &lt;вариант&gt;» — он сам распутает контекст
      * по истории чата (репо для launch_task и т.п.), отдельное хранилище не нужно.
      */
-    public record FastDecision(
-            FastAction action,
+    public record OrchestratorDecision(
+            OrchestratorAction action,
             String taskId,
             String text,
             String description,

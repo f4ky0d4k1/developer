@@ -30,7 +30,7 @@ public class TelegramGateway {
     private final RateLimiter rateLimiter;
     private final ChatMemoryService chatMemory;
     private final ActiveTaskRegistry taskRegistry;
-    private final ChatClient fastChatClient;
+    private final ChatClient reformatChatClient;
     private final ReplyAnchorRegistry replyAnchors;
 
     /**
@@ -48,7 +48,7 @@ public class TelegramGateway {
                            RateLimiterRegistry rateLimiterRegistry,
                            ChatMemoryService chatMemory,
                            ActiveTaskRegistry taskRegistry,
-                           @Qualifier("fallbackChatClient") ChatClient fastChatClient,
+                           @Qualifier("fallbackChatClient") ChatClient reformatChatClient,
                            ReplyAnchorRegistry replyAnchors) {
         this.api = RestClient.builder()
                 .baseUrl("https://api.telegram.org/bot" + botToken)
@@ -57,7 +57,7 @@ public class TelegramGateway {
         this.rateLimiter = rateLimiterRegistry.rateLimiter("telegram");
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
-        this.fastChatClient = fastChatClient;
+        this.reformatChatClient = reformatChatClient;
         this.replyAnchors = replyAnchors;
     }
 
@@ -368,7 +368,7 @@ public class TelegramGateway {
                     Текст:
                     %s
                     """.formatted(text.length() > 3000 ? text.substring(0, 3000) + "..." : text);
-            var result = fastChatClient.prompt().user(prompt).call().entity(AgentResponses.ReformattedText.class);
+            var result = reformatChatClient.prompt().user(prompt).call().entity(AgentResponses.ReformattedText.class);
             return result != null ? result.text() : null;
         } catch (Exception e) {
             log.warn("reformatForTelegram: ошибка LLM: {}", e.getMessage());

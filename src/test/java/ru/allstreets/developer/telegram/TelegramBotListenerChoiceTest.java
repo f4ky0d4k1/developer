@@ -56,7 +56,7 @@ class TelegramBotListenerChoiceTest {
     @Test
     void answerWithLongOptions_sendsKeyboardWithShortCallbackData() {
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null,
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null,
                         "В каком репозитории?", null, List.of(
                         "Права есть у администратора (роль ADMIN) и модератора (роль MODERATOR)",
                         "Только у администратора")));
@@ -97,7 +97,7 @@ class TelegramBotListenerChoiceTest {
                 .thenReturn(new TelegramGateway.TelegramUpdates(true,
                         List.of(new TelegramGateway.Update(1, null, callback))));
         when(conversationAgent.processMessage(anyLong(), anyString(), anyString()))
-                .thenReturn(new ConversationAgent.Decision(AgentResponses.FastAction.ANSWER, null, "запускаю", null, null));
+                .thenReturn(new ConversationAgent.Decision(AgentResponses.OrchestratorAction.ANSWER, null, "запускаю", null, null));
 
         listener.poll();
 
