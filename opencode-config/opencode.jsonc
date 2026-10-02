@@ -31,21 +31,21 @@
       "type": "local",
       "command": [
         "uvx",
-        "yandex-tracker-mcp@latest"
+        "yandex-tracker-mcp@0.10.0"
       ]
     },
     "yandex-wiki": {
       "type": "local",
       "command": [
         "uvx",
-        "yandex-wiki-search-mcp@latest"
+        "yandex-wiki-search-mcp@1.5.1"
       ]
     },
     "grafana": {
       "type": "local",
       "command": [
         "uvx",
-        "mcp-grafana"
+        "mcp-grafana@2.0.0"
       ],
       // URL — не секрет, фиксируем явно, чтобы сайдкар не зависел от того, есть ли
       // GRAFANA_URL в .env на VPS (иначе mcp-grafana стартует с пустым URL и Grafana-тулов нет).
