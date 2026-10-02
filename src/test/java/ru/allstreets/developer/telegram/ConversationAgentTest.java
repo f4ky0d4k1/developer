@@ -3,7 +3,6 @@ package ru.allstreets.developer.telegram;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -49,8 +48,7 @@ class ConversationAgentTest {
 
         var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
-                humanInputRegistryMock(), new DefaultResourceLoader(),
-                mock(TaskMcpTools.class));
+                humanInputRegistryMock(), mock(TaskMcpTools.class));
 
         var decision = agent.processMessage(1L, "user", "статус?");
 
@@ -66,8 +64,7 @@ class ConversationAgentTest {
 
         var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
-                humanInputRegistryMock(), new DefaultResourceLoader(),
-                mock(TaskMcpTools.class));
+                humanInputRegistryMock(), mock(TaskMcpTools.class));
 
         var decision = agent.processMessage(1L, "user", "проверь тикет");
 
@@ -88,8 +85,7 @@ class ConversationAgentTest {
 
         var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(page),
-                humanInputRegistryMock(), new DefaultResourceLoader(),
-                mock(TaskMcpTools.class));
+                humanInputRegistryMock(), mock(TaskMcpTools.class));
 
         agent.processMessage(1L, "user", "статус");
 
@@ -110,8 +106,7 @@ class ConversationAgentTest {
 
         var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
                 chatMemoryMock(), taskRegistryMock(Page.empty()),
-                humanInputRegistryMock(), new DefaultResourceLoader(),
-                mock(TaskMcpTools.class));
+                humanInputRegistryMock(), mock(TaskMcpTools.class));
 
         agent.processMessage(77L, "DiMa", "привет");
 

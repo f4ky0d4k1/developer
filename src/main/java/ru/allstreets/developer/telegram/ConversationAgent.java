@@ -8,8 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
@@ -17,8 +15,6 @@ import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
 import ru.allstreets.developer.mcp.TaskMcpTools;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -68,7 +64,6 @@ public class ConversationAgent {
     private final ChatMemoryService chatMemory;
     private final ActiveTaskRegistry taskRegistry;
     private final HumanInputRegistry humanInputRegistry;
-    private final String systemPrompt;
     private final TaskMcpTools taskMcpTools;
 
     public ConversationAgent(@Qualifier("orchestratorChatClient") ChatClient orchestratorChatClient,
@@ -76,25 +71,13 @@ public class ConversationAgent {
                              ChatMemoryService chatMemory,
                              ActiveTaskRegistry taskRegistry,
                              HumanInputRegistry humanInputRegistry,
-                             ResourceLoader resourceLoader,
                              TaskMcpTools taskMcpTools) {
         this.orchestratorChatClient = orchestratorChatClient;
         this.fallbackChatClient = fallbackChatClient;
         this.chatMemory = chatMemory;
         this.taskRegistry = taskRegistry;
         this.humanInputRegistry = humanInputRegistry;
-        this.systemPrompt = loadSystemPrompt(resourceLoader);
         this.taskMcpTools = taskMcpTools;
-    }
-
-    private String loadSystemPrompt(ResourceLoader resourceLoader) {
-        try {
-            Resource resource = resourceLoader.getResource("classpath:prompts/orchestrator.md");
-            return resource.getContentAsString(StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            log.warn("Не удалось загрузить orchestrator.md: {}", e.getMessage());
-            return "";
-        }
     }
 
     public Decision processMessage(long chatId, String username, String messageText) {
@@ -172,10 +155,18 @@ public class ConversationAgent {
     }
 
     private Decision structuredOutputFallback(String prompt) {
-        String fullPrompt = systemPrompt + "\n\n" + prompt;
-        log.info("ConversationAgent [orchestrator]: structuredOutputFallback, prompt len={}", fullPrompt.length());
+        // Жёсткий нудж без полного system-промпта: основная модель застряла в reasoning-цикле
+        // и не выдала JSON. Фолбэк не должен рассуждать — только вывести решение по контексту
+        // (как AnalystNode.CONTINUE_ANALYSIS_PROMPT). Без «не рассуждай» reasoning-модель снова
+        // уходит в цикл и снова возвращает пусто.
+        String hardPrompt = """
+                НЕ рассуждай, НЕ вызывай инструменты, НЕ анализируй заново. По контексту ниже сразу,
+                одним финальным ответом, выведи JSON-решение (action/taskId/text/description/options).
+                
+                """ + prompt;
+        log.info("ConversationAgent [orchestrator]: structuredOutputFallback, prompt len={}", hardPrompt.length());
         try {
-            String content = fallbackChatClient.prompt().user(fullPrompt + JSON_OUTPUT_INSTRUCTION).call().content();
+            String content = fallbackChatClient.prompt().user(hardPrompt + JSON_OUTPUT_INSTRUCTION).call().content();
             Decision decision = decisionFromContent(content);
             if (decision != null) {
                 log.info("ConversationAgent [orchestrator]: fallback action={}", decision.action());
