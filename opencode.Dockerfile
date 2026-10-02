@@ -1,4 +1,4 @@
-FROM ghcr.io/anomalyco/opencode:1.0.224
+FROM ghcr.io/anomalyco/opencode:1.18.34
 
 # uvx для MCP stdio transport (yandex-tracker, grafana) + docker CLI для GitHub MCP
 # + JDK 21 для сборки/тестов целевых Java-проектов (Maven подтягивается через ./mvnw)
