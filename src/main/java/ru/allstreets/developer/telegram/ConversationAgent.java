@@ -44,6 +44,25 @@ public class ConversationAgent {
      */
     private static final int TASKS_PAGE_SIZE = 10;
 
+    /**
+     * Жёсткое требование JSON в финальном ответе. Без structured output (.entity) модель
+     * после тул-вызовов склонна отвечать прозой вместо JSON-решения — это требование
+     * возвращает её в контракт. Дублирует контракт из orchestrator.md, но в последнем
+     * user-сообщении (сильнее, чем системный промпт).
+     */
+    private static final String JSON_OUTPUT_INSTRUCTION = """
+            
+            ============================================================
+            ФИНАЛЬНЫЙ ОТВЕТ — РОВНО ОДИН JSON-ОБЪЕКТ, без markdown-фенсов
+            и без текста до/после. Свой ответ оберни в поле text:
+            {"action":"ANSWER","taskId":null,"text":"твой ответ","description":null,"options":null}
+            action: HITL_ANSWER | ANSWER | STATUS | ERROR.
+            taskId: только для HITL_ANSWER (id из pending-вопроса), иначе null.
+            text: обязателен для ANSWER и HITL_ANSWER, null для STATUS.
+            options: список строк только для ANSWER с кнопками, иначе null.
+            ============================================================
+            """;
+
     private final ChatClient orchestratorChatClient;
     private final ChatClient fallbackChatClient;
     private final ChatMemoryService chatMemory;
@@ -124,7 +143,7 @@ public class ConversationAgent {
             String content;
             try {
                 content = orchestratorChatClient.prompt()
-                        .user(contextPrompt)
+                        .user(contextPrompt + JSON_OUTPUT_INSTRUCTION)
                         .toolContext(Map.of(
                                 "username", username != null ? username.toLowerCase() : "",
                                 "chatId", chatId))
@@ -160,7 +179,7 @@ public class ConversationAgent {
         String fullPrompt = systemPrompt + "\n\n" + prompt;
         log.info("ConversationAgent [orchestrator]: structuredOutputFallback, prompt len={}", fullPrompt.length());
         try {
-            String content = fallbackChatClient.prompt().user(fullPrompt).call().content();
+            String content = fallbackChatClient.prompt().user(fullPrompt + JSON_OUTPUT_INSTRUCTION).call().content();
             AgentResponses.OrchestratorDecision result = parseOrchestratorDecision(content);
             if (result == null) {
                 log.error("ConversationAgent [orchestrator]: fallback не дал JSON ({} символов) — обе модели не смогли дать JSON",
