@@ -288,7 +288,12 @@ public class TelegramBotListener {
             case HITL_ANSWER -> {
                 if (decision.taskId() != null && decision.text() != null) {
                     log.info("TG poll: HITL ответ для задачи {} — resume", decision.taskId());
-                    taskLauncher.resumeWithAnswer(decision.taskId(), decision.text());
+                    boolean resumed = taskLauncher.resumeWithAnswer(decision.taskId(), decision.text());
+                    if (!resumed) {
+                        sendToChat(chatId, "⚠️ У задачи " + decision.taskId() + " потеряно pending-состояние "
+                                        + "(перезапуск/деплой). Перезапусти её через restartTask, чтобы продолжить с этим ответом.",
+                                topicTaskId);
+                    }
                 } else {
                     log.warn("TG poll: HITL_ANSWER без taskId/answer — игнор");
                 }

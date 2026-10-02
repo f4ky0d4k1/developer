@@ -324,23 +324,50 @@ public class TaskLauncher {
      * @param taskId ID задачи
      * @param answer ответ пользователя
      */
-    public void resumeWithAnswer(String taskId, String answer) {
-        log.info("TaskLauncher: resumeWithAnswer для задачи {}", taskId.substring(0, 8));
-        Long chatId = humanInputRegistry.getChatIdForPending(taskId);
-        humanInputRegistry.provideAnswer(taskId);
-
-        if (chatId == null) {
-            log.warn("TaskLauncher: нет chatId для pending задачи {} — resume невозможен", taskId);
-            return;
+    public boolean resumeWithAnswer(String taskId, String answer) {
+        String fullId = resolveTaskId(taskId);
+        if (fullId == null) {
+            log.warn("TaskLauncher: задача {} не найдена — resume невозможен", taskId);
+            return false;
         }
+        log.info("TaskLauncher: resumeWithAnswer для задачи {}", fullId.substring(0, 8));
+        Long chatId = humanInputRegistry.getChatIdForPending(fullId);
+        if (chatId == null) {
+            log.warn("TaskLauncher: нет chatId для pending задачи {} — resume невозможен", fullId);
+            return false;
+        }
+        humanInputRegistry.provideAnswer(fullId);
 
         try {
-            Future<?> future = executor.submit(() -> resumeHitlTask(taskId, chatId, answer));
-            runningTasks.put(taskId, future);
+            Future<?> future = executor.submit(() -> resumeHitlTask(fullId, chatId, answer));
+            runningTasks.put(fullId, future);
+            return true;
         } catch (java.util.concurrent.RejectedExecutionException e) {
-            log.error("TaskLauncher: resume задачи {} отклонён (backpressure): {}", taskId, e.getMessage());
-            telegram.sendMessage(chatId, "⏳ Система перегружена — попробуйте позже.", taskId);
+            log.error("TaskLauncher: resume задачи {} отклонён (backpressure): {}", fullId, e.getMessage());
+            telegram.sendMessage(chatId, "⏳ Система перегружена — попробуйте позже.", fullId);
+            return false;
         }
+    }
+
+    /**
+     * Резолв частичного taskId (первые 8 символов) в полный. Модель-оркестратор возвращает
+     * короткий id, а граф/checkpoint/pending хранятся под полным UUID — без резолва resume
+     * молча проваливается (инцидент «нет chatId для pending задачи»).
+     */
+    private String resolveTaskId(String partial) {
+        if (partial == null || partial.isBlank()) {
+            return null;
+        }
+        TaskEntity exact = taskRepo.findById(partial).orElse(null);
+        if (exact != null && !exact.isDeleted()) {
+            return partial;
+        }
+        for (TaskEntity t : taskRepo.findByTaskIdStartingWith(partial)) {
+            if (!t.isDeleted()) {
+                return t.getTaskId();
+            }
+        }
+        return null;
     }
 
     public boolean isRunning(String taskId) {

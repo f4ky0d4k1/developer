@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.checkpoint.PendingInputEntity;
 import ru.allstreets.developer.checkpoint.PendingInputRepository;
+import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 
 import java.util.LinkedHashMap;
@@ -49,14 +50,22 @@ public class HumanInputRegistry {
     /**
      * chatId, для которого зарегистрирован pending-вопрос задачи, или null (читается из БД).
      * Осиротевший pending (задача удалена/закрыта/завершена) снимается и возвращает null.
+     * taskId может быть частичным (первые 8 символов) — резолвится до полного.
      */
     public Long getChatIdForPending(String taskId) {
         var pending = pendingRepo.findById(taskId).orElse(null);
         if (pending == null) {
+            String fullId = resolveTaskId(taskId);
+            if (fullId != null) {
+                pending = pendingRepo.findById(fullId).orElse(null);
+            }
+        }
+        if (pending == null) {
             return null;
         }
-        if (!isLiveTask(taskId)) {
-            purgeOrphan(taskId);
+        String fullId = pending.getTaskId();
+        if (!isLiveTask(fullId)) {
+            purgeOrphan(fullId);
             return null;
         }
         return pending.getChatId();
@@ -103,17 +112,34 @@ public class HumanInputRegistry {
      * Ничего не блокирует и не завершает — это делает {@code TaskLauncher.resumeWithAnswer}.
      */
     public void provideAnswer(String taskId) {
-        if (pendingRepo.existsById(taskId)) {
-            log.info("HumanInput: ответ получен для taskId={}", taskId);
-            pendingRepo.deleteById(taskId);
+        String fullId = pendingRepo.existsById(taskId) ? taskId : resolveTaskId(taskId);
+        if (fullId != null && pendingRepo.existsById(fullId)) {
+            log.info("HumanInput: ответ получен для taskId={}", fullId);
+            pendingRepo.deleteById(fullId);
         } else {
             log.warn("HumanInput: нет pending запроса для taskId={}", taskId);
         }
     }
 
     public void cancel(String taskId) {
-        if (pendingRepo.existsById(taskId)) {
-            pendingRepo.deleteById(taskId);
+        String fullId = pendingRepo.existsById(taskId) ? taskId : resolveTaskId(taskId);
+        if (fullId != null && pendingRepo.existsById(fullId)) {
+            pendingRepo.deleteById(fullId);
         }
+    }
+
+    /**
+     * Резолв частичного taskId (первые 8 символов) в полный — по {@link TaskRepository#findByTaskIdStartingWith}.
+     * Модель-оркестратор возвращает короткий id (первые 8 символов), а pending хранится под полным UUID —
+     * без резолва {@code findById(короткий)} даёт null и resume молча проваливается (инцидент «нет chatId»).
+     */
+    private String resolveTaskId(String partial) {
+        if (partial == null || partial.isBlank()) {
+            return null;
+        }
+        for (TaskEntity t : taskRepo.findByTaskIdStartingWith(partial)) {
+            return t.getTaskId();
+        }
+        return null;
     }
 }
