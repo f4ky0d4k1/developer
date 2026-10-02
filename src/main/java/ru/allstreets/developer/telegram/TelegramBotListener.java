@@ -373,12 +373,12 @@ public class TelegramBotListener {
                 continue;
             }
 
-            if (update.message() == null) {
-                log.debug("TG poll: update_id={} — message=null", update.update_id());
+            // Канальные посты приходят как channel_post (бот — админ канала), не message.
+            var msg = update.message() != null ? update.message() : update.channel_post();
+            if (msg == null) {
+                log.debug("TG poll: update_id={} — message=null и channel_post=null", update.update_id());
                 continue;
             }
-
-            var msg = update.message();
             log.info("TG poll: update_id={} message_id={} from={} chat={} text_len={}",
                     update.update_id(), msg.message_id(),
                     msg.from() != null ? msg.from().username() : "null",
@@ -445,7 +445,9 @@ public class TelegramBotListener {
             boolean isReplyToBot = isReplyToBot(msg, botUsername);
             // Чат из mention-free списка — бот отвечает на ВСЕ сообщения, @mention не нужен.
             boolean isMentionFreeChat = isMentionFreeChat(chat.id());
-            if (!hasMention && !hasPendingQuestions && !isPrivateChat && !isReplyToBot && !isMentionFreeChat) {
+            // Канал (бот — админ): реагируем на ВСЕ посты — алерты/уведомления, @mention не нужен.
+            boolean isChannel = "channel".equals(chat.type());
+            if (!hasMention && !hasPendingQuestions && !isPrivateChat && !isReplyToBot && !isMentionFreeChat && !isChannel) {
                 log.debug("TG poll: chatId={} — нет @mention, нет pending-вопросов и не reply боту, пропуск LLM вызова",
                         chat.id());
                 continue;
@@ -455,7 +457,8 @@ public class TelegramBotListener {
                         chat.id(), isPrivateChat ? "личный чат"
                                 : isReplyToBot ? "reply на сообщение бота"
                                   : isMentionFreeChat ? "mention-free чат"
-                                    : "есть pending-вопросы");
+                                    : isChannel ? "канал"
+                                      : "есть pending-вопросы");
             }
 
             // Буферизуем сообщение в пачку (debounce) вместо немедленной классификации:

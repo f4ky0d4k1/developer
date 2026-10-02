@@ -550,8 +550,15 @@ public class TelegramGateway {
     public record Update(
             int update_id,
             Message message,
-            CallbackQuery callback_query
+            CallbackQuery callback_query,
+            Message channel_post
     ) {
+        /**
+         * Совместимый конструктор без {@code channel_post} (тесты/старые апдейты).
+         */
+        public Update(int update_id, Message message, CallbackQuery callback_query) {
+            this(update_id, message, callback_query, null);
+        }
     }
 
     /**
