@@ -1,7 +1,4 @@
-# Тег `latest` (не 1.0.x): версии 1.0.x отстают по схеме конфига (external_directory map +
-# compaction/skills), их принимает только свежий latest. MCP-серверы ниже запинены по версиям,
-# поэтому digest меняется только при реальном релизе opencode, а не на каждом билде.
-FROM ghcr.io/anomalyco/opencode
+FROM ghcr.io/anomalyco/opencode:1.0.224
 
 # uvx для MCP stdio transport (yandex-tracker, grafana) + docker CLI для GitHub MCP
 # + JDK 21 для сборки/тестов целевых Java-проектов (Maven подтягивается через ./mvnw)
