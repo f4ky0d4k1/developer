@@ -181,7 +181,8 @@ public class ConversationAgent {
                 log.info("ConversationAgent [orchestrator]: fallback action={}", decision.action());
                 return decision;
             }
-            log.error("ConversationAgent [orchestrator]: обе модели вернули пустой ответ");
+            log.error("ConversationAgent [orchestrator]: обе модели вернули пустой ответ, fallback content={}",
+                    preview(content));
             return new Decision(AgentResponses.OrchestratorAction.ERROR, null, null,
                     "Не удалось получить ответ от модели — попробуй ещё раз", null);
         } catch (Exception e) {
@@ -201,11 +202,23 @@ public class ConversationAgent {
             return toDecision(parsed);
         }
         if (content != null && !content.isBlank()) {
-            log.warn("ConversationAgent [orchestrator]: модель вернула {} символов прозы вместо JSON — отдаём как ANSWER",
-                    content.length());
+            log.warn("ConversationAgent [orchestrator]: модель вернула {} символов прозы вместо JSON — отдаём как ANSWER: {}",
+                    content.length(), preview(content));
             return new Decision(AgentResponses.OrchestratorAction.ANSWER, null, content, null, null);
         }
         return null;
+    }
+
+    /**
+     * Однострочное превью ответа модели для логов — чтобы при разборе инцидента был виден
+     * реальный текст (JSON или проза), а не только длина. Полный ответ — в HTTP-трейсе интерцептора.
+     */
+    private static String preview(String text) {
+        if (text == null) {
+            return "null";
+        }
+        String oneLine = text.replaceAll("\\s+", " ").trim();
+        return oneLine.length() > 300 ? oneLine.substring(0, 300) + "…" : oneLine;
     }
 
     private static Decision toDecision(AgentResponses.OrchestratorDecision result) {
