@@ -1,5 +1,6 @@
 package ru.allstreets.developer.telegram;
 
+import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -193,6 +194,14 @@ public class ConversationAgent {
             return toDecision(parsed);
         }
         if (content != null && !content.isBlank()) {
+            if (content.stripLeading().startsWith("{")) {
+                // Похоже на JSON-решение, но не распарсилось (напр., неэкранированные переносы
+                // в text, вложенный объект с ошибкой). НЕ сливаем технический JSON в чат —
+                // сигналим «повторить» (→ structuredOutputFallback), а не показываем сырой объект.
+                log.error("ConversationAgent [orchestrator]: нераспарсенный JSON-решение ({} символов) — уходим на фолбэк: {}",
+                        content.length(), preview(content));
+                return null;
+            }
             log.warn("ConversationAgent [orchestrator]: модель вернула {} символов прозы вместо JSON — отдаём как ANSWER: {}",
                     content.length(), preview(content));
             return new Decision(AgentResponses.OrchestratorAction.ANSWER, null, content, null, null);
@@ -300,6 +309,10 @@ public class ConversationAgent {
     private static final ObjectMapper JSON_MAPPER = JsonMapper.builder()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
+            // Модель иногда отдаёт «JSON» с НЕэкранированными переносами внутри text
+            // (реальные \n вместо \\n) — строгий парсер его отвергал, и мы сливали сырой
+            // объект в чат. Разрешаем сырые управляющие символы внутри строк.
+            .enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS)
             .build();
 
     private static final java.util.regex.Pattern TASK_ID_PATTERN =

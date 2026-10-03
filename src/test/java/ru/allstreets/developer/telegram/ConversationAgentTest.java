@@ -72,6 +72,42 @@ class ConversationAgentTest {
     }
 
     @Test
+    void processMessage_parsesUnescapedNewlinesInText() {
+        // Модель отдала «JSON» с реальным переносом строки внутри text (не \\n, а 0x0A) —
+        // строгий парсер это отвергает. Должны извлечь text, а не вернуть сырой объект.
+        String json = "{\"action\":\"ANSWER\",\"taskId\":null,\"text\":\"строка с\nпереносом\",\"description\":null,\"options\":null}";
+        Mocks m = orchestratorClientReturning(json);
+
+        var agent = new ConversationAgent(m.client(), mock(ChatClient.class),
+                chatMemoryMock(), taskRegistryMock(Page.empty()),
+                humanInputRegistryMock(), mock(TaskMcpTools.class));
+
+        var decision = agent.processMessage(1L, "user", "привет");
+
+        assertEquals(AgentResponses.OrchestratorAction.ANSWER, decision.action());
+        assertEquals("строка с\nпереносом", decision.text(),
+                "text должен быть извлечён из JSON с неэкранированным переносом");
+    }
+
+    @Test
+    void processMessage_doesNotLeakUnparseableJsonToChat() {
+        // Модель вернула битый «JSON» (начинается с '{', не парсится). Он НЕ должен уйти в чат
+        // как ANSWER — вместо этого повторяем через фолбэк-модель.
+        Mocks m = orchestratorClientReturning("{\"action\":\"ANSWER\",\"text\":\"oops");
+        Mocks fallback = orchestratorClientReturning(
+                "{\"action\":\"ANSWER\",\"taskId\":null,\"text\":\"извините, ошибка\",\"description\":null,\"options\":null}");
+
+        var agent = new ConversationAgent(m.client(), fallback.client(),
+                chatMemoryMock(), taskRegistryMock(Page.empty()),
+                humanInputRegistryMock(), mock(TaskMcpTools.class));
+
+        var decision = agent.processMessage(1L, "user", "привет");
+
+        assertEquals(AgentResponses.OrchestratorAction.ANSWER, decision.action());
+        assertEquals("извините, ошибка", decision.text(), "сырой битый JSON не должен попасть в чат");
+    }
+
+    @Test
     void processMessage_boundsTaskContextToPage() {
         // В чате 50 задач, но в контекст идёт только страница (10) + пометка «+40 ещё».
         var tasks = new ArrayList<TaskEntity>();
