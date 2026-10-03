@@ -18,7 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @Component
 public class ChatMemoryService {
 
-    private static final int WINDOW_SIZE = 30;
+    private static final int WINDOW_SIZE = 50;
 
     private final ChatMessageRepository messageRepo;
     private final Map<Long, List<ChatMessage>> chatHistory = new ConcurrentHashMap<>();

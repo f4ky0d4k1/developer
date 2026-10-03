@@ -64,4 +64,30 @@ class OrchestratorPromptTest {
         assertTrue(prompt.contains("restartTask(taskId, additionalContext"),
                 "промпт должен направлять на дополнение существующей задачи (restartTask) вместо новой");
     }
+
+    @Test
+    void orchestratorPrompt_requiresExplicitInstructionBeforeLaunch() throws Exception {
+        // Оркестратор не должен запускать задачу по одному лишь описанию потребности/вопросу —
+        // только по явной команде («сделай», «реализуй», …). Инцидент: «мне нужно уметь конвертировать
+        // HEIC» запускало задачу сразу, без команды.
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/orchestrator.md");
+        String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertTrue(prompt.contains("НЕ приступай к разработке"),
+                "промпт должен запрещать разработку без явного указания");
+        assertTrue(prompt.contains("ЯВНО не попросил"),
+                "промпт должен требовать явной команды пользователя");
+    }
+
+    @Test
+    void orchestratorPrompt_neverOpensNewTaskWhenActiveOnSameTopic() throws Exception {
+        // Дубликат-задача по той же теме не должна создаваться, если есть незакрытая задача.
+        var resource = new DefaultResourceLoader().getResource("classpath:prompts/orchestrator.md");
+        String prompt = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertTrue(prompt.contains("НИКОГДА не открывай новую задачу"),
+                "промпт должен жёстко запрещать новую задачу при активной по той же теме");
+        assertTrue(prompt.contains("незакрытая задача по той же теме"),
+                "промпт должен связывать запрет с незакрытой задачей по той же теме");
+    }
 }

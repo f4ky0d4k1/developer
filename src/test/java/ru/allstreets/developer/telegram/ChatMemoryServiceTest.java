@@ -21,7 +21,7 @@ class ChatMemoryServiceTest {
         }
 
         var history = service.getHistory(1L);
-        assertEquals(30, history.size(), "окно истории жёстко ограничено 30 сообщениями");
+        assertEquals(50, history.size(), "окно истории жёстко ограничено 50 сообщениями");
         assertEquals("message 4999", history.getLast().text(), "остаются самые свежие сообщения");
 
         String text = service.getHistoryText(1L);
