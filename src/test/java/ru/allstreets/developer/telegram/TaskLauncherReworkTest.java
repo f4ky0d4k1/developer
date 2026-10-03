@@ -12,6 +12,7 @@ import ru.allstreets.developer.checkpoint.TaskEntity;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
+import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.state.TaskState;
 
@@ -45,6 +46,7 @@ class TaskLauncherReworkTest {
     private ActiveTaskRegistry taskRegistry;
     private TaskRepository taskRepo;
     private OpenCodeSessionPool sessionPool;
+    private OpenCodeClient openCodeClient;
     private ThreadPoolExecutor executor;
     private TaskLauncher launcher;
 
@@ -54,14 +56,14 @@ class TaskLauncherReworkTest {
         taskRegistry = mock(ActiveTaskRegistry.class);
         taskRepo = mock(TaskRepository.class);
         sessionPool = mock(OpenCodeSessionPool.class);
+        openCodeClient = mock(OpenCodeClient.class);
         executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
         launcher = new TaskLauncher(graphRunner, mock(TelegramGateway.class), taskRegistry,
                 mock(HumanInputRegistry.class), mock(CheckpointService.class), sessionPool,
                 executor, mock(ChatClient.class), mock(PriorTaskContextBuilder.class),
                 new ru.allstreets.developer.metrics.TaskMetrics(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
-                taskRepo, mock(ru.allstreets.developer.checkpoint.TaskLockService.class),
-                mock(ReplyAnchorRegistry.class));
+                taskRepo, openCodeClient, mock(ReplyAnchorRegistry.class));
     }
 
     @AfterEach
@@ -118,5 +120,30 @@ class TaskLauncherReworkTest {
 
         assertFalse(launcher.close(TASK_ID, CHAT_ID));
         verify(sessionPool, org.mockito.Mockito.never()).releaseForTask(TASK_ID);
+    }
+
+    @Test
+    void close_abortsSidecarSession() {
+        when(taskRepo.findById(TASK_ID))
+                .thenReturn(Optional.of(new TaskEntity(TASK_ID, "COMPLETED", "описание", "Техучётки", CHAT_ID)));
+
+        assertTrue(launcher.close(TASK_ID, CHAT_ID));
+
+        // Остановка = реальный abort sidecar-сессии (а не bypass advisory-lock):
+        // рабочий поток завершается сам, lock снимается в finally графа.
+        verify(openCodeClient).abortTask(TASK_ID);
+    }
+
+    @Test
+    void rework_abortsSidecarSessionAndProceeds() {
+        when(taskRepo.findById(TASK_ID))
+                .thenReturn(Optional.of(new TaskEntity(TASK_ID, "COMPLETED", "описание", "Техучётки", CHAT_ID)));
+        when(graphRunner.run(any(AgentContext.class))).thenReturn(AgentResult.ofText("ok"));
+
+        assertTrue(launcher.rework(TASK_ID, CHAT_ID, "замечание"));
+
+        verify(openCodeClient).abortTask(TASK_ID);
+        verify(taskRegistry).markRunning(TASK_ID);
+        verify(graphRunner, timeout(3000)).run(any(AgentContext.class));
     }
 }

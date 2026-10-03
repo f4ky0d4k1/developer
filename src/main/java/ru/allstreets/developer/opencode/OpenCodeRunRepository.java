@@ -20,4 +20,11 @@ public interface OpenCodeRunRepository extends JpaRepository<OpenCodeRunEntity, 
      */
     List<OpenCodeRunEntity> findByTaskIdAndAgentNameAndStatusInOrderByStartedAtDesc(
             String taskId, String agentName, List<OpenCodeRunStatus> statuses);
+
+    /**
+     * Все незавершённые прогоны задачи (любой агент) — кандидаты на принудительную
+     * остановку: {@code TaskLauncher.cancel} абортит их sidecar-сессии.
+     */
+    List<OpenCodeRunEntity> findByTaskIdAndStatusInOrderByStartedAtDesc(
+            String taskId, List<OpenCodeRunStatus> statuses);
 }

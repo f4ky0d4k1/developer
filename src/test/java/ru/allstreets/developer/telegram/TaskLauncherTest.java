@@ -9,10 +9,10 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskEntity;
-import ru.allstreets.developer.checkpoint.TaskLockService;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
+import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 
 import java.util.Optional;
@@ -60,7 +60,7 @@ class TaskLauncherTest {
                 mock(OpenCodeSessionPool.class), executor, mock(ChatClient.class), mock(PriorTaskContextBuilder.class),
                 new ru.allstreets.developer.metrics.TaskMetrics(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
-                taskRepo, mock(TaskLockService.class), replyAnchors);
+                taskRepo, mock(OpenCodeClient.class), replyAnchors);
     }
 
     @AfterEach

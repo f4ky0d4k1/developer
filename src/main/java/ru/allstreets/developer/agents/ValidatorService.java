@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
 import ru.allstreets.developer.opencode.OpenCodeTransientException;
+import ru.allstreets.developer.opencode.TaskCancelledException;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
 /**
@@ -59,6 +60,10 @@ public class ValidatorService {
             // Транзиентный стопор sidecar (stall) — пробрасываем, чтобы граф ретраил узел
             // (инцидент 0f9e5fa2: PR не создавался, задача падала без ретрая).
             log.warn("Post-validation: транзиентная ошибка OpenCode (ретрай графом): {}", e.getMessage());
+            throw e;
+        } catch (TaskCancelledException e) {
+            // Отмена задачи управляющим потоком — это не ошибка OpenCode: пробрасываем,
+            // граф сворачивается без ретрая, advisory-lock снимается в finally.
             throw e;
         } catch (Exception e) {
             log.error("Post-validation: ошибка OpenCode: {}", e.getMessage(), e);

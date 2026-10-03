@@ -258,6 +258,13 @@ public class OpenCodeClient {
                             "Таймаут OpenCode (" + timeoutSeconds + "с) для агента: " + agentName, "timeout");
                 }
 
+                // Рабочий поток постоянно проверяет статус отмены: управляющий поток
+                // (TaskLauncher.cancel) выставил interrupt + абортил sidecar-сессию — выходим.
+                if (Thread.currentThread().isInterrupted()) {
+                    abortSession(run, agentName, prevText, "Задача остановлена (interrupt)");
+                    throw new TaskCancelledException("[" + agentName + "] задача остановлена (interrupt)");
+                }
+
                 List<OpenCodeApi.MessageEnvelope> messages;
                 try {
                     messages = collectRunMessages(sessionId, run.getCwd(), messageId);
@@ -571,6 +578,38 @@ public class OpenCodeClient {
         run.setError(message);
         run.setLastPolledAt(Instant.now());
         runRepo.save(run);
+    }
+
+    /**
+     * Принудительно остановить все незавершённые sidecar-прогоны задачи (любой агент):
+     * abort каждой сессии + пометка ABORTED. Вызывается управляющим потоком
+     * ({@code TaskLauncher.cancel}) — это реальная остановка агента в sidecar, после
+     * которой рабочий поток (цикл опроса) замечает interrupt/завершение и снимает
+     * advisory-lock в {@code finally} как следствие, а не через bypass блокировки.
+     *
+     * @return число аборченных прогонов
+     */
+    public int abortTask(String taskId) {
+        if (taskId == null) {
+            return 0;
+        }
+        var running = runRepo.findByTaskIdAndStatusInOrderByStartedAtDesc(
+                taskId, List.of(OpenCodeRunStatus.STARTING, OpenCodeRunStatus.RUNNING));
+        int aborted = 0;
+        for (var run : running) {
+            try {
+                api.abort(run.getSessionId(), run.getCwd());
+                run.setStatus(OpenCodeRunStatus.ABORTED);
+                run.setError("Задача остановлена пользователем (cancel)");
+                run.setLastPolledAt(Instant.now());
+                runRepo.save(run);
+                aborted++;
+                log.info("[OpenCode] abortTask: сессия {} (агент {}) аборчена", run.getSessionId(), run.getAgentName());
+            } catch (Exception e) {
+                log.warn("[OpenCode] abortTask: не удалось абортить сессию {}: {}", run.getSessionId(), e.getMessage());
+            }
+        }
+        return aborted;
     }
 
     private OpenCodeResult abortAndFail(OpenCodeRunEntity run, String agentName, String taskId,

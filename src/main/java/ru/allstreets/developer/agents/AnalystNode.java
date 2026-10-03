@@ -16,6 +16,7 @@ import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.humanloop.HumanLoopService;
 import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
+import ru.allstreets.developer.opencode.TaskCancelledException;
 import ru.allstreets.developer.state.TaskState;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
@@ -129,6 +130,8 @@ public class AnalystNode implements Agent {
                             currentSessionId = resumeResult.sessionId();
                         }
                     }
+                } catch (TaskCancelledException e) {
+                    throw e;
                 } catch (Exception e) {
                     log.error("Аналитик: ошибка возобновления OpenCode: {}", e.getMessage(), e);
                     currentOutput = ctx.get(TaskState.OPENCODE_OUTPUT);
@@ -190,6 +193,8 @@ public class AnalystNode implements Agent {
                         if (contResult.sessionId() != null) {
                             currentSessionId = contResult.sessionId();
                         }
+                    } catch (TaskCancelledException e) {
+                        throw e;
                     } catch (Exception e) {
                         log.warn("Аналитик: ошибка нуджа: {}", e.getMessage());
                         break;
@@ -199,6 +204,8 @@ public class AnalystNode implements Agent {
                 log.info("Аналитик: OpenCode завершён. output: {} символов, session={}",
                         currentOutput.length(), currentSessionId);
 
+            } catch (TaskCancelledException e) {
+                throw e;
             } catch (Exception e) {
                 log.error("Аналитик: ошибка OpenCode: {}", e.getMessage(), e);
                 return AgentResult.failed(io.github.asekka.springai.agents.core.AgentError.of("analyst", e));

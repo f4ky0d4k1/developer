@@ -13,11 +13,12 @@ import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskEntity;
-import ru.allstreets.developer.checkpoint.TaskLockService;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
+import ru.allstreets.developer.opencode.OpenCodeClient;
 import ru.allstreets.developer.opencode.OpenCodeSessionPool;
+import ru.allstreets.developer.opencode.TaskCancelledException;
 import ru.allstreets.developer.state.TaskState;
 
 import java.util.Map;
@@ -42,7 +43,7 @@ public class TaskLauncher {
     private final PriorTaskContextBuilder priorTaskContextBuilder;
     private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final TaskRepository taskRepo;
-    private final TaskLockService taskLockService;
+    private final OpenCodeClient openCodeClient;
     private final ReplyAnchorRegistry replyAnchors;
 
     /**
@@ -66,7 +67,7 @@ public class TaskLauncher {
                         PriorTaskContextBuilder priorTaskContextBuilder,
                         ru.allstreets.developer.metrics.TaskMetrics metrics,
                         TaskRepository taskRepo,
-                        TaskLockService taskLockService,
+                        OpenCodeClient openCodeClient,
                         ReplyAnchorRegistry replyAnchors) {
         this.graphRunner = graphRunner;
         this.telegram = telegram;
@@ -79,7 +80,7 @@ public class TaskLauncher {
         this.priorTaskContextBuilder = priorTaskContextBuilder;
         this.metrics = metrics;
         this.taskRepo = taskRepo;
-        this.taskLockService = taskLockService;
+        this.openCodeClient = openCodeClient;
         this.replyAnchors = replyAnchors;
     }
 
@@ -214,6 +215,7 @@ public class TaskLauncher {
         if (future != null && !future.isDone()) {
             log.info("TaskLauncher: interrupt задачи {} для reroute", taskId);
             future.cancel(true);
+            openCodeClient.abortTask(taskId);
             runningTasks.remove(taskId);
 
             // Отмена pending HITL вопросов
@@ -276,6 +278,12 @@ public class TaskLauncher {
 
             AgentResult result = graphRunner.run(ctx);
 
+            if (Thread.currentThread().isInterrupted()) {
+                // Отменено: не шлём «❌» и не помечаем FAILED — это была остановка, а не сбой.
+                log.info("TaskLauncher: задача {} прервана (interrupt после графа)", taskId);
+                return;
+            }
+
             if (result.isInterrupted() && result.interrupt() != null) {
                 // HITL-пауза: граф сохранён, поток освобождён, задача ждёт ответа пользователя.
                 // Не помечаем как completed/failed — задача остаётся RUNNING.
@@ -301,6 +309,9 @@ public class TaskLauncher {
 
             telegram.sendMessage(chatId, resultMsg, taskId);
 
+        } catch (TaskCancelledException e) {
+            log.info("TaskLauncher: задача {} отменена (TaskCancelledException)", taskId);
+            return;
         } catch (Exception e) {
             if (Thread.currentThread().isInterrupted()) {
                 log.info("TaskLauncher: задача {} прервана (interrupt)", taskId);
@@ -377,7 +388,9 @@ public class TaskLauncher {
 
     /**
      * Отменить задачу без перезапуска.
-     * Прерывает running future, отменяет HITL, освобождает ресурсы.
+     * Прерывает running future (interrupt), абортит sidecar-сессии задачи, отменяет HITL,
+     * освобождает ресурсы. Рабочий поток замечает interrupt в цикле опроса и завершается сам,
+     * advisory-lock снимается в finally графа как следствие остановки потока.
      * Для HITL-paused задач — читает checkpoint, освобождает OpenCode слот, удаляет checkpoint.
      */
     public void cancel(String taskId) {
@@ -386,6 +399,7 @@ public class TaskLauncher {
             log.info("TaskLauncher: cancel задачи {}", taskId);
             future.cancel(true);
         }
+        openCodeClient.abortTask(taskId); // реальная остановка агента в sidecar
         runningTasks.remove(taskId);
         replyAnchors.forgetTask(taskId);
         humanInputRegistry.cancel(taskId);
@@ -412,19 +426,64 @@ public class TaskLauncher {
     }
 
     /**
-     * Дождаться, пока старый ран задачи отпустит advisory-lock (иначе новый run получит
-     * «Task already locked»). {@link #cancel} лишь интерраптит поток, а unlock происходит
-     * в finally графа — поэтому короткий поллинг до 5 секунд.
+     * Дождаться, пока рабочий поток старого рана остановится (иначе новый run получит
+     * «Task already locked», а {@code finally} старого потока снял бы lock уже нового).
+     * <p>
+     * Управляющий поток уже сделал «запрос» на остановку ({@link #cancel}: interrupt +
+     * abort sidecar-сессии). Рабочий поток постоянно проверяет статус (interrupt-флаг в цикле
+     * опроса) и завершается сам. Даём ему недолгое окно (~1 минута); если не самоубился —
+     * прерываем принудительно повторным {@code cancel(true)} и даём короткий шанс.
+     * Блокировку никто не «проскакивает»: она снимается в {@code finally} графа, когда поток
+     * реально умер.
+     *
+     * @return {@code true} — поток остановился; {@code false} — не остановился даже после
+     * форс-прерывания (завис в неинтераптабельном вызове — например, {@code git waitFor()}).
      */
-    private void awaitLockReleased(String taskId) {
-        for (int i = 0; i < 50 && taskLockService.isLocked(taskId); i++) {
+    private boolean awaitTermination(String taskId, Future<?> oldFuture) {
+        if (oldFuture == null) {
+            return true;
+        }
+        long deadline = System.currentTimeMillis() + 60_000;
+        while (!oldFuture.isDone() && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return;
+                return oldFuture.isDone();
             }
         }
+        if (oldFuture.isDone()) {
+            return true;
+        }
+
+        log.warn("TaskLauncher: задача {} не остановилась за 60с — принудительное прерывание", taskId);
+        oldFuture.cancel(true);
+
+        // Короткий шанс после форса (поток мог быть на грани завершения).
+        long forceDeadline = System.currentTimeMillis() + 3_000;
+        while (!oldFuture.isDone() && System.currentTimeMillis() < forceDeadline) {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return oldFuture.isDone();
+    }
+
+    /**
+     * Процесс задачи не отвечает на остановку даже после форс-прерывания — уведомить
+     * пользователя и пометить задачу FAILED (иначе она «зависнет» RUNNING навсегда).
+     */
+    private void notifyProcessNotResponding(String taskId, long chatId) {
+        log.error("TaskLauncher: процесс задачи {} не отвечает — не остановился даже после принудительного прерывания",
+                taskId);
+        telegram.sendMessage(chatId,
+                "⚠️ Процесс задачи " + taskId.substring(0, 8)
+                        + " не отвечает: не остановился даже после принудительного прерывания. "
+                        + "Задача помечена как FAILED — потребуется ручное вмешательство (перезапуск сервиса).",
+                taskId);
     }
 
     /**
@@ -444,7 +503,15 @@ public class TaskLauncher {
             log.info("TaskLauncher: close — задача {} RUNNING, отменяю ран", taskId.substring(0, 8));
             telegram.sendMessage(chatId, "🛑 Задача " + taskId.substring(0, 8) + " отменена и закрыта.", taskId);
         }
-        cancel(taskId);                        // interrupt + освобождение HITL-слота/чекпоинта
+        Future<?> oldFuture = runningTasks.get(taskId);
+        cancel(taskId);                        // interrupt + abort sidecar + освобождение HITL/чекпоинта
+        if (!awaitTermination(taskId, oldFuture)) { // ждём реальной остановки потока (снятие advisory-lock в finally)
+            // Процесс не остановился — не освобождаем слот (поток может ещё писать в worktree) и не
+            // помечаем CLOSED: задача остаётся «зависшей», пользователь уведомлён.
+            notifyProcessNotResponding(taskId, chatId);
+            taskRegistry.markFailed(taskId);
+            return false;
+        }
         replyAnchors.forgetTask(taskId);       // anchor reply-to задачи больше не нужен
         taskRegistry.markClosed(taskId);
         closeTopicQuietly(taskId);             // closeForumTopic (fail-open)
@@ -468,8 +535,14 @@ public class TaskLauncher {
             return false;
         }
         // Прерываем текущий ран (если идёт) и освобождаем слот/чекпоинт, затем запускаем заново.
+        Future<?> oldFuture = runningTasks.get(taskId);
         cancel(taskId);
-        awaitLockReleased(taskId);
+        if (!awaitTermination(taskId, oldFuture)) {
+            // Старый процесс не остановился — новый run получил бы «Task already locked».
+            notifyProcessNotResponding(taskId, chatId);
+            taskRegistry.markFailed(taskId);
+            return false;
+        }
 
         String description = (task.getDescription() != null && !task.getDescription().isBlank())
                 ? task.getDescription() : task.getTitle();
@@ -503,9 +576,16 @@ public class TaskLauncher {
      */
     public boolean restart(String taskId, long chatId, String additionalContext) {
         // Проверяем что задача не running
+        Future<?> oldFuture = runningTasks.get(taskId);
         if (isRunning(taskId)) {
             log.warn("TaskLauncher: задача {} ещё running — cancel перед restart", taskId);
             cancel(taskId);
+        }
+        // Дождаться реальной остановки старого рана (иначе resume получит «Task already locked»).
+        if (!awaitTermination(taskId, oldFuture)) {
+            notifyProcessNotResponding(taskId, chatId);
+            taskRegistry.markFailed(taskId);
+            return false;
         }
 
         // Проверяем наличие checkpoint
@@ -592,7 +672,14 @@ public class TaskLauncher {
     private void resumeInternal(String taskId, long chatId, Message[] additional, String logContext, String errorPrefix) {
         try {
             AgentResult result = graphRunner.resume(taskId, additional);
+            if (Thread.currentThread().isInterrupted()) {
+                log.info("TaskLauncher: {} задачи {} прерван (interrupt после resume)", logContext, taskId);
+                return;
+            }
             handleResumeResult(taskId, chatId, result);
+        } catch (TaskCancelledException e) {
+            log.info("TaskLauncher: {} задачи {} отменён (TaskCancelledException)", logContext, taskId);
+            return;
         } catch (Exception e) {
             if (Thread.currentThread().isInterrupted()) {
                 log.info("TaskLauncher: {} задачи {} прерван (interrupt)", logContext, taskId);
