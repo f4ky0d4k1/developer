@@ -9,6 +9,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskEntity;
+import ru.allstreets.developer.checkpoint.TaskLockService;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -45,6 +47,7 @@ class TaskLauncherReworkTest {
     private AgentGraphRunner graphRunner;
     private ActiveTaskRegistry taskRegistry;
     private TaskRepository taskRepo;
+    private TaskLockService taskLockService;
     private OpenCodeSessionPool sessionPool;
     private OpenCodeClient openCodeClient;
     private ThreadPoolExecutor executor;
@@ -55,6 +58,7 @@ class TaskLauncherReworkTest {
         graphRunner = mock(AgentGraphRunner.class);
         taskRegistry = mock(ActiveTaskRegistry.class);
         taskRepo = mock(TaskRepository.class);
+        taskLockService = mock(TaskLockService.class);
         sessionPool = mock(OpenCodeSessionPool.class);
         openCodeClient = mock(OpenCodeClient.class);
         executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
@@ -63,7 +67,7 @@ class TaskLauncherReworkTest {
                 executor, mock(ChatClient.class), mock(PriorTaskContextBuilder.class),
                 new ru.allstreets.developer.metrics.TaskMetrics(
                         new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
-                taskRepo, openCodeClient, mock(ReplyAnchorRegistry.class));
+                taskRepo, taskLockService, openCodeClient, mock(ReplyAnchorRegistry.class));
     }
 
     @AfterEach
@@ -144,6 +148,21 @@ class TaskLauncherReworkTest {
 
         verify(openCodeClient).abortTask(TASK_ID);
         verify(taskRegistry).markRunning(TASK_ID);
+        verify(graphRunner, timeout(3000)).run(any(AgentContext.class));
+    }
+
+    @Test
+    void rework_waitsForAdvisoryLockBeforeSubmitting() {
+        when(taskRepo.findById(TASK_ID))
+                .thenReturn(Optional.of(new TaskEntity(TASK_ID, "FAILED", "описание", "Техучётки", CHAT_ID)));
+        // Гонка: future уже убран из runningTasks (null), но advisory-lock ещё удерживается
+        // прерванным потоком — реворк должен дождаться снятия lock, а не упасть «Task already locked».
+        when(taskLockService.isLocked(TASK_ID)).thenReturn(true, true, false);
+        when(graphRunner.run(any(AgentContext.class))).thenReturn(AgentResult.ofText("ok"));
+
+        assertTrue(launcher.rework(TASK_ID, CHAT_ID, "замечание"));
+
+        verify(taskLockService, atLeastOnce()).isLocked(TASK_ID);
         verify(graphRunner, timeout(3000)).run(any(AgentContext.class));
     }
 }

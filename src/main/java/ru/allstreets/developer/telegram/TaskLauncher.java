@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import ru.allstreets.developer.agents.AgentResponses;
 import ru.allstreets.developer.checkpoint.CheckpointService;
 import ru.allstreets.developer.checkpoint.TaskEntity;
+import ru.allstreets.developer.checkpoint.TaskLockService;
 import ru.allstreets.developer.checkpoint.TaskRepository;
 import ru.allstreets.developer.config.AgentGraphRunner;
 import ru.allstreets.developer.humanloop.HumanInputRegistry;
@@ -32,6 +33,14 @@ public class TaskLauncher {
 
     private static final Logger log = LoggerFactory.getLogger(TaskLauncher.class);
 
+    /**
+     * Окно ожидания фактического снятия advisory-lock после остановки потока. Нужно
+     * для гонки, когда {@link #cancel} убрал future из {@code runningTasks} ДО остановки
+     * потока, и concurrent rework/restart получил stale/null future — без этой проверки
+     * новый run падает «Task already locked» (инцидент «зацикленный реитерация → locked»).
+     */
+    private static final long LOCK_RELEASE_TIMEOUT_MS = 15_000;
+
     private final AgentGraphRunner graphRunner;
     private final TelegramGateway telegram;
     private final ActiveTaskRegistry taskRegistry;
@@ -43,6 +52,7 @@ public class TaskLauncher {
     private final PriorTaskContextBuilder priorTaskContextBuilder;
     private final ru.allstreets.developer.metrics.TaskMetrics metrics;
     private final TaskRepository taskRepo;
+    private final TaskLockService taskLockService;
     private final OpenCodeClient openCodeClient;
     private final ReplyAnchorRegistry replyAnchors;
 
@@ -67,6 +77,7 @@ public class TaskLauncher {
                         PriorTaskContextBuilder priorTaskContextBuilder,
                         ru.allstreets.developer.metrics.TaskMetrics metrics,
                         TaskRepository taskRepo,
+                        TaskLockService taskLockService,
                         OpenCodeClient openCodeClient,
                         ReplyAnchorRegistry replyAnchors) {
         this.graphRunner = graphRunner;
@@ -80,6 +91,7 @@ public class TaskLauncher {
         this.priorTaskContextBuilder = priorTaskContextBuilder;
         this.metrics = metrics;
         this.taskRepo = taskRepo;
+        this.taskLockService = taskLockService;
         this.openCodeClient = openCodeClient;
         this.replyAnchors = replyAnchors;
     }
@@ -440,36 +452,58 @@ public class TaskLauncher {
      * форс-прерывания (завис в неинтераптабельном вызове — например, {@code git waitFor()}).
      */
     private boolean awaitTermination(String taskId, Future<?> oldFuture) {
-        if (oldFuture == null) {
-            return true;
+        if (oldFuture != null) {
+            long deadline = System.currentTimeMillis() + 60_000;
+            while (!oldFuture.isDone() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return oldFuture.isDone() && awaitLockReleased(taskId);
+                }
+            }
+            if (!oldFuture.isDone()) {
+                log.warn("TaskLauncher: задача {} не остановилась за 60с — принудительное прерывание", taskId);
+                oldFuture.cancel(true);
+
+                // Короткий шанс после форса (поток мог быть на грани завершения).
+                long forceDeadline = System.currentTimeMillis() + 3_000;
+                while (!oldFuture.isDone() && System.currentTimeMillis() < forceDeadline) {
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                if (!oldFuture.isDone()) {
+                    return false;
+                }
+            }
         }
-        long deadline = System.currentTimeMillis() + 60_000;
-        while (!oldFuture.isDone() && System.currentTimeMillis() < deadline) {
+        // Гонка: future мог быть stale/null ({@link #cancel} убрал его из runningTasks ДО
+        // фактической остановки потока), а advisory-lock ещё удерживается прерванным потоком.
+        // Без этой проверки новый run/resume получит «Task already locked».
+        return awaitLockReleased(taskId);
+    }
+
+    /**
+     * Дождаться фактического снятия advisory-lock задачи (не только остановки потока).
+     * Блокировка снимается в {@code finally} графа — между остановкой future и снятием lock
+     * есть окно, плюс lock виден across инстансы. Возвращает {@code false}, если lock так и
+     * не снялся за {@link #LOCK_RELEASE_TIMEOUT_MS}.
+     */
+    private boolean awaitLockReleased(String taskId) {
+        long deadline = System.currentTimeMillis() + LOCK_RELEASE_TIMEOUT_MS;
+        while (taskLockService.isLocked(taskId) && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return oldFuture.isDone();
+                return !taskLockService.isLocked(taskId);
             }
         }
-        if (oldFuture.isDone()) {
-            return true;
-        }
-
-        log.warn("TaskLauncher: задача {} не остановилась за 60с — принудительное прерывание", taskId);
-        oldFuture.cancel(true);
-
-        // Короткий шанс после форса (поток мог быть на грани завершения).
-        long forceDeadline = System.currentTimeMillis() + 3_000;
-        while (!oldFuture.isDone() && System.currentTimeMillis() < forceDeadline) {
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        return oldFuture.isDone();
+        return !taskLockService.isLocked(taskId);
     }
 
     /**
