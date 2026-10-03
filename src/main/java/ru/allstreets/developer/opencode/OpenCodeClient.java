@@ -2,6 +2,7 @@ package ru.allstreets.developer.opencode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
@@ -47,7 +48,29 @@ public class OpenCodeClient {
     private final int timeoutSeconds;
     private final int pollIntervalSeconds;
     private final int stallTimeoutSeconds;
+    private final int busyStallTimeoutSeconds;
 
+    /**
+     * Порог busy-stall по умолчанию для test-convenience-конструктора. Долгий reasoning
+     * модели может молчать минуты, но НЕ десятки минут — зависший LLM-запрос (сессия busy,
+     * ни tool, ни нового шага/текста) абортим раньше полного {@code timeoutSeconds}.
+     */
+    private static final int DEFAULT_BUSY_STALL_SECONDS = 900;
+
+    public OpenCodeClient(
+            OpenCodeApi api,
+            OpenCodeRunRepository runRepo,
+            TaskProgressRegistry progressRegistry,
+            ru.allstreets.developer.metrics.TaskMetrics metrics,
+            int timeoutSeconds,
+            int pollIntervalSeconds,
+            int stallTimeoutSeconds
+    ) {
+        this(api, runRepo, progressRegistry, metrics, timeoutSeconds, pollIntervalSeconds, stallTimeoutSeconds,
+                DEFAULT_BUSY_STALL_SECONDS);
+    }
+
+    @Autowired
     public OpenCodeClient(
             OpenCodeApi api,
             OpenCodeRunRepository runRepo,
@@ -55,7 +78,8 @@ public class OpenCodeClient {
             ru.allstreets.developer.metrics.TaskMetrics metrics,
             @Value("${opencode.timeout-seconds:300}") int timeoutSeconds,
             @Value("${opencode.poll-interval-seconds:5}") int pollIntervalSeconds,
-            @Value("${opencode.stall-timeout-seconds:120}") int stallTimeoutSeconds
+            @Value("${opencode.stall-timeout-seconds:120}") int stallTimeoutSeconds,
+            @Value("${opencode.busy-stall-timeout-seconds:900}") int busyStallTimeoutSeconds
     ) {
         this.api = api;
         this.runRepo = runRepo;
@@ -64,6 +88,7 @@ public class OpenCodeClient {
         this.timeoutSeconds = timeoutSeconds;
         this.pollIntervalSeconds = Math.max(1, pollIntervalSeconds);
         this.stallTimeoutSeconds = Math.max(pollIntervalSeconds, stallTimeoutSeconds);
+        this.busyStallTimeoutSeconds = Math.max(pollIntervalSeconds, busyStallTimeoutSeconds);
     }
 
     public OpenCodeResult runAgent(String agentName, String prompt, String cwd, String taskId) {
@@ -248,6 +273,7 @@ public class OpenCodeClient {
         java.util.Set<String> recordedSteps = new java.util.HashSet<>();
         long pollStartNanos = System.nanoTime();
         boolean ttfbRecorded = false;
+        boolean retryWarned = false;
 
         OpenCodeApi.EventSource events = openEventWake(run.getCwd());
         try {
@@ -413,7 +439,7 @@ public class OpenCodeClient {
                             agentName, last.info().id(), last.info().finish());
                 }
 
-                // Детекция зависания: работающий агент держит сессию busy/retry (в т.ч. во время
+                // Детекция зависания: работающий агент держит сессию busy (в т.ч. во время
                 // долгих tool-вызовов) — такие long-running задачи не трогаем. Если же sidecar НЕ
                 // busy (idle, либо сессии вообще нет в /session/status — busy=null) и прогресса нет
                 // уже stallTimeout — агент завис. Раньше busy=null игнорировался, и idle-агент
@@ -422,11 +448,38 @@ public class OpenCodeClient {
                 // Долгий tool (mvn test и т.п.): sidecar НЕ помечает сессию busy (/session/status
                 // отдаёт {}), поэтому ориентируемся на tool-парт — пока он running, работа идёт
                 // и stall не поднимаем (иначе холостые ретраи на длинном tool calling).
+                // Особый случай 1: сессия busy, НО ни запущенного tool, ни нового шага/текста —
+                // это зависший LLM-запрос (модель «думает» вечно), а не работа. Раньше busy
+                // безусловно сбрасывал таймер, и такой агент сжигал весь timeout (инцидент:
+                // tester сделал один read и завис на 30 мин). Для него — отдельный порог busy-stall.
+                // Особый случай 2: сессия в retry — sidecar ПОВТОРЯЕТ упавший LLM-запрос
+                // (rate-limit/ошибка провайдера). Это зависание-симптом, а не работа: абортим
+                // быстрее (stallTimeout), а причину (message/attempt) пишем в лог для диагностики.
                 boolean toolRunning = parts.stream().anyMatch(OpenCodeClient::isToolRunning);
-                Boolean busy = sessionIsBusy(sessionId);
+                OpenCodeApi.SessionStatus sessionStatus = fetchSessionStatus(sessionId);
+                boolean busy = sessionStatus != null && sessionStatus.isBusy();
+                boolean retry = sessionStatus != null && sessionStatus.isRetry();
                 long nowMs = System.currentTimeMillis();
-                if (Boolean.TRUE.equals(busy) || toolRunning) {
+                if (toolRunning) {
                     lastProgressAt = nowMs;
+                } else if (busy) {
+                    if (nowMs - lastProgressAt > busyStallTimeoutSeconds * 1000L) {
+                        throw abortAndThrow(run, agentName, taskId, prevText,
+                                "OpenCode агент завис: сессия busy без прогресса " + busyStallTimeoutSeconds + "с", "stall");
+                    }
+                } else if (retry) {
+                    if (!retryWarned) {
+                        retryWarned = true;
+                        log.warn("[OpenCode:{}] сессия в retry (attempt={}, message={}, next={}) — " +
+                                        "LLM-запрос повторяется, не работа; аборт через {}с без прогресса",
+                                agentName, sessionStatus.attempt(), sessionStatus.message(),
+                                sessionStatus.next(), stallTimeoutSeconds);
+                    }
+                    if (nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
+                        throw abortAndThrow(run, agentName, taskId, prevText,
+                                "OpenCode агент завис: сессия в retry (" + sessionStatus.message() + ") " + stallTimeoutSeconds + "с",
+                                "stall");
+                    }
                 } else if (nowMs - lastProgressAt > stallTimeoutSeconds * 1000L) {
                     throw abortAndThrow(run, agentName, taskId, prevText,
                             "OpenCode агент завис: сессия idle/неизвестна без прогресса " + stallTimeoutSeconds + "с", "stall");
@@ -549,13 +602,14 @@ public class OpenCodeClient {
      * {@code null} — неизвестно (ошибка/сессия отсутствует). При {@code null} не считаем
      * простой зависанием — консервативно, чтобы не убить рабочую задачу.
      */
-    private Boolean sessionIsBusy(String sessionId) {
+    /**
+     * Статус сессии ({@code SessionStatus}) или {@code null} (ошибка/сессия отсутствует).
+     * Возвращаем полный статус, а не булево: тип {@code retry} (sidecar повторяет упавший
+     * LLM-запрос) — отдельный зависание-симптом, который надо отличать от {@code busy}.
+     */
+    private OpenCodeApi.SessionStatus fetchSessionStatus(String sessionId) {
         try {
-            var status = api.sessionStatus(sessionId);
-            if (status == null) {
-                return null;
-            }
-            return status.isBusy();
+            return api.sessionStatus(sessionId);
         } catch (Exception e) {
             log.debug("[OpenCode] статус сессии {} недоступен: {}", sessionId, e.getMessage());
             return null;
@@ -639,8 +693,9 @@ public class OpenCodeClient {
      */
     private void abortIfUnreadable(OpenCodeRunEntity run, String agentName, String taskId,
                                    String partialText, long lastProgressAt) {
-        if (Boolean.TRUE.equals(sessionIsBusy(run.getSessionId()))) {
-            return;
+        var status = fetchSessionStatus(run.getSessionId());
+        if (status != null && status.isBusy()) {
+            return; // модель активно генерирует — не читается из-за объёма, а не из-за зависания
         }
         if (System.currentTimeMillis() - lastProgressAt > stallTimeoutSeconds * 1000L) {
             throw abortAndThrow(run, agentName, taskId, partialText,

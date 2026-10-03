@@ -659,10 +659,19 @@ public class OpenCodeApi {
      */
     public record SessionStatus(String type, Integer attempt, String message, Long next) {
         /**
-         * Агент работает: обрабатывает prompt или выполняет инструмент.
+         * Модель активно генерирует ответ.
          */
         public boolean isBusy() {
-            return "busy".equals(type) || "retry".equals(type);
+            return "busy".equals(type);
+        }
+
+        /**
+         * Sidecar повторяет упавший LLM-запрос (rate-limit/ошибка провайдера) — это
+         * зависание-симптом, а не «работает»: отделяем от {@link #isBusy()}, чтобы
+         * оркестратор мог абортить ретрай-петлю быстрее, чем полный бюджет.
+         */
+        public boolean isRetry() {
+            return "retry".equals(type);
         }
     }
 
