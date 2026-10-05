@@ -17,10 +17,11 @@ discovery.relabel "metrics_developer" {
 prometheus.scrape "metrics_developer" {
 	targets      = discovery.relabel.metrics_developer.output
 	forward_to   = [prometheus.relabel.metrics_developer.receiver]
-	job_name     = "agent-system"
+	job_name     = "integrations/spring-boot"
 	metrics_path = "/actuator/prometheus"
 }
 
+prometheus.relabel "metrics_developer" {
 prometheus.relabel "metrics_developer" {
 	forward_to = [prometheus.remote_write.metrics_service.receiver]
 
