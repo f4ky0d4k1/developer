@@ -34,22 +34,19 @@ public class GitHubService {
     @Value("${skills.repo-branch:main}")
     private String skillsBaseBranch;
 
-    @Value("${github.pr-label:agent-generated}")
-    private String prLabel;
-
-    @Value("${github.bot-login:}")
-    private String botLogin;
-
     /**
-     * Получить все открытые PR с меткой prLabel (созданные агентом).
-     * Если botLogin задан — фильтрует по автору.
+     * Получить ВСЕ открытые PR репозитория. Отбор «наших» PR делает вызывающий —
+     * {@link PrCommentMonitor} по ветке ({@code gitBranch} задачи), а не по метке: PR, созданный
+     * агентом в обход валидатора (например, по прямому запросу «создать PR»), может быть без метки
+     * {@code agent-generated}, но ветка у него — ветка задачи. Раньше фильтр по метке/автору делал
+     * такой PR невидимым для монитора, и доработка по замечаниям не запускалась (инцидент f54298be).
      *
      * @return список PR (number, title, headBranch, htmlUrl)
      */
     @CircuitBreaker(name = "github")
     @Retry(name = "github")
-    public List<PrInfo> listAgentPullRequests(String repo) {
-        log.debug("Получение открытых PR с меткой '{}' в {}", prLabel, repo);
+    public List<PrInfo> listOpenPullRequests(String repo) {
+        log.debug("Получение открытых PR в {}", repo);
 
         JsonNode prs = api.get()
                 .uri(uriBuilder -> uriBuilder
@@ -68,36 +65,17 @@ public class GitHubService {
 
         List<PrInfo> result = new java.util.ArrayList<>();
         for (JsonNode pr : prs) {
-            String author = pr.path("user").path("login").asText();
-            String headBranch = pr.path("head").path("ref").asText();
-
-            // Фильтр: по метке или по автору (botLogin)
-            boolean matchByLabel = false;
-            JsonNode labels = pr.path("labels");
-            if (labels != null && labels.isArray()) {
-                for (JsonNode label : labels) {
-                    if (prLabel.equals(label.path("name").asText())) {
-                        matchByLabel = true;
-                        break;
-                    }
-                }
-            }
-
-            boolean matchByAuthor = botLogin != null && !botLogin.isBlank() && botLogin.equals(author);
-
-            if (matchByLabel || matchByAuthor) {
-                result.add(new PrInfo(
-                        pr.path("number").asInt(),
-                        pr.path("title").asText(),
-                        headBranch,
-                        pr.path("html_url").asText(),
-                        author,
-                        pr.path("updated_at").asText()
-                ));
-            }
+            result.add(new PrInfo(
+                    pr.path("number").asInt(),
+                    pr.path("title").asText(),
+                    pr.path("head").path("ref").asText(),
+                    pr.path("html_url").asText(),
+                    pr.path("user").path("login").asText(),
+                    pr.path("updated_at").asText()
+            ));
         }
 
-        log.debug("Найдено {} agent PR в {}", result.size(), repo);
+        log.debug("Найдено {} открытых PR в {}", result.size(), repo);
         return result;
     }
 

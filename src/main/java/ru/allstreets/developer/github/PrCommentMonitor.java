@@ -26,6 +26,10 @@ import java.util.stream.Collectors;
  * к описанию задачи — аналитик из вводных сам решает, что дописать (тесты/код). Один PR = одна
  * задача, без плодения новых и без дублей Tracker.
  * <p>
+ * «Наш» PR определяется по ВЕТКЕ (gitBranch задачи), а не по метке {@code agent-generated}: PR,
+ * созданный агентом в обход валидатора, может быть без метки — ветка остаётся надёжным признаком
+ * (инцидент f54298be: PR без метки был невидим и доработка по замечаниям не запускалась).
+ * <p>
  * Опрашиваются репозитории задач ({@link TaskRepository#findDistinctRepos}) — PR задачи живёт
  * в её репозитории, {@code github.monitor-repo} лишь fallback (инцидент 15.09: монитор смотрел
  * f4ky0d4k1/developer, а PR был в iamponamarev/allstreets-spring).
@@ -127,12 +131,12 @@ public class PrCommentMonitor {
 
         for (String repo : repos) {
             try {
-                List<GitHubService.PrInfo> prs = github.listAgentPullRequests(repo);
+                List<GitHubService.PrInfo> prs = github.listOpenPullRequests(repo);
                 if (prs.isEmpty()) {
                     continue;
                 }
 
-                log.debug("Мониторинг: найдено {} открытых agent PR в {}", prs.size(), repo);
+                log.debug("Мониторинг: найдено {} открытых PR в {}", prs.size(), repo);
 
                 for (GitHubService.PrInfo pr : prs) {
                     processPrComments(repo, pr);
@@ -163,6 +167,16 @@ public class PrCommentMonitor {
 
     private void processPrComments(String repo, GitHubService.PrInfo pr) {
         try {
+            // Исходная задача PR — по ветке. Ветка не привязана к задаче → это не наш PR
+            // (человеческий) — пропускаем, не запрашивая его комментарии. Метка не обязательна:
+            // агент мог создать PR в обход валидатора (инцидент f54298be).
+            TaskEntity task = taskRepo.findByGitBranch(pr.headBranch()).orElse(null);
+            if (task == null) {
+                log.debug("Мониторинг: ветка {} (PR #{}) не привязана к задаче — пропуск",
+                        pr.headBranch(), pr.number());
+                return;
+            }
+
             List<GitHubService.PrComment> fresh = github.listPrComments(repo, pr.number()).stream()
                     .filter(c -> !processedComments.existsById(c.id()))
                     .filter(c -> c.body() != null && !c.body().isBlank())
@@ -170,14 +184,6 @@ public class PrCommentMonitor {
                     .filter(c -> !c.body().contains(AGENT_REPORT_MARKER))
                     .toList();
             if (fresh.isEmpty()) {
-                return;
-            }
-
-            // Исходная задача PR — по ветке. Доработка идёт в НЕЁ, а не в новую задачу.
-            TaskEntity task = taskRepo.findByGitBranch(pr.headBranch()).orElse(null);
-            if (task == null) {
-                log.warn("Мониторинг: для ветки {} (PR #{}) не найдена задача — новые комментарии оставлены "
-                        + "необработанными до появления задачи", pr.headBranch(), pr.number());
                 return;
             }
 

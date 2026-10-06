@@ -14,6 +14,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -45,8 +46,9 @@ class PrCommentMonitorTest {
 
     private void onePrWithComment(long commentId) {
         when(taskRepo.findDistinctRepos(20)).thenReturn(List.of(REPO));
-        when(github.listAgentPullRequests(REPO)).thenReturn(List.of(
+        when(github.listOpenPullRequests(REPO)).thenReturn(List.of(
                 new GitHubService.PrInfo(29, "t", BRANCH, "https://x/29", "bot", "now")));
+        when(taskRepo.findByGitBranch(BRANCH)).thenReturn(Optional.of(originalTask()));
         when(github.listPrComments(REPO, 29)).thenReturn(List.of(
                 new GitHubService.PrComment(commentId, "dima", "переделай", "now", "https://x/29#c")));
     }
@@ -80,8 +82,9 @@ class PrCommentMonitorTest {
     @Test
     void agentReportComment_isIgnored() {
         when(taskRepo.findDistinctRepos(20)).thenReturn(List.of(REPO));
-        when(github.listAgentPullRequests(REPO)).thenReturn(List.of(
+        when(github.listOpenPullRequests(REPO)).thenReturn(List.of(
                 new GitHubService.PrInfo(29, "t", BRANCH, "https://x/29", "bot", "now")));
+        when(taskRepo.findByGitBranch(BRANCH)).thenReturn(Optional.of(originalTask()));
         when(github.listPrComments(REPO, 29)).thenReturn(List.of(
                 new GitHubService.PrComment(5L, "bot",
                         PrCommentMonitor.AGENT_REPORT_MARKER + " итог прогона", "now", "url")));
@@ -126,5 +129,22 @@ class PrCommentMonitorTest {
 
         verify(taskLauncher, never()).rework(anyString(), anyLong(), anyString());
         verify(processed, never()).save(any());
+        verify(github, never()).listPrComments(anyString(), anyInt());
+    }
+
+    @Test
+    void humanPrOnUnrelatedBranch_isIgnored() {
+        // Инцидент f54298be: раньше PR без метки agent-generated вообще не доходил до монитора.
+        // Теперь «наш» PR определяется по ветке задачи: чужая ветка пропускается без запроса
+        // комментариев, а ветка задачи — обрабатывается.
+        when(taskRepo.findDistinctRepos(20)).thenReturn(List.of(REPO));
+        when(github.listOpenPullRequests(REPO)).thenReturn(List.of(
+                new GitHubService.PrInfo(40, "чужой PR", "feature/human-work", "https://x/40", "human", "now")));
+        when(taskRepo.findByGitBranch("feature/human-work")).thenReturn(Optional.empty());
+
+        monitor("").monitorPullRequests();
+
+        verify(github, never()).listPrComments(anyString(), anyInt());
+        verify(taskLauncher, never()).rework(anyString(), anyLong(), anyString());
     }
 }

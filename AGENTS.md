@@ -59,8 +59,11 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 - **PR comment = rework of the same task**: `PrCommentMonitor` never creates `pr-*` tasks — new PR comments find the
   original task by PR branch (`findByGitBranch`) and `TaskLauncher.rework` it (re-run from analyst with the comments
   appended, same taskId). Polled repos = task target repos (`findDistinctRepos`), `monitor-repo` is only a fallback;
-  processed comments are deduped persistently (`agent_processed_pr_comments`). The validator must tag created PRs with
-  `GITHUB_PR_LABEL` (`agent-generated`), otherwise the monitor can't see them.
+  processed comments are deduped persistently (`agent_processed_pr_comments`). **«Наш» PR определяется по ветке
+  задачи** (`findByGitBranch`), а не по метке: `listOpenPullRequests` отдаёт все открытые PR, а не по метке
+  `agent-generated`/автору — PR, созданный агентом в обход валидатора, мог быть без метки и оставался невидимым
+  (инцидент f54298be). Валидатор по-прежнему вешает `GITHUB_PR_LABEL` (`agent-generated`), но монитор от неё не
+  зависит.
 - **Validator doesn't run tests**: tests are the tester's (TDD red) and developer's (green) job. `post_validation`
   inspects the worktree and decision-routes (PR / reroute to analyst|tester|developer) — it does not execute tests.
 - **Analyst routing is deterministic by flags, not `nextStep`**: `requiresTesting` → `tester` first (TDD), else
