@@ -50,6 +50,7 @@ public class TesterNode implements Agent {
         String chatId = ctx.get(TaskState.TG_CHAT_ID);
         String taskId = ctx.get(TaskState.TASK_ID);
         String targetRepo = ctx.get(TaskState.TARGET_REPO);
+        String trackerIssue = ctx.get(TaskState.TRACKER_ISSUE);
         String repoUrl = toRepoUrl(targetRepo);
 
         if (chatId == null || chatId.isBlank()) {
@@ -72,7 +73,14 @@ public class TesterNode implements Agent {
         }
         String workDir = sessionPool.getSlotWorkDir(slot);
 
-        String branchName = branch != null && !branch.isBlank() ? branch : "feature/new-task";
+        // Ветка — как у разработчика (иначе тесты и код уходят в РАЗНЫЕ ветки): явная из контекста,
+        // затем по тикету Трекера, и только затем случайная. Раньше здесь был захардкоженный
+        // "feature/new-task", который не совпадал с веткой разработчика (инцидент ee10af92).
+        String branchName = branch != null && !branch.isBlank()
+                ? branch
+                : trackerIssue != null && !trackerIssue.isBlank()
+                  ? "feature/" + trackerIssue
+                  : "feature/" + java.util.UUID.randomUUID().toString().substring(0, 8);
 
         String prompt = """
                 Напиши тесты для следующего ТЗ:
@@ -113,6 +121,8 @@ public class TesterNode implements Agent {
                 .stateUpdates(java.util.Map.of(
                         TaskState.TEST_PLAN, result.output() != null ? result.output() : "",
                         TaskState.AGENT_ROLE, "tester",
+                        // Ветку прокидываем дальше: developer переиспользует её, а не выводит новую.
+                        TaskState.GIT_BRANCH, branchName,
                         TaskState.TESTS_WRITTEN, true,
                         TaskState.TESTING_DONE, true))
                 .completed(true)

@@ -720,3 +720,17 @@ Tracker — вместо доработки той же задачи.
   нудж (свежая сессия), и при исправлении моделью задача продолжается, а не падает сразу.
 
 Тесты: `AnalystNodeDecisionGuardTest` (+1, `proseMentionsNextStepButJsonInvalid_nudgesToDecision`).
+
+## 48. Тестировщик пишет в ту же ветку, что разработчик (убрано `feature/new-task`)
+
+**Статус: DONE**
+
+- **Инцидент ee10af92**: задача «устранить замечания ревью по PR #40» (ветка PR — `feature/BACKEND-458`) в статусе шла
+  по ветке `feature/new-task`. `TesterNode` при пустом `GIT_BRANCH` брал захардкоженное имя `feature/new-task` и не
+  прокидывал ветку в состояние; `DeveloperNode` выводил имя сам (`feature/<trackerIssue>` либо случайное). Тесты и код
+  уходили в РАЗНЫЕ ветки — доработка PR не попадала в его ветку.
+- **Фикс**: `TesterNode` выводит ветку так же, как `DeveloperNode` (явная `GIT_BRANCH` → `feature/<trackerIssue>` →
+  случайная) и добавляет `GIT_BRANCH` в `stateUpdates`, чтобы `developer` переиспользовал ту же ветку, а
+  `PrCommentMonitor` по ней нашёл задачу.
+
+Тесты: `TesterNodeTest` (+3).

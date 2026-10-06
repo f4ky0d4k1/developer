@@ -50,6 +50,10 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
 - **Worktree slots must not commit our override**: `WorktreeManager` replaces the target repo's `opencode.json` with a
   safe stub and marks it `git update-index --skip-worktree` (or `.git/info/exclude`). Don't reintroduce a path where
   this gets committed.
+- **One task = one branch across nodes**: `tester` and `developer` derive the branch the same way (explicit
+  `GIT_BRANCH` → `feature/<trackerIssue>` → random) and propagate it in state, so tests and code land on the SAME
+  branch. A hardcoded name (`feature/new-task`) is a bug — tests went to one branch, code to another (incident
+  ee10af92).
 - **Recovery resumes via the executor**: `CheckpointRecoveryListener` skips already-FAILED/COMPLETED tasks and resumes
   RUNNING ones through `TaskLauncher.resumeAfterRestart` (taskExecutor + `runningTasks`), not a synchronous
   `graphRunner.resume` on the startup thread. A FAILED task's checkpoint is **kept** (not cleaned) so a manual restart
