@@ -110,6 +110,41 @@ class AgentFlowConfigRoutingTest {
                 postValidationCtx("", "BACKEND-437"), err));
     }
 
+    private AgentContext postValidationCtxWithRework(String rerouteTarget, int reworkCount) {
+        return postValidationCtx(rerouteTarget, "BACKEND-437")
+                .with(TaskState.REWORK_COUNT, reworkCount);
+    }
+
+    @Test
+    void rerouteAllowed_upToAndIncludingMaxReworks() {
+        // REWORK_COUNT в контексте — уже ПОСЛЕ инкремента в PostValidationNode.
+        assertTrue(AgentFlowConfig.shouldReroute(
+                postValidationCtxWithRework("developer", 1), ok(), "developer"));
+        assertTrue(AgentFlowConfig.shouldReroute(
+                        postValidationCtxWithRework("developer", AgentFlowConfig.MAX_REWORKS), ok(), "developer"),
+                "последний (N/N) возврат обязан маршрутизироваться, иначе граф обрывается без репортёра");
+    }
+
+    @Test
+    void rerouteBeyondLimit_doesNotRoute() {
+        assertFalse(AgentFlowConfig.shouldReroute(
+                postValidationCtxWithRework("developer", AgentFlowConfig.MAX_REWORKS + 1), ok(), "developer"));
+    }
+
+    @Test
+    void rerouteToOtherTarget_doesNotRoute() {
+        assertFalse(AgentFlowConfig.shouldReroute(
+                postValidationCtxWithRework("developer", 2), ok(), "tester"));
+    }
+
+    @Test
+    void rerouteOnErrorResult_doesNotRoute() {
+        AgentResult err = AgentResult.failed(AgentError.of("post_validation", new RuntimeException("boom")));
+
+        assertFalse(AgentFlowConfig.shouldReroute(
+                postValidationCtxWithRework("developer", 2), err, "developer"));
+    }
+
     @Test
     void errorResult_routesNowhere() {
         AgentContext c = ctx(true, true, "developer");

@@ -27,6 +27,17 @@ public class AgentFlowConfig {
      */
     private static final int OPENCODE_RETRY_ATTEMPTS = 3;
 
+    /**
+     * Максимум циклов доработки после пост-валидации (reroute). {@code REWORK_COUNT} считает уже
+     * выполненные возвраты (1..{@value}), поэтому возврат разрешён, пока счётчик {@code <= MAX_REWORKS}.
+     * <p>
+     * Раньше ребро требовало {@code reworkCount < 3}: на третьем возврате счётчик становился ровно 3,
+     * ребро не срабатывало, и граф обрывался. Задача молча «завершалась» без PR и без репортёра
+     * ({@code REROUTE_TARGET} оставался непустым — инцидент c57cf59c). Лимит должен пропускать
+     * объявленный возврат, а исчерпание обязан явно обрабатывать {@link ru.allstreets.developer.agents.PostValidationNode}.
+     */
+    public static final int MAX_REWORKS = 3;
+
     @Bean
     public AgentGraph agentGraph(
             AnalystNode analyst,
@@ -66,7 +77,7 @@ public class AgentFlowConfig {
                         (ctx, result) -> !result.hasError(),
                         "developer"
                 ))
-                // post_validation → reroute (LLM-driven via REROUTE_TARGET, до 3 раз).
+                // post_validation → reroute (LLM-driven via REROUTE_TARGET, до MAX_REWORKS раз).
                 // Само-возврат post_validation → post_validation убран: «PR без URL» — это fail,
                 // а не повод крутить узел (инцидент 0f9e5fa2).
                 .addEdge(Edge.onResult("post_validation",
@@ -157,12 +168,15 @@ public class AgentFlowConfig {
                 && !Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING));
     }
 
-    private static boolean shouldReroute(AgentContext ctx, AgentResult result, String target) {
+    static boolean shouldReroute(AgentContext ctx, AgentResult result, String target) {
         if (result.hasError()) return false;
         String rerouteTarget = ctx.get(TaskState.REROUTE_TARGET);
         Integer rc = ctx.get(TaskState.REWORK_COUNT);
         int reworkCount = rc != null ? rc : 0;
-        return target.equals(rerouteTarget) && reworkCount < 3;
+        // ctx.reworkCount — уже ПОСЛЕ инкремента в PostValidationNode, поэтому последний
+        // разрешённый возврат = MAX_REWORKS (а не MAX_REWORKS - 1). Узел не выпускает возврат
+        // сверх лимита — при исчерпании он падает явной ошибкой, а не оставляет граф без ребра.
+        return target.equals(rerouteTarget) && reworkCount <= MAX_REWORKS;
     }
 
     /**

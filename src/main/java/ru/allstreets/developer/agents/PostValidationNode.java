@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import ru.allstreets.developer.checkpoint.TaskRepository;
+import ru.allstreets.developer.config.AgentFlowConfig;
 import ru.allstreets.developer.state.TaskState;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
@@ -133,6 +134,9 @@ public class PostValidationNode implements Agent {
     }
 
     private AgentResult reroute(long chatIdLong, String target, int reworkCount, String message, String taskId) {
+        if (reworkCount >= AgentFlowConfig.MAX_REWORKS) {
+            return reworkLimitExhausted(chatIdLong, target, taskId);
+        }
         telegram.sendMessage(chatIdLong, message, taskId);
         int newReworkCount = reworkCount + 1;
         log.info("Post-validation: возврат к узлу '{}' (reworkCount={})", target, newReworkCount);
@@ -144,6 +148,20 @@ public class PostValidationNode implements Agent {
                         TaskState.AGENT_ROLE, "post_validation"))
                 .completed(true)
                 .build();
+    }
+
+    /**
+     * Лимит доработок исчерпан: возврат выпускать нельзя, иначе граф останется без подходящего
+     * ребра и задача молча «завершится» без PR и без репортёра (инцидент c57cf59c). Явный FAILED
+     * сохраняет чекпоинт для ручного restart'а с проблемного узла.
+     */
+    private AgentResult reworkLimitExhausted(long chatIdLong, String target, String taskId) {
+        String msg = "❌ Лимит доработок исчерпан (" + AgentFlowConfig.MAX_REWORKS
+                + "). Возврат к узлу «" + target + "» невозможен — нужна ручная проверка.";
+        log.warn("Post-validation: лимит доработок исчерпан ({}), возврат к '{}' отклонён — FAILED",
+                AgentFlowConfig.MAX_REWORKS, target);
+        telegram.sendMessage(chatIdLong, msg, taskId);
+        return AgentResult.failed(AgentError.of("post_validation", new RuntimeException(msg)));
     }
 
     private AgentResult skipResult() {
@@ -240,7 +258,8 @@ public class PostValidationNode implements Agent {
         sb.append("- requiresTesting: ").append(Boolean.TRUE.equals(ctx.get(TaskState.REQUIRES_TESTING))).append("\n");
         sb.append("- testsWritten: ").append(Boolean.TRUE.equals(ctx.get(TaskState.TESTS_WRITTEN))).append("\n");
         sb.append("- prCreated: ").append(Boolean.TRUE.equals(ctx.get(TaskState.PR_CREATED))).append("\n");
-        sb.append("- итерация доработок: ").append(reworkCount).append("/3\n");
+        sb.append("- итерация доработок: ").append(reworkCount).append("/")
+                .append(AgentFlowConfig.MAX_REWORKS).append("\n");
 
         return sb.toString();
     }
@@ -326,10 +345,14 @@ public class PostValidationNode implements Agent {
         }
 
         if (decision.reroute() != null && !decision.reroute().isBlank()) {
+            if (reworkCount >= AgentFlowConfig.MAX_REWORKS) {
+                return reworkLimitExhausted(chatIdLong, decision.reroute(), taskId);
+            }
             int newReworkCount = reworkCount + 1;
             log.info("Post-validation: LLM решила вернуться к узлу '{}' (reworkCount={})", decision.reroute(), newReworkCount);
             telegram.sendMessage(chatIdLong,
-                    "🔄 Возврат к узлу: " + decision.reroute() + " (попытка " + newReworkCount + "/3)", taskId);
+                    "🔄 Возврат к узлу: " + decision.reroute() + " (попытка " + newReworkCount + "/"
+                            + AgentFlowConfig.MAX_REWORKS + ")", taskId);
             return AgentResult.builder()
                     .text(summary)
                     .stateUpdates(java.util.Map.of(

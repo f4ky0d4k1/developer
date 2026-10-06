@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import ru.allstreets.developer.checkpoint.TaskRepository;
+import ru.allstreets.developer.config.AgentFlowConfig;
 import ru.allstreets.developer.state.TaskState;
 import ru.allstreets.developer.telegram.TelegramGateway;
 
@@ -120,6 +121,51 @@ class PostValidationNodeTest {
 
         assertEquals("analyst", result.stateUpdates().get(TaskState.REROUTE_TARGET));
         assertEquals(1, result.stateUpdates().get(TaskState.REWORK_COUNT));
+    }
+
+    @Test
+    void rerouteOnLastAllowedAttempt_stillRoutes() {
+        // Инцидент c57cf59c: последний (N/N) возврат раньше объявлялся, но ребро с reworkCount < 3
+        // его не пропускало — граф обрывался без PR и без репортёра.
+        var ctx = baseCtx()
+                .with(TaskState.REQUIRES_DEVELOPMENT, true)
+                .with(TaskState.DEVELOPMENT_DONE, true)
+                .with(TaskState.REWORK_COUNT, AgentFlowConfig.MAX_REWORKS - 1);
+        validatorReturnsDecision(new AgentResponses.PostValidationDecision(
+                null, null, "developer", null, "нужна доработка"));
+
+        AgentResult result = node.execute(ctx);
+
+        assertFalse(result.hasError(), "последний разрешённый возврат должен состояться");
+        assertEquals("developer", result.stateUpdates().get(TaskState.REROUTE_TARGET));
+        assertEquals(AgentFlowConfig.MAX_REWORKS, result.stateUpdates().get(TaskState.REWORK_COUNT));
+    }
+
+    @Test
+    void rerouteBeyondLimit_failsInsteadOfDeadEnd() {
+        var ctx = baseCtx()
+                .with(TaskState.REQUIRES_DEVELOPMENT, true)
+                .with(TaskState.DEVELOPMENT_DONE, true)
+                .with(TaskState.REWORK_COUNT, AgentFlowConfig.MAX_REWORKS);
+        validatorReturnsDecision(new AgentResponses.PostValidationDecision(
+                null, null, "developer", null, "нужна доработка"));
+
+        AgentResult result = node.execute(ctx);
+
+        assertTrue(result.hasError(), "исчерпанный лимит доработок — явный FAILED, а не молчаливое завершение");
+    }
+
+    @Test
+    void failFastRerouteBeyondLimit_fails() {
+        var ctx = baseCtx()
+                .with(TaskState.REQUIRES_DEVELOPMENT, true)
+                .with(TaskState.DEVELOPMENT_DONE, false)
+                .with(TaskState.REWORK_COUNT, AgentFlowConfig.MAX_REWORKS);
+
+        AgentResult result = node.execute(ctx);
+
+        assertTrue(result.hasError(), "fail-fast возврат тоже обязан уважать лимит доработок");
+        verifyNoInteractions(validator);
     }
 
     @Test
