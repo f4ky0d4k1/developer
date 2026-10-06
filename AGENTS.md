@@ -42,8 +42,11 @@ calls `OpenCodeClient.runAgent(agentName, prompt, cwd, taskId[, sessionId])` and
   hardcoded in Java. Java = guards/invariants/boundaries (fail-fast, validation, lifecycle). Example: launching a task
   is the `launch_task` MCP tool with a required `repo`, not a Java action.
 - **Analyst decision is deterministic**: `AnalystNode.parseDecision` reads the agent's final JSON block with Jackson —
-  NOT a second LLM (`StructuredOutputHelper` was removed from this path). Missing/invalid `nextStep` → nudge the agent
-  once in the same session, then fail. Never let empty/unparseable output silently become "done".
+  NOT a second LLM (`StructuredOutputHelper` was removed from this path). The nudge is triggered by the **parsed
+  decision** being absent (`needsNudge` → `parseDecision(...) == null`), never by a substring like `nextStep` in prose:
+  otherwise a mention of the field masked an unparseable/missing JSON, the nudge was skipped and the task failed
+  immediately (incident ee10af92). Missing/invalid `nextStep` → nudge the agent in a fresh session (up to
+  `MAX_CONTINUE_ATTEMPTS`), then fail. Never let empty/unparseable output silently become "done".
 - **Worktree slots must not commit our override**: `WorktreeManager` replaces the target repo's `opencode.json` with a
   safe stub and marks it `git update-index --skip-worktree` (or `.git/info/exclude`). Don't reintroduce a path where
   this gets committed.

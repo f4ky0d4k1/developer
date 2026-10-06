@@ -166,6 +166,25 @@ class AnalystNodeDecisionGuardTest {
     }
 
     @Test
+    void proseMentionsNextStepButJsonInvalid_nudgesToDecision() {
+        // Инцидент ee10af92: вывод содержал подстроку «nextStep» (упоминание в прозе + оборванный
+        // фенс), старая проверка по подстроке считала решение присутствующим — нудж не запускался,
+        // и задача падала сразу (decisionBlock=true, result=null).
+        String proseWithTruncatedJson = """
+                Спека готова. Поле nextStep: developer.
+                ```json
+                {"nextStep": "developer", "requiresDevelopment": true
+                ```""";
+        runReturns(proseWithTruncatedJson, DECISION);
+
+        AgentResult result = analyst.execute(ctx());
+
+        assertFalse(result.hasError(), "невалидный JSON с упоминанием nextStep должен нуджить, а не падать сразу");
+        assertEquals("developer", result.stateUpdates().get(TaskState.NEXT_STEP));
+        verify(openCode, times(2)).runAgent(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void validJsonButNoNextStep_nudgedThenFails() {
         runReturns("{\"requiresDevelopment\": true, \"spec\": \"спека\"}",
                 "{\"requiresDevelopment\": true, \"spec\": \"спека\"}",

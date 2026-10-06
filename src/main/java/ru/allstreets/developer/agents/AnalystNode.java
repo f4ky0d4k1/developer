@@ -171,8 +171,11 @@ public class AnalystNode implements Agent {
                 // Застрявшая сессия (reasoning-цикл, «exiting loop») отравлена — повтор в ней крутит
                 // reasoning заново, поэтому нудж идёт БЕЗ sessionId, с полным промптом задачи +
                 // жёстким требованием «не рассуждай». Только после N попыток без решения — провал.
+                // Нудж нужен, когда РЕШЕНИЕ не парсится (нет nextStep), а не когда в выводе просто
+                // нет подстроки «nextStep»: модель могла упомянуть поле в прозе, а JSON не выдать —
+                // по подстроке нудж пропускался и задача падала сразу (инцидент ee10af92).
                 for (int attempt = 0; attempt < MAX_CONTINUE_ATTEMPTS
-                        && (currentOutput.isBlank() || !hasDecisionBlock(currentOutput)); attempt++) {
+                        && needsNudge(currentOutput); attempt++) {
                     log.warn("Аналитик: вывод без решения ({} символов), нудж {}/{} (свежая сессия, была {}): {}",
                             currentOutput.length(), attempt + 1, MAX_CONTINUE_ATTEMPTS, currentSessionId,
                             preview(currentOutput));
@@ -247,9 +250,9 @@ public class AnalystNode implements Agent {
         // Не даём пустому/нераспарсенному ответу молча закрыть задачу как «готово»
         // (инцидент 3c7b33db: аналитик выдал вводную фразу без решения, задача «завершилась»).
         // Контракт (analyst.md) требует JSON-блок с nextStep; без него это технический сбой.
-        if (!hasDecisionBlock(currentOutput) || result == null || result.nextStep() == null) {
-            log.error("Аналитик: решение не получено (decisionBlock={}, result={}, {} символов вывода) — провал. Вывод: {}",
-                    hasDecisionBlock(currentOutput), result == null ? "null" : "no-nextStep", currentOutput.length(),
+        if (result == null || result.nextStep() == null) {
+            log.error("Аналитик: решение не получено (result={}, {} символов вывода) — провал. Вывод: {}",
+                    result == null ? "null" : "no-nextStep", currentOutput.length(),
                     preview(currentOutput));
             telegram.sendMessage(chatIdLong,
                     "❌ Аналитик не вернул решение (пустой/нераспарсенный ответ) — задача не завершена");
@@ -436,16 +439,14 @@ public class AnalystNode implements Agent {
     }
 
     /**
-     * Контракт аналитика: в ответе обязателен JSON-блок с полем {@code nextStep}
-     * (см. {@code opencode-config/agents/analyst.md}). Детерминированная проверка —
-     * чтобы пустой/усечённый ответ не мог молча закрыть задачу как «готово».
+     * Нужен ли нудж: вывод не разбирается как решение с непустым {@code nextStep}. Проверяем именно
+     * разобранное решение, а не наличие подстроки {@code nextStep} в тексте — иначе прозаическое
+     * упоминание поля маскировало невалидный/отсутствующий JSON, нудж не срабатывал и задача падала
+     * сразу (инцидент ee10af92).
      */
-    private static boolean hasDecisionBlock(String output) {
-        return output != null && DECISION_BLOCK.matcher(output).find();
+    private boolean needsNudge(String output) {
+        return parseDecision(output) == null;
     }
-
-    private static final java.util.regex.Pattern DECISION_BLOCK =
-            java.util.regex.Pattern.compile("(?i)\"?nextStep\"?\\s*[:=]");
 
     /**
      * Детерминированный разбор JSON-решения из финального ответа аналитика (без второго LLM).

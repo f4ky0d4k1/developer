@@ -703,3 +703,20 @@ Tracker — вместо доработки той же задачи.
   валидатора как признак для людей/GitHub, но монитор от неё больше не зависит.
 
 Тесты: `PrCommentMonitorTest` (+1, `humanPrOnUnrelatedBranch_isIgnored`), остальные обновлены под новый seam.
+
+## 47. Нудж аналитика запускается по неразобранному решению, а не по подстроке `nextStep`
+
+**Статус: DONE**
+
+- **Инцидент ee10af92**: задача «устрани замечания из PR» упала сразу —
+  `Analyst produced no decision (missing nextStep)`. В логе `decisionBlock=true, result=null, 14325 символов` и
+  **нет** строки «вывод без решения» (нудж не пошёл). Причина: условие нуджа было `!hasDecisionBlock(output)` —
+  регулярка по подстроке `nextStep` в тексте. Модель упомянула поле в прозе (и/или приложила оборванный json-фенс),
+  подстрока нашлась → нудж не запустился, а Jackson решение не распарсил → немедленный провал. Фолбэк-нудж, который
+  должен был вытащить ответ, не сработал.
+- **Фикс**: нудж гейтится по `needsNudge(output)` = `parseDecision(output) == null` (нет валидного JSON с
+  `nextStep`), а не по наличию подстроки. `hasDecisionBlock`/`DECISION_BLOCK` удалены, guard упрощён до
+  `result == null || result.nextStep() == null`. Теперь невалидный/оборванный JSON с упоминанием `nextStep` уходит в
+  нудж (свежая сессия), и при исправлении моделью задача продолжается, а не падает сразу.
+
+Тесты: `AnalystNodeDecisionGuardTest` (+1, `proseMentionsNextStepButJsonInvalid_nudgesToDecision`).
